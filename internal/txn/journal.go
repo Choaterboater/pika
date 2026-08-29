@@ -92,6 +92,11 @@ func acquireLock(recDir, txid string) error {
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
+	if err == nil {
+		// Persist the lock's directory entry; a crash right after
+		// acquiring the lock must not lose it.
+		err = syncDir(recDir)
+	}
 	if err != nil {
 		os.Remove(lockPath)
 		return fmt.Errorf("txn: write lock: %w", err)
@@ -140,6 +145,11 @@ func (tx *Tx) backup(seq int, rel string) (string, error) {
 	if err := os.MkdirAll(tx.backupsDir, 0o755); err != nil {
 		return "", err
 	}
+	// Persist the backups dir's entry in the recovery directory before
+	// writing anything into it.
+	if err := syncDir(tx.recDir); err != nil {
+		return "", err
+	}
 	bs, err := os.ReadFile(tx.abs(rel))
 	if err != nil {
 		return "", err
@@ -150,6 +160,10 @@ func (tx *Tx) backup(seq int, rel string) (string, error) {
 		return "", err
 	}
 	if err := syncFile(bakPath); err != nil {
+		return "", err
+	}
+	// Persist the backup file's directory entry.
+	if err := syncDir(tx.backupsDir); err != nil {
 		return "", err
 	}
 	return tx.id + "/" + name, nil
@@ -189,6 +203,14 @@ func readEntries(journalPath string) ([]Entry, error) {
 		}
 		if _, err := contract.NormalizeRepoPath(e.Path); err != nil {
 			return nil, fmt.Errorf("corrupt journal entry: path %q: %w", e.Path, err)
+		}
+		if e.Op == OpMove {
+			if e.Dest == "" {
+				return nil, fmt.Errorf("corrupt journal entry: move %q has no dest", e.Path)
+			}
+			if _, err := contract.NormalizeRepoPath(e.Dest); err != nil {
+				return nil, fmt.Errorf("corrupt journal entry: dest %q: %w", e.Dest, err)
+			}
 		}
 		entries = append(entries, e)
 	}
@@ -283,12 +305,17 @@ func (tx *Tx) classify(e Entry) (bool, error) {
 		}
 		destExists := derr == nil
 		switch {
-		case src == nil && destExists:
-			return true, nil
+		case src != nil && destExists:
+			// Undo removes the dest first, so source-present with
+			// dest-present can only be external modification.
+			return false, fmt.Errorf("source present=%v dest present=%v matches neither precondition nor postcondition: external modification", src != nil, destExists)
 		case src != nil && !destExists:
 			return false, nil
 		default:
-			return false, fmt.Errorf("source present=%v dest present=%v matches neither precondition nor postcondition: external modification", src != nil, destExists)
+			// src absent: the move ran. dest-present is the normal
+			// postcondition; dest-absent is a crash mid-undo after the
+			// dest removal — undoing again (restore src) is idempotent.
+			return true, nil
 		}
 	}
 	return false, fmt.Errorf("unknown op kind %q", e.Op)
@@ -304,10 +331,15 @@ func (tx *Tx) undo(e Entry) error {
 	case OpWrite, OpDelete:
 		return tx.restoreBackup(e, tx.abs(e.Path))
 	case OpMove:
-		if err := tx.restoreBackup(e, tx.abs(e.Path)); err != nil {
+		// Dest first, restore second: a crash mid-undo leaves
+		// src absent + dest absent, which classifies as ran on
+		// re-recovery and completes with the src restore. Restoring src
+		// first would instead leave src present + dest present, which
+		// looks like interference and halts recovery.
+		if err := os.Remove(tx.abs(e.Dest)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		return os.Remove(tx.abs(e.Dest))
+		return tx.restoreBackup(e, tx.abs(e.Path))
 	}
 	return fmt.Errorf("unknown op kind %q", e.Op)
 }
@@ -500,22 +532,4 @@ func atomicWriteAt(abs string, content []byte) error {
 		return err
 	}
 	return syncDir(filepath.Dir(abs))
-}
-
-func syncFile(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return f.Sync()
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
 }

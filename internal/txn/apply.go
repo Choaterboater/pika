@@ -155,6 +155,13 @@ func Begin(root string) (*Tx, error) {
 		releaseLock(recDir)
 		return nil, fmt.Errorf("txn: open journal: %w", err)
 	}
+	// Persist the journal's directory entry: a crash before the first
+	// entry is fsynced must not lose the file itself.
+	if err := syncDir(recDir); err != nil {
+		jf.Close()
+		releaseLock(recDir)
+		return nil, fmt.Errorf("txn: sync recovery dir: %w", err)
+	}
 	return &Tx{
 		root:        abs,
 		id:          txid,

@@ -512,3 +512,70 @@ func TestRecoverSkipsLiveTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestRecoverMoveUndoInterruptedMidUndo simulates a crash between the
+// two steps of move undo (dest removed, src not yet restored): recovery
+// must classify the state as ran, complete the undo, and restore the
+// exact pre-state instead of halting on a false mismatch.
+func TestRecoverMoveUndoInterruptedMidUndo(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "src.txt", "S")
+
+	tx, err := Begin(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.OnOpComplete = func(seq int, op Op) {
+		if seq == 1 {
+			panic("simulated crash")
+		}
+	}
+	func() {
+		defer func() { _ = recover() }()
+		_ = tx.Apply(Plan{{Kind: OpMove, Path: "src.txt", Dest: "dst.txt"}})
+	}()
+	tx.journal.Close()
+
+	// The op ran: src gone, dest present. Now simulate the mid-undo
+	// crash: the dest-first undo step removed the dest, the src restore
+	// never ran.
+	if err := os.Remove(filepath.Join(root, "dst.txt")); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(root, ".project", "state", "recovery", "lock")
+	dead := `{"txId":"` + tx.id + `","pid":99999999,"startedAt":"2020-01-01T00:00:00Z"}` + "\n"
+	if err := os.WriteFile(lock, []byte(dead), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Recover(root); err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+	wantFile(t, root, "src.txt", "S")
+	wantAbsent(t, root, "dst.txt")
+	if got := journals(t, root); len(got) != 0 {
+		t.Errorf("journals after recovery = %v, want none", got)
+	}
+}
+
+// TestRecoverRejectsCorruptDest asserts a corrupted journal line whose
+// move dest escapes the root is rejected before any undo runs.
+func TestRecoverRejectsCorruptDest(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "src.txt", "S")
+	if err := os.MkdirAll(filepath.Join(root, ".project", "state", "recovery"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(root, ".project", "state", "recovery", "evil-tx.jsonl")
+	line := `{"seq":1,"op":"move","path":"src.txt","dest":"../../evil.txt"}` + "\n"
+	if err := os.WriteFile(journal, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Recover(root); err == nil {
+		t.Fatal("recovery accepted a journal with an escaping dest")
+	}
+	wantFile(t, root, "src.txt", "S")
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(root), "evil.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("escape target touched: %v", err)
+	}
+}
