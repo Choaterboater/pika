@@ -4,8 +4,11 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path"
+	"strings"
 	"sync"
 
 	"github.com/Choaterboater/projectctl/internal/yamlx"
@@ -83,8 +86,10 @@ type Evidence struct {
 }
 
 // Load reads, strictly parses, and JSON-Schema-validates the contract file
-// at path. The returned Contract has typed fields matching the schema; keys
-// outside it are rejected unless nested under extensions.
+// at path. Every declared repository-relative path (currently
+// packages.<name>.root) is normalized to forward slashes and checked
+// against path escapes; keys outside the schema are rejected unless nested
+// under extensions.
 func Load(path string) (*Contract, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -98,6 +103,15 @@ func Load(path string) (*Contract, error) {
 
 	if err := validate(&c); err != nil {
 		return nil, fmt.Errorf("contract: %s: %w", path, err)
+	}
+
+	for name, pkg := range c.Packages {
+		root, err := NormalizeRepoPath(pkg.Root)
+		if err != nil {
+			return nil, fmt.Errorf("contract: packages.%s.root: %w", name, err)
+		}
+		pkg.Root = root
+		c.Packages[name] = pkg
 	}
 	return &c, nil
 }
@@ -120,4 +134,32 @@ func validate(c *Contract) error {
 		return fmt.Errorf("contract: schema validation failed: %w", err)
 	}
 	return nil
+}
+
+// NormalizeRepoPath normalizes a declared repository-relative path to
+// forward-slash form and validates it stays inside the repository root.
+// Backslash separators are accepted and converted (Windows callers may
+// pass either form); absolute paths (leading /, drive letters, UNC) and
+// paths that traverse above the repository root after cleaning are
+// rejected, as is the empty path.
+func NormalizeRepoPath(p string) (string, error) {
+	if p == "" {
+		return "", errors.New("path is empty")
+	}
+	norm := strings.ReplaceAll(p, "\\", "/")
+	if strings.HasPrefix(norm, "/") {
+		return "", fmt.Errorf("path escapes repository root: %s", p)
+	}
+	if len(norm) >= 2 && norm[1] == ':' && isDriveLetter(norm[0]) {
+		return "", fmt.Errorf("path escapes repository root: %s", p)
+	}
+	cleaned := path.Clean(norm)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("path escapes repository root: %s", p)
+	}
+	return cleaned, nil
+}
+
+func isDriveLetter(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }

@@ -1,0 +1,15 @@
+schema: 1
+project:
+  name: fixture
+  topology: single
+profiles:
+  - core@1
+packages:
+  frontend:
+    root: /etc
+    profiles:
+      - core@1
+evidence:
+  publish: sanitized
+github:
+  merge: squash
