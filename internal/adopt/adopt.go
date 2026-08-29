@@ -457,11 +457,11 @@ func runBaseline(repoRoot string, existing map[string]string) ([]BaselineCheck, 
 		cmd.WaitDelay = 2 * time.Second
 		err := cmd.Run()
 		switch {
-		case errors.Is(ctx.Err(), context.DeadlineExceeded):
-			bc.Status = "timeout"
 		case err == nil:
 			bc.Status = "pass"
 			bc.Exit = 0
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			bc.Status = "timeout"
 		default:
 			bc.Status = "fail"
 			var ee *exec.ExitError
