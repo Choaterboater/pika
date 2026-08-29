@@ -31,12 +31,16 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	rep, err := apply.Run(apply.RunOptions{Dir: "."})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		// Report.Rollback is truthful: true only when the undo
-		// completed. A false here means the mutations may remain.
+		// Report.Rollback is truthful: true only when the undo completed.
+		// A false with applied ops means the failure came after the commit
+		// (only the review-bundle rewrite fails there); a false without
+		// them means the undo itself was refused and mutations may remain.
 		if rep.Rollback {
 			fmt.Fprintln(stderr, "nothing was applied; the repository is at its pre-state")
+		} else if len(rep.Applied) > 0 {
+			fmt.Fprintln(stderr, "the contract WAS applied; only the review bundle rewrite failed")
 		} else {
-			fmt.Fprintln(stderr, "the pre-state could not be restored; see the error above")
+			fmt.Fprintln(stderr, "the pre-state could not be restored; the transaction's mutations may remain")
 		}
 		return 1
 	}
