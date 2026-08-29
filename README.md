@@ -58,6 +58,9 @@ pika check --all
 # Analyze an existing repository without touching it
 pika adopt
 
+# Promote the adoption drafts into a live contract (transactional)
+pika apply
+
 # Expose the kernel to your AI agent over MCP
 pika mcp
 ```
@@ -68,6 +71,7 @@ pika mcp
 |---|---|
 | `pika init` | Create a lean project contract and scaffold for a new repository |
 | `pika adopt` | Inventory an existing repository; produces a draft contract and migration preview without changing working code |
+| `pika apply` | Promote the adoption drafts into a live contract transactionally — create-if-missing, full rollback on failure, and a rewritten human-readable review bundle |
 | `pika check` | Run the verification ladder locally or in CI (`--ci` makes no LLM calls) |
 | `pika mcp` | Serve the kernel to agents over MCP (stdio JSON-RPC) |
 

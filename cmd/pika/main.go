@@ -25,9 +25,12 @@ func main() {
 	if len(args) > 0 && args[0] == "adopt" {
 		os.Exit(runAdopt(args[1:], os.Stdout, os.Stderr))
 	}
+	if len(args) > 0 && args[0] == "apply" {
+		os.Exit(runApply(args[1:], os.Stdout, os.Stderr))
+	}
 	if len(args) > 0 && args[0] == "mcp" {
 		os.Exit(runMCP(args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
-	fmt.Fprintln(os.Stderr, "usage: pika [--version] | init [--profile <lang>] [--name <name>] [--module <path>] [--force] [--json] | check [--all|--changed|--ci] [--json] [--contract <path>] | adopt [--json] | mcp")
+	fmt.Fprintln(os.Stderr, "usage: pika [--version] | init [--profile <lang>] [--name <name>] [--module <path>] [--force] [--json] | check [--all|--changed|--ci] [--json] [--contract <path>] | adopt [--json] | apply [--json] | mcp")
 	os.Exit(2)
 }

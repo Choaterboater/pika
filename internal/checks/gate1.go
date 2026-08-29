@@ -72,7 +72,7 @@ func checkLock(repoRoot string, c *contract.Contract) error {
 		return fmt.Errorf("profiles.lock: %w", err)
 	}
 	var problems []string
-	for _, ref := range contractProfileRefs(c) {
+	for _, ref := range ProfileRefs(c) {
 		name, wantVersion, ok := strings.Cut(ref, "@")
 		if !ok || name == "" || wantVersion == "" {
 			problems = append(problems, fmt.Sprintf("contract profile ref %q is not a pack reference (expected name@version)", ref))
@@ -102,10 +102,11 @@ func checkLock(repoRoot string, c *contract.Contract) error {
 	return nil
 }
 
-// contractProfileRefs collects the contract's profile refs: the
-// project-level selection plus every package's profiles, deduplicated
-// in sorted order.
-func contractProfileRefs(c *contract.Contract) []string {
+// ProfileRefs collects the contract's profile refs: the project-level
+// selection plus every package's profiles, deduplicated in sorted
+// order. It is the shared view of "which packs does this contract
+// select" used by the lock check and by `pika apply`.
+func ProfileRefs(c *contract.Contract) []string {
 	var refs []string
 	refs = append(refs, c.Profiles...)
 	for _, p := range c.Packages {

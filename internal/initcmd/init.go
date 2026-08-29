@@ -123,7 +123,7 @@ func Run(opts InitOptions) error {
 	}
 
 	name := projectName(opts.Name, dir)
-	lang := languageName(selection)
+	lang := LanguageName(selection)
 	module := opts.Module
 	if module == "" {
 		module = name
@@ -179,9 +179,10 @@ func selection(requested []string) ([]string, error) {
 	return sel, nil
 }
 
-// languageName returns the composed language layer's name, or "" for a
-// core-only scaffold.
-func languageName(selection []string) string {
+// LanguageName returns the composed language layer's id ("go"), or ""
+// for a core-only selection. Language ids ("go") and pack references
+// ("go@1") both count; core itself never names the language layer.
+func LanguageName(selection []string) string {
 	for _, ref := range selection {
 		if name, _, ok := strings.Cut(ref, "@"); ok && name != "core" {
 			return name
@@ -339,18 +340,12 @@ func buildFiles(lang, name, module string, contractYAML []byte) ([]genFile, erro
 	for _, d := range docsSpine {
 		files = append(files, genFile{path: path.Join("docs", d, ".gitkeep")})
 	}
-	for _, pair := range [][2]string{
-		{"README.md.tmpl", "README.md"},
-		{"AGENTS.md.tmpl", "AGENTS.md"},
-		{"CONTRIBUTING.md.tmpl", "CONTRIBUTING.md"},
-		{"pull_request_template.md.tmpl", ".github/pull_request_template.md"},
-		{"ci.yml.tmpl", ".github/workflows/ci.yml"},
-	} {
-		rendered, err := renderCore(pair[0], data)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, genFile{path: pair[1], data: rendered})
+	core, err := CoreFiles(lang, name)
+	if err != nil {
+		return nil, err
+	}
+	for _, target := range coreTemplateTargets {
+		files = append(files, genFile{path: target.path, data: core[target.path]})
 	}
 	files = append(files, stackFiles(lang, data)...)
 
@@ -416,6 +411,42 @@ func stackFiles(lang string, data tmplData) []genFile {
 	default:
 		return nil
 	}
+}
+
+// coreTarget is one core-pack scaffold template and the
+// repository-relative path it renders to. One table serves both `pika
+// init` (which renders everything) and `pika apply` (which renders only
+// the files a repository is missing), so both commands produce
+// byte-identical core files from one rendering implementation.
+type coreTarget struct {
+	tmpl string
+	path string
+}
+
+var coreTemplateTargets = []coreTarget{
+	{"README.md.tmpl", "README.md"},
+	{"AGENTS.md.tmpl", "AGENTS.md"},
+	{"CONTRIBUTING.md.tmpl", "CONTRIBUTING.md"},
+	{"pull_request_template.md.tmpl", ".github/pull_request_template.md"},
+	{"ci.yml.tmpl", ".github/workflows/ci.yml"},
+}
+
+// CoreFiles renders the core pack's repository files — README, AGENTS,
+// CONTRIBUTING, the GitHub PR template, and the CI workflow — for a
+// project name and language id, keyed by repository-relative slash
+// path. A template missing from the pack is a hard error, so callers
+// fail before writing anything.
+func CoreFiles(lang, name string) (map[string][]byte, error) {
+	data := tmplData{Name: name, CIPaths: ciPaths(lang), CISteps: ciSteps(lang)}
+	out := make(map[string][]byte, len(coreTemplateTargets))
+	for _, target := range coreTemplateTargets {
+		rendered, err := renderCore(target.tmpl, data)
+		if err != nil {
+			return nil, err
+		}
+		out[target.path] = rendered
+	}
+	return out, nil
 }
 
 // renderCore renders one core-pack docs template fetched through
