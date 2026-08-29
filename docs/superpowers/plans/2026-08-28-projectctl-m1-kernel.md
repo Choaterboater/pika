@@ -6,7 +6,7 @@
 
 **Architecture:** Go single binary. Contract is strict YAML validated against a JSON Schema. Profiles are embedded declarative packs composed core → language → project-kind → capabilities → overrides. `check` runs contract/profile gates and emits JSON. Coordination board and agent adapters come in later milestones; this milestone establishes the schema, loader, and verification entry point they all depend on.
 
-**Tech Stack:** Go 1.26 (installed: go1.26.2 darwin/arm64), stdlib-first, `gopkg.in/yaml.v3` (strict), `github.com/santhosh-tekuri/jsonschema/v6` for JSON Schema validation, `modernc.org/sqlite` reserved for Milestone 3 (do NOT add yet), `testing` + plain asserts.
+**Tech Stack:** Go 1.26 (installed: go1.26.2 darwin/arm64), stdlib-first, `github.com/goccy/go-yaml` (strict AST parsing), `github.com/santhosh-tekuri/jsonschema/v6` for JSON Schema validation, hand-rolled stdio JSON-RPC for MCP (no SDK dependency in M1), `testing` + plain asserts.
 
 ## Global Constraints
 
@@ -386,7 +386,7 @@ func TestDetectGoModule(t *testing.T) {
 
 ---
 
-### Task 4: Verification engine and `check` command
+### Task 7: Verification engine and `check` command
 
 **Files:**
 - Create: `internal/verify/verify.go`
@@ -417,7 +417,7 @@ func TestGateFailureStopsLadder(t *testing.T) {
 
 ---
 
-### Task 6: Capability envelope and authorization record
+### Task 9: Capability envelope and authorization record
 
 **Files:**
 - Create: `internal/envelope/envelope.go`
@@ -447,34 +447,7 @@ func TestEnvelopeDeniesUndeclaredNetwork(t *testing.T) {
 
 ---
 
-### Task 7: MCP server mode
-
-**Files:**
-- Create: `internal/mcp/server.go`
-- Create: `internal/mcp/tools.go`
-- Test: `internal/mcp/server_test.go`
-
-**Interfaces:**
-- Consumes: contract (Task 2), verify (Task 5), envelope (Task 6).
-- Produces: stdio JSON-RPC MCP server exposing `inspect_repo`, `read_contract`, `preview_plan`, `run_checks`, `acquire_scope`, `release_scope`, `publish_evidence`. Wire format: JSON-RPC 2.0 over stdin/stdout, one method per line (spec §8.2).
-
-- [ ] **Step 1: Failing test**
-
-```go
-func TestInspectRepoTool(t *testing.T) {
-	srv := mcp.New(fixtureRepo(t))
-	resp := roundtrip(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"inspect_repo","arguments":{}}}`)
-	if resp.Result["packages"] == nil { t.Fatal("expected packages list") }
-}
-```
-
-- [ ] **Step 2: Verify FAIL.**
-- [ ] **Step 3: Implement** using `github.com/modelcontextprotocol/go-sdk` (latest stable; verify import path at implementation time with `go list -m github.com/modelcontextprotocol/go-sdk@latest`). Expose the seven tool groups from spec §8.2; each maps to an existing kernel function, no new policy logic.
-- [ ] **Step 4: Tests pass, commit** — `feat: MCP stdio server with inspect/read/preview/check tools`.
-
----
-
-### Task 7: Contract checks (naming, exceptions, ownership)
+### Task 8: Contract checks (naming, exceptions, ownership)
 
 **Files:**
 - Create: `internal/checks/naming.go`
@@ -501,7 +474,7 @@ Rules from spec §6.2, encoded as data:
 
 ---
 
-### Task 7: Adoption inventory (read-only)
+### Task 10: Adoption inventory (read-only)
 
 **Files:**
 - Create: `internal/adopt/adopt.go`
@@ -518,7 +491,7 @@ Rules from spec §6.2, encoded as data:
 
 ---
 
-### Task 8: Language profiles (five stacks)
+### Task 11: Language profiles (five stacks)
 
 **Files:**
 - Create: `packs/typescript@1/profile.yaml`, `packs/python@1/...`, `packs/swift@1/...`, `packs/rust@1/...`, `packs/go@1/...`
@@ -535,7 +508,7 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 
 ---
 
-### Task 9: `init` command (lean scaffold)
+### Task 12: `init` command (lean scaffold)
 
 **Files:**
 - Create: `internal/initcmd/init.go`
@@ -554,7 +527,7 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 
 ---
 
-### Task 10: Rollback journal and apply transaction
+### Task 13: Rollback journal and apply transaction
 
 **Files:**
 - Create: `internal/txn/journal.go`
@@ -562,7 +535,7 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 - Test: `internal/txn/apply_test.go`
 
 **Interfaces:**
-- Consumes: preview diff format from Task 5/7.
+- Consumes: preview diff format from Task 10 (adoption) and Task 7's plan representation.
 - Produces: `txn.Begin(root) (*Tx, error)`, `tx.Apply(plan Plan) error`, `tx.Rollback() error`, `tx.Commit() error`. Journal format: JSONL at `.project/state/recovery/<txid>.jsonl`; each entry `{seq, op: create|write|delete|move, path, backupRef?}`; rollback replays inverse in reverse order.
 
 - [ ] **Step 1: Failing test** — apply plan creating 3 files, interrupt after 2 (inject error), run recovery, assert pre-state restored byte-identical.
@@ -572,7 +545,7 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 
 ---
 
-### Task 11: Redaction
+### Task 14: Redaction
 
 **Files:**
 - Create: `internal/redact/redact.go`
@@ -585,7 +558,7 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 
 ---
 
-### Task 12: Evidence receipt
+### Task 15: Evidence receipt
 
 **Files:**
 - Create: `internal/evidence/receipt.go`
@@ -594,12 +567,12 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 **Interfaces:**
 - Produces: `evidence.Build(input ReceiptInput) (*Receipt, error)`; JSON Schema `schemas/evidence-receipt.schema.json`; fields per spec §14.1 (contractVersion, profileLock digest, commit/tree, roles[] with providerSubstitutions, changedFiles+ownership, commands[] {cmd, exit, duration, outputSummary≤8KB}, surfaceScenario, baseline vs regression, review findings, docsImpact, completion/blocker reason).
 
-- [ ] Failing test: build receipt from fixture run, assert schema-valid, assert credential-shaped strings in any input field are redacted by Task 13's `redact.Apply`.
+- [ ] Failing test: build receipt from fixture run, assert schema-valid, assert credential-shaped strings in any input field are redacted by Task 14's `redact.Apply`.
 - [ ] Implement + schema validate + commit.
 
 ---
 
-### Task 13: MCP server + JSON CLI
+### Task 16: MCP server + JSON CLI
 
 **Files:**
 - Create: `internal/mcp/server.go`
@@ -615,7 +588,7 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 
 ---
 
-### Task 14: Docs spine, AGENTS.md, CI workflow templates
+### Task 17: Docs spine, AGENTS.md, CI workflow templates
 
 **Files:**
 - Create: `packs/core@1/templates/README.md.tmpl`
@@ -634,7 +607,7 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 
 ---
 
-### Task 15: End-to-end init → check in all 5 languages
+### Task 18: End-to-end init → check in all 5 languages
 
 **Files:**
 - Create: `internal/e2e/e2e_init_test.go`
@@ -653,6 +626,6 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 
 ## Self-Review Notes
 
-- Spec coverage check: architecture (T1-2), contract (T2), profiles (T4, T8), strict YAML (T5), verification (T5), envelope (T6), MCP (T7), naming/exceptions (T8), adoption (T9), init golden trees (T9), rollback (T10), redaction (T11), evidence (T12), e2e (T15). Deferred-by-spec items (board/SQLite, runtime adapters, work/resume/status/upgrade/explain, projection digests, ADR generation, GitHub research tooling) are **M2+**, matching spec's "milestone 1 = deterministic kernel" boundary.
+- Spec coverage check: architecture (T1-2), contract (T2), strict YAML (T5), contract.Load (T6), verification (T7), naming/exceptions checks (T8), envelope (T9), adoption (T10), profiles (T4, T11), init golden trees (T12), rollback (T13), redaction (T14), evidence (T15), MCP (T16), docs templates (T17), e2e (T18). Deferred-by-spec items (board/SQLite, runtime adapters, work/resume/status/upgrade/explain, projection digests, ADR generation, GitHub research tooling) are **M2+**, matching spec's "milestone 1 = deterministic kernel" boundary.
 - Placeholder scan: none; every step has concrete code/commands.
 - Type consistency: `contract.Load`, `profiles.Resolve`, `verify.Run`, `envelope.Load`, `redact.Apply`, `txn.Begin` used consistently across tasks; MCP task consumes exactly these.
