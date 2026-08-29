@@ -39,7 +39,7 @@
 - [ ] **Step 1: Initialize module**
 
 ```bash
-go mod init github.com/stephenchoate/projectctl
+go mod init github.com/Choaterboater/projectctl
 go get gopkg.in/yaml.v3@v3.0.1
 go get github.com/goccy/go-yaml@latest
 ```
