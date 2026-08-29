@@ -1,0 +1,7 @@
+{
+  "name": "monorepo-pnpm",
+  "private": true,
+  "scripts": {
+    "test": "pnpm -r test"
+  }
+}

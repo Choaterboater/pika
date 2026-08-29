@@ -1,0 +1,1 @@
+{ "name": "b", "scripts": { "lint": "eslint ." } }
