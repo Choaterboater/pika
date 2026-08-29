@@ -1,0 +1,595 @@
+package mcp
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// session drives one stdio MCP server over real OS pipes, mirroring how an
+// MCP client talks to `projectctl mcp`.
+type session struct {
+	t    *testing.T
+	inW  *os.File
+	outR *os.File
+	r    *bufio.Reader
+	done chan error
+}
+
+func startServer(t *testing.T, root string) *session {
+	t.Helper()
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	s := &session{t: t, inW: inW, outR: outR, r: bufio.NewReader(outR), done: make(chan error, 1)}
+	go func() { s.done <- Serve(root, inR, outW, io.Discard) }()
+	t.Cleanup(func() {
+		inW.Close()
+		select {
+		case err := <-s.done:
+			if err != nil {
+				t.Errorf("server exit: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("server did not exit after stdin EOF")
+		}
+		outR.Close()
+	})
+	return s
+}
+
+func (s *session) send(line string) map[string]any {
+	s.t.Helper()
+	if _, err := s.inW.WriteString(line + "\n"); err != nil {
+		s.t.Fatalf("write request: %v", err)
+	}
+	return s.recv()
+}
+
+func (s *session) recv() map[string]any {
+	s.t.Helper()
+	line, err := s.r.ReadString('\n')
+	if err != nil {
+		s.t.Fatalf("read response: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		s.t.Fatalf("response is not a JSON object: %q: %v", line, err)
+	}
+	if resp["jsonrpc"] != "2.0" {
+		s.t.Fatalf("response jsonrpc = %v, want 2.0", resp["jsonrpc"])
+	}
+	return resp
+}
+
+func (s *session) request(id int, method string, params map[string]any) map[string]any {
+	req := map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}
+	return s.send(mustJSON(req))
+}
+
+// callTool wraps a tools/call request with name/arguments framing.
+func (s *session) callTool(id int, name string, args map[string]any) map[string]any {
+	return s.request(id, "tools/call", map[string]any{"name": name, "arguments": args})
+}
+
+func (s *session) initialize() map[string]any {
+	return s.request(0, "initialize", map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "test", "version": "0"},
+	})
+}
+
+// wantResult asserts a successful envelope response and returns result.
+func wantResult(t *testing.T, resp map[string]any) map[string]any {
+	t.Helper()
+	if errObj, ok := resp["error"]; ok {
+		t.Fatalf("expected success, got error: %v", errObj)
+	}
+	res, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result object, got %v", resp["result"])
+	}
+	if res["ok"] != true {
+		t.Fatalf("result.ok = %v, want true", res["ok"])
+	}
+	return res
+}
+
+// wantToolError asserts a failed tools/call: JSON-RPC code -32000 with the
+// stable string code in data.error.code, and returns the error object.
+func wantToolError(t *testing.T, resp map[string]any, wantCode string) map[string]any {
+	t.Helper()
+	errObj, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error, got %v", resp)
+	}
+	code, _ := errObj["code"].(float64)
+	if code != -32000 {
+		t.Fatalf("error.code = %v, want -32000", errObj["code"])
+	}
+	data, ok := errObj["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("error.data = %v, want envelope object", errObj["data"])
+	}
+	if data["ok"] != false {
+		t.Fatalf("data.ok = %v, want false", data["ok"])
+	}
+	te, ok := data["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("data.error = %v, want {code,message}", data["error"])
+	}
+	if te["code"] != wantCode {
+		t.Fatalf("error code = %v, want %q", te["code"], wantCode)
+	}
+	if msg, _ := te["message"].(string); msg == "" {
+		t.Fatal("error message must be non-empty")
+	}
+	return errObj
+}
+
+// wantRPCError asserts a protocol-level JSON-RPC error with the given code.
+func wantRPCError(t *testing.T, resp map[string]any, wantCode float64) map[string]any {
+	t.Helper()
+	errObj, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error, got %v", resp)
+	}
+	if code, _ := errObj["code"].(float64); code != wantCode {
+		t.Fatalf("error.code = %v, want %v", errObj["code"], wantCode)
+	}
+	if _, ok := errObj["message"].(string); !ok {
+		t.Fatalf("error.message missing: %v", errObj)
+	}
+	return errObj
+}
+
+// --- fixtures ---
+
+func writeFile(t *testing.T, dir, rel, content string) {
+	t.Helper()
+	path := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fixtureRepo builds a minimal Go repository: enough for discovery, plus an
+// optional contract and envelope.
+func fixtureRepo(t *testing.T, contract, envelopeYAML string) string {
+	t.Helper()
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module example.com/fixture\n\ngo 1.21\n")
+	if contract != "" {
+		writeFile(t, root, ".project/contract.yaml", contract)
+	}
+	if envelopeYAML != "" {
+		writeFile(t, root, ".project/state/envelope.yaml", envelopeYAML)
+	}
+	return root
+}
+
+const minContract = `schema: 1
+project:
+  name: fixture
+  topology: single
+profiles:
+  - core@1
+commands:
+  test: go version
+evidence:
+  publish: sanitized
+github:
+  merge: squash
+extensions: {}
+`
+
+// envelopeWith builds a valid envelope document granting the fs_write paths.
+func envelopeYAML(paths ...string) string {
+	return "schema: 1\nallow:\n  fs_write: [" + strings.Join(paths, ", ") + "]\n"
+}
+
+func evidenceArgs() map[string]any {
+	return map[string]any{
+		"receipt": map[string]any{
+			"work_id":          "20260828-mcp-test-a1b2",
+			"contract_version": "1.0.0",
+			"profile_lock": map[string]any{
+				"digest": "sha256:abcdef0123456789",
+				"packs": map[string]any{
+					"core": map[string]any{"version": "1", "source": "embedded", "digest": "sha256:0011"},
+				},
+			},
+			"commit": "34b828f",
+			"tree":   "tree/9aa2",
+			"roles": []any{
+				map[string]any{"role": "implementer", "runtime": "omp", "provider": "openrouter", "model": "glm"},
+			},
+			"changed_files": []any{
+				map[string]any{"path": "internal/mcp/server.go", "ownership": "kernel"},
+			},
+			"commands": []any{
+				map[string]any{"cmd": "go test ./...", "exit": 0, "duration_ms": 1200,
+					"output": "ok\tsk-ant-api03-abcdefghij0123456789ABCDE\t1.2s"},
+			},
+			"surface_scenario":  map[string]any{"ran": true, "description": "ran projectctl check --all locally"},
+			"baseline_failures": []any{},
+			"regressions":       []any{},
+			"review": []any{
+				map[string]any{"agent": "reviewer", "finding": "error wrapped twice", "disposition": "fixed"},
+			},
+			"docs_impact": []any{},
+			"completion":  map[string]any{"complete": true, "reason": "all gates green"},
+		},
+	}
+}
+
+func TestInitializeToolsListAndRoundtrip(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project"))
+	s := startServer(t, root)
+
+	// initialize
+	resp := s.initialize()
+	res, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize: expected result, got %v", resp)
+	}
+	if res["protocolVersion"] != "2024-11-05" {
+		t.Fatalf("protocolVersion = %v, want 2024-11-05", res["protocolVersion"])
+	}
+	caps, _ := res["capabilities"].(map[string]any)
+	if _, ok := caps["tools"]; !ok {
+		t.Fatalf("capabilities = %v, want tools capability", caps)
+	}
+	info, ok := res["serverInfo"].(map[string]any)
+	if !ok || info["name"] != "projectctl" {
+		t.Fatalf("serverInfo = %v, want name projectctl", res["serverInfo"])
+	}
+	if id, ok := resp["id"].(float64); !ok || id != 0 {
+		t.Fatalf("response id = %v, want 0", resp["id"])
+	}
+
+	// ping
+	if resp := s.request(1, "ping", nil); resp["result"] == nil {
+		t.Fatalf("ping: expected result, got %v", resp)
+	}
+
+	// tools/list: assert the exact tool set.
+	resp = s.request(2, "tools/list", nil)
+	res = resp["result"].(map[string]any)
+	tools, ok := res["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools = %v, want a list", res["tools"])
+	}
+	got := map[string]bool{}
+	for _, entry := range tools {
+		tool, ok := entry.(map[string]any)
+		if !ok {
+			t.Fatalf("tool entry %v is not an object", tool)
+		}
+		name, _ := tool["name"].(string)
+		if name == "" {
+			t.Fatalf("tool entry missing name: %v", tool)
+		}
+		got[name] = true
+		if desc, _ := tool["description"].(string); desc == "" {
+			t.Errorf("tool %q missing description", name)
+		}
+		if _, ok := tool["inputSchema"]; !ok {
+			t.Errorf("tool %q missing inputSchema", name)
+		}
+	}
+	want := []string{
+		"inspect_repo", "read_contract", "preview_plan", "run_checks",
+		"acquire_scope", "release_scope", "publish_evidence",
+		"propose_decision", "record_sources", "apply_plan",
+	}
+	if len(tools) != len(want) {
+		t.Fatalf("got %d tools, want %d", len(tools), len(want))
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("tools/list missing %q", w)
+		}
+	}
+
+	// tools/call inspect_repo — fail-open read tool.
+	res = wantResult(t, s.callTool(3, "inspect_repo", nil))
+	inv, ok := res["data"].(map[string]any)["inventory"].(map[string]any)
+	if !ok {
+		t.Fatalf("inspect_repo data.inventory missing: %v", res["data"])
+	}
+	pkgs, ok := inv["Packages"].([]any)
+	if !ok || len(pkgs) != 1 {
+		t.Fatalf("inventory packages = %v, want 1 go package", res["data"])
+	}
+
+	// tools/call publish_evidence with a fixture receipt.
+	res = wantResult(t, s.callTool(4, "publish_evidence", evidenceArgs()))
+	data := res["data"].(map[string]any)
+	if data["path"] != ".project/evidence/20260828-mcp-test-a1b2.json" {
+		t.Fatalf("publish path = %v", res["data"])
+	}
+}
+
+func TestPublishEvidenceRedactsAndWrites(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project"))
+	s := startServer(t, root)
+	s.initialize()
+
+	res := wantResult(t, s.callTool(1, "publish_evidence", evidenceArgs()))
+	path := filepath.Join(root, ".project", "evidence", "20260828-mcp-test-a1b2.json")
+	bs, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("receipt not written: %v", err)
+	}
+	body := string(bs)
+	raw := "sk-ant-api03-abcdefghij0123456789ABCDE"
+	if strings.Contains(body, raw) {
+		t.Fatal("receipt on disk contains the raw credential")
+	}
+	if !strings.Contains(body, "<redacted:") {
+		t.Fatal("receipt output was not redacted")
+	}
+	if !strings.Contains(fmt.Sprintf("%v", res["data"]), "20260828-mcp-test-a1b2") {
+		t.Fatalf("publish_evidence data missing work id: %v", res["data"])
+	}
+}
+
+func TestFailOpenReadsFailClosedMutations(t *testing.T) {
+	// No envelope file at all, but a valid contract for the read tools.
+	root := fixtureRepo(t, minContract, "")
+	s := startServer(t, root)
+	s.initialize()
+
+	// Fail-open reads.
+	if resp := s.callTool(1, "inspect_repo", nil); resp["result"] == nil {
+		t.Fatalf("inspect_repo must work without an envelope, got %v", resp)
+	}
+	if resp := s.callTool(2, "read_contract", nil); resp["result"] == nil {
+		t.Fatalf("read_contract must work without an envelope, got %v", resp)
+	}
+	if resp := s.callTool(3, "run_checks", nil); resp["result"] == nil {
+		t.Fatalf("run_checks must work without an envelope, got %v", resp)
+	}
+
+	// Fail-closed mutations.
+	for i, name := range []string{"preview_plan", "acquire_scope", "release_scope", "publish_evidence", "propose_decision", "record_sources"} {
+		resp := s.callTool(10+i, name, toolArgs(name))
+		wantToolError(t, resp, "envelope_denied")
+	}
+}
+
+func TestEnvelopeDeniedCodesAndAllowance(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project", "src"))
+	s := startServer(t, root)
+	s.initialize()
+
+	// Mutations allowed by the envelope.
+	if res := wantResult(t, s.callTool(1, "acquire_scope", map[string]any{"path": "src/pkg"})); res["data"] == nil {
+		t.Fatalf("acquire_scope data missing: %v", res)
+	}
+	data := wantResult(t, s.callTool(2, "propose_decision", map[string]any{"title": "use tabs"}))["data"].(map[string]any)
+	if data["recorded"] != true {
+		t.Fatalf("propose_decision data = %v, want recorded:true", data)
+	}
+	data = wantResult(t, s.callTool(3, "record_sources", map[string]any{"sources": []any{"https://example.com/spec"}}))["data"].(map[string]any)
+	if data["recorded"] != true {
+		t.Fatalf("record_sources data = %v, want recorded:true", data)
+	}
+	if res := wantResult(t, s.callTool(4, "release_scope", map[string]any{"path": "src/pkg"})); res["data"] == nil {
+		t.Fatalf("release_scope data missing: %v", res)
+	}
+
+	// Board records were appended.
+	bs, err := os.ReadFile(filepath.Join(root, ".project", "state", "board.jsonl"))
+	if err != nil {
+		t.Fatalf("board.jsonl: %v", err)
+	}
+	if lines := strings.Count(strings.TrimSpace(string(bs)), "\n") + 1; lines != 4 {
+		t.Fatalf("board.jsonl has %d lines, want 4 (acquire, decision, sources, release)", lines)
+	}
+	if !strings.Contains(string(bs), `"type":"decision"`) {
+		t.Fatalf("board.jsonl missing decision record: %s", bs)
+	}
+
+	// Undeclared path still denied.
+	resp := s.callTool(5, "acquire_scope", map[string]any{"path": "undeclared/x"})
+	wantToolError(t, resp, "envelope_denied")
+
+	// preview_plan on an adopted repository: already_adopted.
+	writeFile(t, root, ".project/contract.yaml", minContract)
+	resp = s.callTool(6, "preview_plan", nil)
+	wantToolError(t, resp, "already_adopted")
+}
+
+func TestPreviewPlanProducesDrafts(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project"))
+	s := startServer(t, root)
+	s.initialize()
+
+	res := wantResult(t, s.callTool(1, "preview_plan", nil))
+	data := res["data"].(map[string]any)
+	for _, key := range []string{"detectedProfiles", "conventions", "conflicts", "proposedChanges", "drafts"} {
+		if _, ok := data[key]; !ok {
+			t.Fatalf("preview_plan data missing %q: %v", key, data)
+		}
+	}
+	for _, draft := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(draft))); err != nil {
+			t.Errorf("preview_plan did not write %s: %v", draft, err)
+		}
+	}
+	// Committed contract must not have been created.
+	if _, err := os.Stat(filepath.Join(root, ".project", "contract.yaml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("preview_plan wrote a committed contract: %v", err)
+	}
+}
+
+func TestRunChecksReport(t *testing.T) {
+	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\ncommands:\n  test: go version\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\n"
+	root := fixtureRepo(t, contract, "")
+	s := startServer(t, root)
+	s.initialize()
+
+	res := wantResult(t, s.callTool(1, "run_checks", map[string]any{"scope": "all"}))
+	rep, ok := res["data"].(map[string]any)["report"].(map[string]any)
+	if !ok {
+		t.Fatalf("run_checks data = %v, want a report", res["data"])
+	}
+	if rep["pass"] != true {
+		t.Fatalf("report = %v, want pass", rep)
+	}
+
+	// Invalid scope name is invalid_params at the tool level.
+	resp := s.callTool(2, "run_checks", map[string]any{"scope": "bogus"})
+	errObj, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tool error for bad scope, got %v", resp)
+	}
+	data := errObj["data"].(map[string]any)
+	if data["error"].(map[string]any)["code"] != "invalid_params" {
+		t.Fatalf("bad scope code = %v, want invalid_params", data)
+	}
+}
+
+func TestReadContractIncludesResolvedProfiles(t *testing.T) {
+	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\nextensions: {}\n"
+	root := fixtureRepo(t, contract, "")
+	s := startServer(t, root)
+	s.initialize()
+
+	res := wantResult(t, s.callTool(1, "read_contract", nil))
+	data := res["data"].(map[string]any)
+	c, ok := data["contract"].(map[string]any)
+	if !ok || c["project"].(map[string]any)["name"] != "fixture" {
+		t.Fatalf("read_contract contract = %v", data)
+	}
+	pr, ok := data["profiles"].(map[string]any)
+	if !ok {
+		t.Fatalf("read_contract missing resolved profiles: %v", data)
+	}
+	layers, ok := pr["layers"].([]any)
+	if !ok || len(layers) != 1 {
+		t.Fatalf("resolved layers = %v, want 1 core layer", pr["layers"])
+	}
+}
+
+func TestStableProtocolErrorCodes(t *testing.T) {
+	root := fixtureRepo(t, "", "")
+	s := startServer(t, root)
+	s.initialize()
+
+	// Unknown method → -32601.
+	resp := s.request(1, "bogus/method", nil)
+	wantRPCError(t, resp, -32601)
+
+	// Bad params (missing tool name) → -32602 + invalid_params.
+	resp = s.request(2, "tools/call", map[string]any{})
+	errObj := wantRPCError(t, resp, -32602)
+	data := errObj["data"].(map[string]any)
+	if data["error"].(map[string]any)["code"] != "invalid_params" {
+		t.Fatalf("data.error.code = %v, want invalid_params", data)
+	}
+
+	// Unknown tool → -32602 + invalid_params.
+	resp = s.callTool(3, "nonexistent_tool", nil)
+	errObj = wantRPCError(t, resp, -32602)
+	data = errObj["data"].(map[string]any)
+	if data["error"].(map[string]any)["code"] != "invalid_params" {
+		t.Fatalf("unknown tool code = %v, want invalid_params", data)
+	}
+
+	// Malformed line between valid lines must not kill the session.
+	if _, err := s.inW.WriteString("{not json\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp = s.recv()
+	wantRPCError(t, resp, -32700)
+	resp = s.request(4, "ping", nil)
+	if resp["result"] == nil {
+		t.Fatalf("session must survive a malformed line, got %v", resp)
+	}
+
+	// tools/call apply_plan is listed but unavailable in M1.
+	resp = s.callTool(5, "apply_plan", nil)
+	wantToolError(t, resp, "internal")
+}
+
+func TestApplyPlanNotExposedAsExecutable(t *testing.T) {
+	root := fixtureRepo(t, "", "")
+	s := startServer(t, root)
+	s.initialize()
+
+	resp := s.request(1, "tools/list", nil)
+	res := resp["result"].(map[string]any)
+	for _, tl := range res["tools"].([]any) {
+		tool := tl.(map[string]any)
+		if tool["name"] == "apply_plan" {
+			desc, _ := tool["description"].(string)
+			if !strings.Contains(desc, "unavailable") {
+				t.Fatalf("apply_plan description must mark it unavailable: %q", desc)
+			}
+		}
+	}
+	resp = s.callTool(2, "apply_plan", nil)
+	errObj := wantToolError(t, resp, "internal")
+	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "apply_plan") {
+		t.Fatalf("apply_plan error should name the tool: %v", errObj["message"])
+	}
+}
+
+func TestAcquireScopeBadPath(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project"))
+	s := startServer(t, root)
+	s.initialize()
+
+	resp := s.callTool(1, "acquire_scope", map[string]any{"path": "../outside"})
+	wantToolError(t, resp, "invalid_params")
+}
+
+func TestCleanShutdownOnEOF(t *testing.T) {
+	root := fixtureRepo(t, "", "")
+	s := startServer(t, root)
+	s.initialize()
+	// Closing stdin (session cleanup) must make Serve return nil.
+}
+
+// toolArgs returns minimal valid arguments per tool for the fail-closed test.
+func toolArgs(name string) map[string]any {
+	switch name {
+	case "acquire_scope", "release_scope":
+		return map[string]any{"path": "src"}
+	case "propose_decision":
+		return map[string]any{"title": "t"}
+	case "record_sources":
+		return map[string]any{"sources": []string{"a"}}
+	case "publish_evidence":
+		return evidenceArgs()
+	default:
+		return map[string]any{}
+	}
+}
+
+func mustJSON(v any) string {
+	bs, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(bs)
+}
