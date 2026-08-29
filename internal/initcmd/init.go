@@ -445,7 +445,9 @@ func ciSteps(lang string) string {
 	case "python":
 		steps += "      - uses: actions/setup-python@v5\n" +
 			"        with:\n" +
-			"          python-version: \"3.13\"\n"
+			"          python-version: \"3.13\"\n" +
+			"      - name: Install test tooling\n" +
+			"        run: python -m pip install pytest\n"
 	case "rust":
 		steps += "      - name: Pin stable Rust\n" +
 			"        run: rustup default stable\n"

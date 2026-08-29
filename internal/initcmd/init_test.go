@@ -282,3 +282,45 @@ func TestUnknownProfileRejected(t *testing.T) {
 		t.Fatal("unknown profile accepted")
 	}
 }
+
+// TestCISetupCoversContractCommands pins the rule that every tool a
+// generated contract command needs is installed by a CI setup step
+// before the check invocation. Each row lists the substrings the
+// language's workflow must carry; a new contract command (or a runner
+// that lacks the tool) must add its row — the python gap (pytest not
+// preinstalled on GitHub runners) regressed silently once already.
+func TestCISetupCoversContractCommands(t *testing.T) {
+	required := map[string][]string{
+		// contract test command `go test ./...`: setup-go installs Go.
+		"go": []string{"actions/setup-go@v5"},
+		// typescript commands are discovery sentinels; node 24 setup
+		// keeps the suggested commands runnable.
+		"typescript": []string{"actions/setup-node@v4", "node-version: \"24\""},
+		// contract test command `python -m pytest`: runners ship Python
+		// without pytest.
+		"python": []string{"actions/setup-python@v5", "python -m pip install pytest"},
+		// contract commands `cargo build` / `cargo test`: cargo ships on
+		// runners; the workflow still pins stable.
+		"rust": []string{"rustup default stable"},
+		// contract commands `swift build` / `swift test`: swift ships on
+		// runners.
+		"swift": []string{},
+	}
+	for _, lang := range languages {
+		t.Run(lang, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), lang+"-single")
+			if err := Run(InitOptions{Dir: dir, Profiles: []string{lang}}); err != nil {
+				t.Fatalf("init %s: %v", lang, err)
+			}
+			ci, err := os.ReadFile(filepath.Join(dir, ".github", "workflows", "ci.yml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range required[lang] {
+				if !strings.Contains(string(ci), want) {
+					t.Errorf("generated ci.yml for %s lacks required setup %q; every tool a contract command needs must be installed before `projectctl check --ci`", lang, want)
+				}
+			}
+		})
+	}
+}
