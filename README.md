@@ -4,6 +4,7 @@ Small, cute, relentless: a provider-neutral project operating system kernel.
 
 Pika gives AI coding agents (and the humans steering them) one coherent workflow for creating new repositories, adopting existing ones, and running features, fixes, review, verification, delivery, and maintenance — backed by a deterministic Go kernel that owns every mutation, permission check, and verification receipt.
 
+- **Usage guide:** [docs/guides/usage.md](docs/guides/usage.md) — step-by-step for every command
 - **Spec:** [docs/superpowers/specs/2026-08-28-pika-design.md](docs/superpowers/specs/2026-08-28-pika-design.md)
 - **M1 plan:** [docs/superpowers/plans/2026-08-28-pika-m1-kernel.md](docs/superpowers/plans/2026-08-28-pika-m1-kernel.md)
 
@@ -28,14 +29,13 @@ The repository contract (`.project/contract.yaml`) is the project-level source o
 | Verification | 5-gate ladder (`check`, `check --ci`), process-group kill, injectable timeout, local/CI parity |
 | Checks | Naming rules, exception records (`.project/exceptions.yaml`), generated-file ownership |
 | Envelope | Capability authorization, deny-by-default (`fs_write`/`exec`/`network`/`credential`/`github`/budget) |
-| Adoption | Read-only inventory + draft contract + deterministic preview (`.draft` files only) |
+| Adoption | Read-only inventory + draft contract + deterministic preview, then transactional `apply` (drafts promoted, missing core files created, user files preserved); human-readable review at `review/adoption-review.md` |
 | Init | Lean scaffolds for 5 stacks with golden-dir tests |
 | Transactions | Crash-safe write-ahead journal, idempotent recovery, atomic writes with fsynced parent chains |
 | Redaction | Credential/PII scrubbing (RE2, longest-match spans, bounded findings) |
 | Evidence | Schema-validated receipts, redact-everything invariant, atomic write |
 | MCP | JSON-RPC stdio server: `inspect_repo`, `read_contract`, `preview_plan`, `run_checks`, `acquire_scope`, `release_scope`, `publish_evidence`, and more |
 
-**Deferred to M2:** coordination board (SQLite), runtime adapters (ACP/CLI), `work`/`resume`/`status`/`upgrade`/`explain` commands, harness projections, ADR generation, GitHub pattern research, security pack.
 
 ## Install
 
