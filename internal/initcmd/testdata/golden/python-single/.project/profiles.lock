@@ -1,0 +1,15 @@
+{
+  "digest": "2e1a31e223b8cbfb21a71b75cba07931de6a323db2415869d66c6325fdafbbee",
+  "packs": {
+    "core": {
+      "version": "1",
+      "source": "embedded",
+      "digest": "1068a53b79c0cf0c887a94da7564b994be530d454297bab332f1dd1d0300d6cf"
+    },
+    "python": {
+      "version": "1",
+      "source": "embedded",
+      "digest": "6d8803df714ae39cc7c98f9696d94e4b59a49f46931b70798a8407fe30217081"
+    }
+  }
+}

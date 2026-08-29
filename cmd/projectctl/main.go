@@ -16,9 +16,12 @@ func main() {
 			return
 		}
 	}
+	if len(args) > 0 && args[0] == "init" {
+		os.Exit(runInit(args[1:], os.Stdout, os.Stderr))
+	}
 	if len(args) > 0 && args[0] == "check" {
 		os.Exit(runCheck(args[1:], os.Stdout, os.Stderr))
 	}
-	fmt.Fprintln(os.Stderr, "usage: projectctl [--version] | check [--all|--changed|--ci] [--json] [--contract <path>]")
+	fmt.Fprintln(os.Stderr, "usage: projectctl [--version] | init [--profile <lang>] [--name <name>] [--module <path>] [--force] [--json] | check [--all|--changed|--ci] [--json] [--contract <path>]")
 	os.Exit(2)
 }

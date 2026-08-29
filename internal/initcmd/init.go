@@ -1,0 +1,492 @@
+// Package initcmd implements `projectctl init`: the lean scaffold for a
+// new projectctl-managed repository (spec §6).
+//
+// init creates the .project/ state (contract, profiles lock, exceptions
+// record), the documentation spine, the core repository files (README,
+// AGENTS, CONTRIBUTING, GitHub CI and PR template), and — only for the
+// selected language — the stack-owned layout (spec §6.1). It never
+// deletes user files: --force rewrites the managed files in place, and
+// that is all. The scaffold templates are embedded at build time as
+// separately named files under templates/, so a later task can relocate
+// them into the core pack without restructuring.
+package initcmd
+
+import (
+	"embed"
+	_ "embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"slices"
+	"strings"
+	"text/template"
+
+	"github.com/Choaterboater/projectctl/internal/contract"
+	"github.com/Choaterboater/projectctl/internal/profiles"
+
+	"github.com/goccy/go-yaml"
+)
+
+//go:embed templates
+var templatesFS embed.FS
+
+// InitOptions configures Run.
+type InitOptions struct {
+	// Dir is the scaffold target directory (created if missing; default
+	// "."). The project name defaults to the directory base name,
+	// kebab-cased.
+	Dir string
+	// Name overrides the contract project name (--name).
+	Name string
+	// Module overrides the generated Go module path (--module); it
+	// defaults to the project name.
+	Module string
+	// Profiles lists the language profiles to scaffold, as language ids
+	// ("go") or pack references ("go@1"). Core is always included first;
+	// composition rules (at most one language pack) are enforced by
+	// profiles.Resolve.
+	Profiles []string
+	// Force rewrites the contract, lock, and managed files even when a
+	// contract already exists. User files outside .project are never
+	// deleted.
+	Force bool
+	// JSON emits the created-file manifest (sorted paths) on Out.
+	JSON bool
+	// Out receives the JSON manifest (default os.Stdout).
+	Out io.Writer
+}
+
+// genFile is one file init writes, with its slash-separated path relative
+// to the scaffold root.
+type genFile struct {
+	path string
+	data []byte
+}
+
+// tmplData is the data every scaffold template renders with.
+type tmplData struct {
+	Name      string
+	Module    string
+	PyName    string
+	SwiftName string
+	CIPaths   string
+	CISteps   string
+}
+
+// docsSpine lists the core pack's documentation spine (spec §6.2). Spec §6
+// prohibits empty placeholder directories, so each directory carries a
+// .gitkeep to stay present in git.
+var docsSpine = []string{"architecture", "decisions", "guides", "reference", "work"}
+
+// contractRel is the contract file's location relative to the scaffold
+// root; its existence is init's idempotency marker.
+const contractRel = ".project/contract.yaml"
+
+// lockRel is the profiles lock's location relative to the scaffold root.
+const lockRel = ".project/profiles.lock"
+
+// Run scaffolds a projectctl-managed repository into opts.Dir. It fails
+// without writing anything when a contract already exists and --force is
+// not set.
+func Run(opts InitOptions) error {
+	dir := opts.Dir
+	if dir == "" {
+		dir = "."
+	}
+
+	selection, err := selection(opts.Profiles)
+	if err != nil {
+		return err
+	}
+	resolved, err := profiles.Resolve(selection)
+	if err != nil {
+		return fmt.Errorf("projectctl init: %w", err)
+	}
+
+	contractPath := filepath.Join(dir, filepath.FromSlash(contractRel))
+	if !opts.Force {
+		if _, err := os.Stat(contractPath); err == nil {
+			return fmt.Errorf("projectctl init: %s already exists; pass --force to regenerate", contractRel)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("projectctl init: %s: %w", contractRel, err)
+		}
+	}
+
+	name := projectName(opts.Name, dir)
+	lang := languageName(selection)
+	module := opts.Module
+	if module == "" {
+		module = name
+	}
+
+	contractYAML, err := buildContract(name, selection, resolved)
+	if err != nil {
+		return err
+	}
+	files, err := buildFiles(lang, name, module, contractYAML)
+	if err != nil {
+		return err
+	}
+
+	for _, f := range files {
+		if err := writeFile(dir, f.path, f.data); err != nil {
+			return err
+		}
+	}
+	// The lock is written through profiles.WriteLock so lock and contract
+	// pin the same packs and digests.
+	if err := profiles.WriteLock(filepath.Join(dir, filepath.FromSlash(lockRel)), selection); err != nil {
+		return fmt.Errorf("projectctl init: %w", err)
+	}
+	files = append(files, genFile{path: lockRel})
+
+	if opts.JSON {
+		if err := writeManifest(files, opts.Out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// selection maps the requested profiles to pack references, core first.
+// Language ids ("go") map through profiles.LanguagePack; pack references
+// ("go@1") pass through unchanged.
+func selection(requested []string) ([]string, error) {
+	sel := []string{profiles.CoreRef}
+	for _, p := range requested {
+		ref := p
+		if !strings.Contains(p, "@") {
+			mapped, ok := profiles.LanguagePack(p)
+			if !ok {
+				return nil, fmt.Errorf("projectctl init: unknown profile %q (supported languages: go, typescript, python, swift, rust)", p)
+			}
+			ref = mapped
+		}
+		if !slices.Contains(sel, ref) {
+			sel = append(sel, ref)
+		}
+	}
+	return sel, nil
+}
+
+// languageName returns the composed language layer's name, or "" for a
+// core-only scaffold.
+func languageName(selection []string) string {
+	for _, ref := range selection {
+		if name, _, ok := strings.Cut(ref, "@"); ok && name != "core" {
+			return name
+		}
+	}
+	return ""
+}
+
+// projectName derives the contract project name: opts.Name when set, else
+// the scaffold directory's base name. Both are kebab-cased to satisfy the
+// contract schema pattern ^[a-z0-9][a-z0-9-]*$.
+func projectName(name, dir string) string {
+	if name == "" {
+		name = filepath.Base(absDir(dir))
+	}
+	return kebab(name)
+}
+
+// absDir resolves dir against the working directory so its base name is
+// meaningful for "." and relative paths.
+func absDir(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return dir
+	}
+	return abs
+}
+
+// kebab lowercases s and replaces every run of non-[a-z0-9] with a single
+// dash, trimming leading and trailing dashes. An empty result falls back
+// to "project" so the name always matches the schema pattern.
+func kebab(s string) string {
+	var b strings.Builder
+	dash := true // suppress leading and trailing dashes
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			dash = false
+		default:
+			if !dash {
+				b.WriteByte('-')
+				dash = true
+			}
+		}
+	}
+	if out := strings.Trim(b.String(), "-"); out != "" {
+		return out
+	}
+	return "project"
+}
+
+// camel converts a kebab-case name to a PascalCase Swift identifier.
+func camel(s string) string {
+	var b strings.Builder
+	upper := true
+	for _, r := range s {
+		if r == '-' || r == '_' {
+			upper = true
+			continue
+		}
+		if upper {
+			b.WriteRune(byteRuneToUpper(r))
+			upper = false
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func byteRuneToUpper(r rune) rune {
+	if r >= 'a' && r <= 'z' {
+		return r - 'a' + 'A'
+	}
+	return r
+}
+
+// buildContract composes the initial contract: schema 1, single topology,
+// one root package carrying the selection, the language pack's real
+// commands where its check slots are not discovery sentinels, and the M1
+// defaults for GitHub merge and evidence policy.
+func buildContract(name string, selection []string, resolved *profiles.Resolved) ([]byte, error) {
+	c := &contract.Contract{
+		Schema:   1,
+		Project:  contract.Project{Name: name, Topology: "single"},
+		Profiles: selection,
+		Packages: map[string]contract.Package{
+			name: {Root: ".", Profiles: slices.Clone(selection)},
+		},
+		Commands:   contractCommands(resolved.Checks),
+		GitHub:     contract.GitHub{Merge: "squash"},
+		Evidence:   contract.Evidence{Publish: "sanitized"},
+		Extensions: map[string]any{},
+	}
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return nil, fmt.Errorf("projectctl init: encode contract: %w", err)
+	}
+	return data, nil
+}
+
+// contractCommands collects the resolved check slots that carry real
+// commands — never discovery sentinels — as whitespace-joined argv, the
+// form the contract schema and verify's splitCommand consume.
+func contractCommands(cs profiles.CheckSet) map[string]string {
+	slots := map[string]profiles.Check{
+		"format":    cs.Format,
+		"lint":      cs.Lint,
+		"typecheck": cs.Typecheck,
+		"test":      cs.Test,
+		"smoke":     cs.Smoke,
+	}
+	out := map[string]string{}
+	for _, id := range []string{"format", "lint", "typecheck", "test", "smoke"} {
+		slot := slots[id]
+		if !slot.Discovery && len(slot.Cmd) > 0 {
+			out[id] = strings.Join(slot.Cmd, " ")
+		}
+	}
+	return out
+}
+
+// buildFiles assembles every file init writes except the profiles lock
+// (which goes through profiles.WriteLock). The list is built completely
+// before the first write so a template or encoding failure never leaves a
+// half scaffold behind.
+func buildFiles(lang, name, module string, contractYAML []byte) ([]genFile, error) {
+	data := tmplData{
+		Name:      name,
+		Module:    module,
+		PyName:    strings.ReplaceAll(name, "-", "_"),
+		SwiftName: camel(name),
+		CIPaths:   ciPaths(lang),
+		CISteps:   ciSteps(lang),
+	}
+
+	files := []genFile{
+		{path: contractRel, data: contractYAML},
+		{path: ".project/exceptions.yaml", data: []byte("{}\n")},
+	}
+	for _, d := range docsSpine {
+		files = append(files, genFile{path: path.Join("docs", d, ".gitkeep")})
+	}
+	for _, pair := range [][2]string{
+		{"README.md.tmpl", "README.md"},
+		{"AGENTS.md.tmpl", "AGENTS.md"},
+		{"CONTRIBUTING.md.tmpl", "CONTRIBUTING.md"},
+		{"pull_request_template.md.tmpl", ".github/pull_request_template.md"},
+		{"ci.yml.tmpl", ".github/workflows/ci.yml"},
+	} {
+		rendered, err := render(pair[0], data)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, genFile{path: pair[1], data: rendered})
+	}
+	files = append(files, stackFiles(lang, data)...)
+
+	slices.SortFunc(files, func(a, b genFile) int { return strings.Compare(a.path, b.path) })
+	return files, nil
+}
+
+// stackFiles returns the stack-owned layout for the selected language
+// (spec §6.1): minimal but genuinely runnable entry files. A core-only
+// scaffold gets none.
+func stackFiles(lang string, data tmplData) []genFile {
+	switch lang {
+	case "go":
+		return []genFile{
+			{path: "go.mod", data: render1("go.mod.tmpl", data)},
+			{path: path.Join("cmd", data.Name, "main.go"), data: render1("go-main.go.tmpl", data)},
+		}
+	case "typescript":
+		return []genFile{
+			{path: "package.json", data: render1("package.json.tmpl", data)},
+			{path: "src/index.ts", data: render1("index.ts.tmpl", data)},
+		}
+	case "python":
+		return []genFile{
+			{path: "pyproject.toml", data: render1("pyproject.toml.tmpl", data)},
+			{path: path.Join("src", data.PyName, "__init__.py"), data: render1("py-init.py.tmpl", data)},
+			{path: path.Join("tests", "test_init.py"), data: render1("py-test.py.tmpl", data)},
+		}
+	case "swift":
+		return []genFile{
+			{path: "Package.swift", data: render1("Package.swift.tmpl", data)},
+			{path: path.Join("Sources", data.SwiftName, data.SwiftName+".swift"), data: render1("swift-main.swift.tmpl", data)},
+		}
+	case "rust":
+		return []genFile{
+			{path: "Cargo.toml", data: render1("Cargo.toml.tmpl", data)},
+			{path: "src/main.rs", data: render1("rust-main.rs.tmpl", data)},
+		}
+	default:
+		return nil
+	}
+}
+
+// render executes one embedded template by file name.
+func render(name string, data tmplData) ([]byte, error) {
+	t, err := template.ParseFS(templatesFS, path.Join("templates", name))
+	if err != nil {
+		return nil, fmt.Errorf("projectctl init: parse template %s: %w", name, err)
+	}
+	var buf strings.Builder
+	if err := t.Execute(&buf, data); err != nil {
+		return nil, fmt.Errorf("projectctl init: render %s: %w", name, err)
+	}
+	return []byte(buf.String()), nil
+}
+
+// render1 is render for templates that cannot fail: their parse errors
+// surface in tests, and their data carries no dynamic structure.
+func render1(name string, data tmplData) []byte {
+	out, err := render(name, data)
+	if err != nil {
+		panic(err) // impossible for embedded templates; guarded by tests
+	}
+	return out
+}
+
+// ciPaths renders the CI trigger path list: the core-managed paths plus
+// the selected stack's source paths.
+func ciPaths(lang string) string {
+	paths := []string{
+		"'.project/**'",
+		"'docs/**'",
+		"'AGENTS.md'",
+		"'README.md'",
+		"'CONTRIBUTING.md'",
+		"'.github/workflows/ci.yml'",
+	}
+	switch lang {
+	case "go":
+		paths = append(paths, "'cmd/**'", "'go.mod'")
+	case "typescript":
+		paths = append(paths, "'src/**'", "'package.json'")
+	case "python":
+		paths = append(paths, "'src/**'", "'tests/**'", "'pyproject.toml'")
+	case "swift":
+		paths = append(paths, "'Sources/**'", "'Package.swift'")
+	case "rust":
+		paths = append(paths, "'src/**'", "'Cargo.toml'")
+	}
+	var lines []string
+	for _, p := range paths {
+		lines = append(lines, "      - "+p)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ciSteps renders the toolchain setup steps preceding the projectctl
+// steps. Go is always set up because projectctl itself installs through
+// `go install`; the language step makes the stack's check gates runnable.
+// Rust and Swift toolchains are preinstalled on GitHub-hosted runners.
+func ciSteps(lang string) string {
+	steps := "      - uses: actions/setup-go@v5\n" +
+		"        with:\n" +
+		"          go-version: \"1.26\"\n"
+	switch lang {
+	case "typescript":
+		steps += "      - uses: actions/setup-node@v4\n" +
+			"        with:\n" +
+			"          node-version: \"24\"\n"
+	case "python":
+		steps += "      - uses: actions/setup-python@v5\n" +
+			"        with:\n" +
+			"          python-version: \"3.13\"\n"
+	case "rust":
+		steps += "      - name: Pin stable Rust\n" +
+			"        run: rustup default stable\n"
+	}
+	return steps
+}
+
+// writeFile writes one file under root, creating parent directories.
+func writeFile(root, rel string, data []byte) error {
+	target := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("projectctl init: create %s: %w", rel, err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		return fmt.Errorf("projectctl init: write %s: %w", rel, err)
+	}
+	return nil
+}
+
+// writeManifest emits the created-file manifest as pretty-printed JSON:
+// every file init wrote, sorted by path.
+func writeManifest(files []genFile, out io.Writer) error {
+	if out == nil {
+		out = os.Stdout
+	}
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(struct {
+		Files []string `json:"files"`
+	}{Files: filePaths(files)}); err != nil {
+		return fmt.Errorf("projectctl init: encode manifest: %w", err)
+	}
+	return nil
+}
+
+// filePaths returns the manifest paths, sorted.
+func filePaths(files []genFile) []string {
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		paths = append(paths, f.path)
+	}
+	slices.Sort(paths)
+	return paths
+}

@@ -1,0 +1,1 @@
+"""The python-single package."""

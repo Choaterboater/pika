@@ -1,0 +1,22 @@
+schema: 1
+project:
+  name: python-single
+  topology: single
+profiles:
+- core@1
+- python@1
+packages:
+  python-single:
+    root: .
+    profiles:
+    - core@1
+    - python@1
+commands:
+  test: python -m pytest
+agents: {}
+github:
+  merge: squash
+evidence:
+  publish: sanitized
+exceptions: []
+extensions: {}

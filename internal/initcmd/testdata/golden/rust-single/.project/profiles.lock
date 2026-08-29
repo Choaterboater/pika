@@ -1,0 +1,15 @@
+{
+  "digest": "2e1a31e223b8cbfb21a71b75cba07931de6a323db2415869d66c6325fdafbbee",
+  "packs": {
+    "core": {
+      "version": "1",
+      "source": "embedded",
+      "digest": "1068a53b79c0cf0c887a94da7564b994be530d454297bab332f1dd1d0300d6cf"
+    },
+    "rust": {
+      "version": "1",
+      "source": "embedded",
+      "digest": "8abc790c8670260335346fc1a2844a53c1879312e3214e1ca119064685cb0a7c"
+    }
+  }
+}

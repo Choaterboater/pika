@@ -1,0 +1,35 @@
+name: check
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.project/**'
+      - 'docs/**'
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+      - '.github/workflows/ci.yml'
+      - 'cmd/**'
+      - 'go.mod'
+  pull_request:
+    paths:
+      - '.project/**'
+      - 'docs/**'
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+      - '.github/workflows/ci.yml'
+      - 'cmd/**'
+      - 'go.mod'
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Install projectctl
+        run: go install github.com/Choaterboater/projectctl/cmd/projectctl@latest
+      - name: Verify
+        run: projectctl check --ci

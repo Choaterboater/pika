@@ -1,0 +1,22 @@
+schema: 1
+project:
+  name: go-single
+  topology: single
+profiles:
+- core@1
+- go@1
+packages:
+  go-single:
+    root: .
+    profiles:
+    - core@1
+    - go@1
+commands:
+  test: go test ./...
+agents: {}
+github:
+  merge: squash
+evidence:
+  publish: sanitized
+exceptions: []
+extensions: {}

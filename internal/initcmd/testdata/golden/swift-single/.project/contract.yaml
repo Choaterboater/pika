@@ -1,0 +1,23 @@
+schema: 1
+project:
+  name: swift-single
+  topology: single
+profiles:
+- core@1
+- swift@1
+packages:
+  swift-single:
+    root: .
+    profiles:
+    - core@1
+    - swift@1
+commands:
+  test: swift test
+  typecheck: swift build
+agents: {}
+github:
+  merge: squash
+evidence:
+  publish: sanitized
+exceptions: []
+extensions: {}

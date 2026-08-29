@@ -1,0 +1,21 @@
+schema: 1
+project:
+  name: typescript-single
+  topology: single
+profiles:
+- core@1
+- typescript@1
+packages:
+  typescript-single:
+    root: .
+    profiles:
+    - core@1
+    - typescript@1
+commands: {}
+agents: {}
+github:
+  merge: squash
+evidence:
+  publish: sanitized
+exceptions: []
+extensions: {}

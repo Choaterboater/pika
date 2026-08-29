@@ -1,0 +1,23 @@
+schema: 1
+project:
+  name: rust-single
+  topology: single
+profiles:
+- core@1
+- rust@1
+packages:
+  rust-single:
+    root: .
+    profiles:
+    - core@1
+    - rust@1
+commands:
+  test: cargo test
+  typecheck: cargo build
+agents: {}
+github:
+  merge: squash
+evidence:
+  publish: sanitized
+exceptions: []
+extensions: {}
