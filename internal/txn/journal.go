@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Choaterboater/projectctl/internal/contract"
+	"github.com/Choaterboater/pika/internal/contract"
 )
 
 const (

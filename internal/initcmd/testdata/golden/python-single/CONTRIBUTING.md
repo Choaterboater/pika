@@ -2,7 +2,7 @@
 
 ## Before you open a pull request
 
-1. Run `projectctl check` and make sure every gate passes.
+1. Run `pika check` and make sure every gate passes.
 2. Update the documentation spine (`docs/`) when behavior or
    architecture changes.
 3. Record deliberate naming-rule deviations in

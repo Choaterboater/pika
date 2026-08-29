@@ -1,5 +1,5 @@
-// Package initcmd implements `projectctl init`: the lean scaffold for a
-// new projectctl-managed repository (spec §6).
+// Package initcmd implements `pika init`: the lean scaffold for a
+// new pika-managed repository (spec §6).
 //
 // init creates the .project/ state (contract, profiles lock, exceptions
 // record), the documentation spine, the core repository files (README,
@@ -26,8 +26,8 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Choaterboater/projectctl/internal/contract"
-	"github.com/Choaterboater/projectctl/internal/profiles"
+	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/profiles"
 
 	"github.com/goccy/go-yaml"
 )
@@ -95,7 +95,7 @@ const contractRel = ".project/contract.yaml"
 // lockRel is the profiles lock's location relative to the scaffold root.
 const lockRel = ".project/profiles.lock"
 
-// Run scaffolds a projectctl-managed repository into opts.Dir. It fails
+// Run scaffolds a pika-managed repository into opts.Dir. It fails
 // without writing anything when a contract already exists and --force is
 // not set.
 func Run(opts InitOptions) error {
@@ -110,15 +110,15 @@ func Run(opts InitOptions) error {
 	}
 	resolved, err := profiles.Resolve(selection)
 	if err != nil {
-		return fmt.Errorf("projectctl init: %w", err)
+		return fmt.Errorf("pika init: %w", err)
 	}
 
 	contractPath := filepath.Join(dir, filepath.FromSlash(contractRel))
 	if !opts.Force {
 		if _, err := os.Stat(contractPath); err == nil {
-			return fmt.Errorf("projectctl init: %s already exists; pass --force to regenerate", contractRel)
+			return fmt.Errorf("pika init: %s already exists; pass --force to regenerate", contractRel)
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("projectctl init: %s: %w", contractRel, err)
+			return fmt.Errorf("pika init: %s: %w", contractRel, err)
 		}
 	}
 
@@ -146,7 +146,7 @@ func Run(opts InitOptions) error {
 	// The lock is written through profiles.WriteLock so lock and contract
 	// pin the same packs and digests.
 	if err := profiles.WriteLock(filepath.Join(dir, filepath.FromSlash(lockRel)), selection); err != nil {
-		return fmt.Errorf("projectctl init: %w", err)
+		return fmt.Errorf("pika init: %w", err)
 	}
 	files = append(files, genFile{path: lockRel})
 
@@ -168,7 +168,7 @@ func selection(requested []string) ([]string, error) {
 		if !strings.Contains(p, "@") {
 			mapped, ok := profiles.LanguagePack(p)
 			if !ok {
-				return nil, fmt.Errorf("projectctl init: unknown profile %q (supported languages: go, typescript, python, swift, rust)", p)
+				return nil, fmt.Errorf("pika init: unknown profile %q (supported languages: go, typescript, python, swift, rust)", p)
 			}
 			ref = mapped
 		}
@@ -290,7 +290,7 @@ func buildContract(name string, selection []string, resolved *profiles.Resolved)
 	}
 	data, err := yaml.Marshal(c)
 	if err != nil {
-		return nil, fmt.Errorf("projectctl init: encode contract: %w", err)
+		return nil, fmt.Errorf("pika init: encode contract: %w", err)
 	}
 	return data, nil
 }
@@ -428,11 +428,11 @@ func renderCore(name string, data tmplData) ([]byte, error) {
 	}
 	t, err := template.New(name).Parse(src)
 	if err != nil {
-		return nil, fmt.Errorf("projectctl init: parse template %s: %w", name, err)
+		return nil, fmt.Errorf("pika init: parse template %s: %w", name, err)
 	}
 	var buf strings.Builder
 	if err := t.Execute(&buf, data); err != nil {
-		return nil, fmt.Errorf("projectctl init: render %s: %w", name, err)
+		return nil, fmt.Errorf("pika init: render %s: %w", name, err)
 	}
 	return []byte(buf.String()), nil
 }
@@ -441,11 +441,11 @@ func renderCore(name string, data tmplData) ([]byte, error) {
 func render(name string, data tmplData) ([]byte, error) {
 	t, err := template.ParseFS(templatesFS, path.Join("templates", name))
 	if err != nil {
-		return nil, fmt.Errorf("projectctl init: parse template %s: %w", name, err)
+		return nil, fmt.Errorf("pika init: parse template %s: %w", name, err)
 	}
 	var buf strings.Builder
 	if err := t.Execute(&buf, data); err != nil {
-		return nil, fmt.Errorf("projectctl init: render %s: %w", name, err)
+		return nil, fmt.Errorf("pika init: render %s: %w", name, err)
 	}
 	return []byte(buf.String()), nil
 }
@@ -490,8 +490,8 @@ func ciPaths(lang string) string {
 	return strings.Join(lines, "\n")
 }
 
-// ciSteps renders the toolchain setup steps preceding the projectctl
-// steps. Go is always set up because projectctl itself installs through
+// ciSteps renders the toolchain setup steps preceding the pika
+// steps. Go is always set up because pika itself installs through
 // `go install`; the language step makes the stack's check gates runnable.
 // Rust and Swift toolchains are preinstalled on GitHub-hosted runners.
 func ciSteps(lang string) string {
@@ -520,10 +520,10 @@ func ciSteps(lang string) string {
 func writeFile(root, rel string, data []byte) error {
 	target := filepath.Join(root, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return fmt.Errorf("projectctl init: create %s: %w", rel, err)
+		return fmt.Errorf("pika init: create %s: %w", rel, err)
 	}
 	if err := os.WriteFile(target, data, 0o644); err != nil {
-		return fmt.Errorf("projectctl init: write %s: %w", rel, err)
+		return fmt.Errorf("pika init: write %s: %w", rel, err)
 	}
 	return nil
 }
@@ -539,7 +539,7 @@ func writeManifest(files []genFile, out io.Writer) error {
 	if err := enc.Encode(struct {
 		Files []string `json:"files"`
 	}{Files: filePaths(files)}); err != nil {
-		return fmt.Errorf("projectctl init: encode manifest: %w", err)
+		return fmt.Errorf("pika init: encode manifest: %w", err)
 	}
 	return nil
 }

@@ -1,8 +1,8 @@
-# projectctl Milestone 1 Implementation Plan
+# pika Milestone 1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the deterministic projectctl kernel: repository discovery, strict contract parsing, profile composition, and the `check` command — the foundation every later milestone (init, adopt, work, MCP) compiles against.
+**Goal:** Build the deterministic pika kernel: repository discovery, strict contract parsing, profile composition, and the `check` command — the foundation every later milestone (init, adopt, work, MCP) compiles against.
 
 **Architecture:** Go single binary. Contract is strict YAML validated against a JSON Schema. Profiles are embedded declarative packs composed core → language → project-kind → capabilities → overrides. `check` runs contract/profile gates and emits JSON. Coordination board and agent adapters come in later milestones; this milestone establishes the schema, loader, and verification entry point they all depend on.
 
@@ -18,7 +18,7 @@
 - Exceptions require rule ID, rationale, owner, and review condition (spec §5.3).
 - Repository paths default kebab-case unless ecosystem mandates otherwise; `utils`/`helpers`/`common`/`misc` require recorded exception (spec §6.2).
 - Every automation-facing command supports `--json` (spec §8.1).
-- CI (`projectctl check --ci`) makes no LLM calls and never loads agent runtimes (spec §16).
+- CI (`pika check --ci`) makes no LLM calls and never loads agent runtimes (spec §16).
 - Commit after every task; conventional commits with imperative subjects.
 - Target Go test framework: standard library `testing` only (no external test deps in M1).
 
@@ -28,7 +28,7 @@
 
 **Files:**
 - Create: `go.mod`
-- Create: `cmd/projectctl/main.go`
+- Create: `cmd/pika/main.go`
 - Create: `internal/version/version.go`
 - Test: `internal/version/version_test.go`
 
@@ -39,7 +39,7 @@
 - [ ] **Step 1: Initialize module**
 
 ```bash
-go mod init github.com/Choaterboater/projectctl
+go mod init github.com/Choaterboater/pika
 go get gopkg.in/yaml.v3@v3.0.1
 go get github.com/goccy/go-yaml@latest
 ```
@@ -75,7 +75,7 @@ Expected: FAIL (Version undefined)
 // internal/version/version.go
 package version
 
-// Version is the semantic version of the projectctl binary.
+// Version is the semantic version of the pika binary.
 // Overridden at build time via -ldflags.
 var Version = "0.1.0"
 ```
@@ -89,7 +89,7 @@ Expected: PASS
 
 ```bash
 git add go.mod go.sum cmd/ internal/version/
-git commit -m "feat: scaffold projectctl module with version package"
+git commit -m "feat: scaffold pika module with version package"
 ```
 
 ---
@@ -391,7 +391,7 @@ func TestDetectGoModule(t *testing.T) {
 **Files:**
 - Create: `internal/verify/verify.go`
 - Create: `internal/verify/ladder.go`
-- Create: `cmd/projectctl/check.go` (cobra subcommand)
+- Create: `cmd/pika/check.go` (cobra subcommand)
 - Test: `internal/verify/verify_test.go`
 
 **Interfaces:**
@@ -411,7 +411,7 @@ func TestGateFailureStopsLadder(t *testing.T) {
 
 - [ ] **Step 2: Verify FAIL.**
 - [ ] **Step 3: Implement gate runner** — `exec.CommandContext` with 10min timeout, capture combined output (truncate 8KB tail per spec §14.1 style), record exit code, emit JSON via `--json`.
-- [ ] **Step 4: `projectctl check` wiring** — loads contract, resolves profiles, runs gates in spec order (contract → static → affected → smoke; gate 5 review is agent-only and never in `check`).
+- [ ] **Step 4: `pika check` wiring** — loads contract, resolves profiles, runs gates in spec order (contract → static → affected → smoke; gate 5 review is agent-only and never in `check`).
 - [ ] **Step 5: Golden test** — fixture repo with failing lint produces `{"regressions":[...],"exit_code":1}`; passing repo produces `{"gates":5,"status":"pass"}`.
 - [ ] **Step 6: Tests pass, commit** — `feat: verification ladder and check command`.
 
@@ -512,17 +512,17 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 
 **Files:**
 - Create: `internal/initcmd/init.go`
-- Modify: `cmd/projectctl/main.go` (command registration)
+- Modify: `cmd/pika/main.go` (command registration)
 - Test: `internal/init/init_test.go`
 
 **Interfaces:**
 - Consumes: profiles.Resolve, contract schema, checks.
-- Produces: `init.Run(opts InitOptions) error` — creates `.project/`, `docs/` spine, `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.github/` with CI calling `projectctl check --ci`, and stack-owned layout only for selected profiles. Idempotent: fails if `.project/contract.yaml` exists unless `--force`.
+- Produces: `init.Run(opts InitOptions) error` — creates `.project/`, `docs/` spine, `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.github/` with CI calling `pika check --ci`, and stack-owned layout only for selected profiles. Idempotent: fails if `.project/contract.yaml` exists unless `--force`.
 
 - [ ] **Step 1: Failing test** — golden-dir comparison: `init` on empty dir with `--profile go` produces byte-identical tree to `testdata/golden/go-single/`.
 - [ ] **Step 2: Implement generator** (templates embedded via `embed.FS`).
 - [ ] **Step 3: Test on all 5 language profiles** — parametrized golden tests.
-- [ ] **Step 4: `projectctl init --json` emits created-file manifest.**
+- [ ] **Step 4: `pika init --json` emits created-file manifest.**
 - [ ] **Step 5: Commit.**
 
 ---
@@ -576,7 +576,7 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 
 **Files:**
 - Create: `internal/mcp/server.go`
-- Create: `cmd/projectctl/mcp.go`
+- Create: `cmd/pika/mcp.go`
 - Test: `internal/mcp/server_test.go`
 
 **Interfaces:**
@@ -599,7 +599,7 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 - Test: `internal/init/golden_test.go`
 
 **Interfaces:**
-- Produces: rendered templates matching spec §7.1 responsibilities exactly (README: problem/value/5-min start/commands/status/links; AGENTS.md machine contract; CI calls `projectctl check --ci`).
+- Produces: rendered templates matching spec §7.1 responsibilities exactly (README: problem/value/5-min start/commands/status/links; AGENTS.md machine contract; CI calls `pika check --ci`).
 
 - [ ] Golden test renders template with fixture contract vars, compares to golden file.
 - [ ] Diagram policy: no diagram files generated by default (spec: empty placeholders prohibited); ADR index created only with first ADR.
@@ -611,14 +611,14 @@ Per-language task steps follow Task 5's pattern: failing table test asserting de
 
 **Files:**
 - Create: `internal/e2e/e2e_init_test.go`
-- Modify: `cmd/projectctl/main.go` (final wiring)
+- Modify: `cmd/pika/main.go` (final wiring)
 
 **Interfaces:**
 - Consumes: everything above.
 
-- [ ] Failing e2e test table: for each of {ts, python, swift, rust, go} — run `init` into temp dir, run `projectctl check --json`, assert exit 0 and 5 gates green.
+- [ ] Failing e2e test table: for each of {ts, python, swift, rust, go} — run `init` into temp dir, run `pika check --json`, assert exit 0 and 5 gates green.
 - [ ] Go golden tree committed per language.
-- [ ] Run `projectctl check` locally + assert JSON identical to CI mode output modulo timestamps.
+- [ ] Run `pika check` locally + assert JSON identical to CI mode output modulo timestamps.
 - [ ] Commit.
 - [ ] **Milestone gate:** run `go test ./...` full suite; all green.
 

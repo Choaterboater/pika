@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:projectctl:evidence-receipt.schema.json",
-  "title": "projectctl evidence receipt (spec section 14.1)",
+  "$id": "urn:pika:evidence-receipt.schema.json",
+  "title": "pika evidence receipt (spec section 14.1)",
   "type": "object",
   "additionalProperties": false,
   "required": [

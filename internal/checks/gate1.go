@@ -8,9 +8,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Choaterboater/projectctl/internal/contract"
-	"github.com/Choaterboater/projectctl/internal/profiles"
-	"github.com/Choaterboater/projectctl/internal/version"
+	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/version"
 )
 
 // lockRelPath is the profiles lock location relative to the repository
@@ -20,7 +20,7 @@ const lockRelPath = ".project/profiles.lock"
 // Gate1 runs verification-ladder rung 1 (spec §12.6): the contract
 // schema-version ceiling, the exceptions record load, and the
 // naming/ownership projection checks. It is the single implementation
-// shared by the `projectctl check` command and the MCP run_checks tool so
+// shared by the `pika check` command and the MCP run_checks tool so
 // agents and humans always agree on gate 1.
 //
 // An error-severity violation — or an exceptions file that fails to load
@@ -67,7 +67,7 @@ func checkLock(repoRoot string, c *contract.Contract) error {
 	lock, err := profiles.ReadLock(filepath.Join(repoRoot, filepath.FromSlash(lockRelPath)))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%s missing; run `projectctl init` (or `projectctl adopt`) to write the profile lock (spec §5.3)", lockRelPath)
+			return fmt.Errorf("%s missing; run `pika init` (or `pika adopt`) to write the profile lock (spec §5.3)", lockRelPath)
 		}
 		return fmt.Errorf("profiles.lock: %w", err)
 	}
@@ -80,11 +80,11 @@ func checkLock(repoRoot string, c *contract.Contract) error {
 		}
 		pinned, ok := lock.Packs[name]
 		if !ok {
-			problems = append(problems, fmt.Sprintf("pack %s (contract ref %s) is not pinned in profiles.lock; regenerate the lock with `projectctl init --force`", name, ref))
+			problems = append(problems, fmt.Sprintf("pack %s (contract ref %s) is not pinned in profiles.lock; regenerate the lock with `pika init --force`", name, ref))
 			continue
 		}
 		if pinned.Version != wantVersion {
-			problems = append(problems, fmt.Sprintf("pack %s pinned at version %s in profiles.lock, contract requires %s; regenerate the lock with `projectctl init --force`", name, pinned.Version, wantVersion))
+			problems = append(problems, fmt.Sprintf("pack %s pinned at version %s in profiles.lock, contract requires %s; regenerate the lock with `pika init --force`", name, pinned.Version, wantVersion))
 			continue
 		}
 		digest, ok := profiles.PackDigestFor(ref)
@@ -93,7 +93,7 @@ func checkLock(repoRoot string, c *contract.Contract) error {
 			continue
 		}
 		if pinned.Digest != digest {
-			problems = append(problems, fmt.Sprintf("pack %s digest %s in profiles.lock does not match the embedded pack %s; regenerate the lock with `projectctl init --force`", name, pinned.Digest, ref))
+			problems = append(problems, fmt.Sprintf("pack %s digest %s in profiles.lock does not match the embedded pack %s; regenerate the lock with `pika init --force`", name, pinned.Digest, ref))
 		}
 	}
 	if len(problems) > 0 {

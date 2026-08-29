@@ -62,7 +62,7 @@ func treePaths(t *testing.T, root string) []string {
 	return paths
 }
 
-// TestE2EAdoptPreview runs `projectctl adopt` on a real fixture
+// TestE2EAdoptPreview runs `pika adopt` on a real fixture
 // repository: the JSON report inventories the go stack against core@1,
 // and the only writes are the two .draft proposal files — adopt is
 // read-only otherwise (spec §13).

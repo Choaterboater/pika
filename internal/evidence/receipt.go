@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Choaterboater/projectctl/internal/redact"
+	"github.com/Choaterboater/pika/internal/redact"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -388,11 +388,11 @@ func compileSchema() (*jsonschema.Schema, error) {
 			return
 		}
 		compiler := jsonschema.NewCompiler()
-		if err := compiler.AddResource("urn:projectctl:evidence-receipt.schema.json", doc); err != nil {
+		if err := compiler.AddResource("urn:pika:evidence-receipt.schema.json", doc); err != nil {
 			compileSchemaErr = err
 			return
 		}
-		compiledSchema, compileSchemaErr = compiler.Compile("urn:projectctl:evidence-receipt.schema.json")
+		compiledSchema, compileSchemaErr = compiler.Compile("urn:pika:evidence-receipt.schema.json")
 	})
 	return compiledSchema, compileSchemaErr
 }

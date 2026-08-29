@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Install projectctl
-        run: go install github.com/Choaterboater/projectctl/cmd/projectctl@latest
+      - name: Install pika
+        run: go install github.com/Choaterboater/pika/cmd/pika@latest
       - name: Verify
-        run: projectctl check --ci
+        run: pika check --ci

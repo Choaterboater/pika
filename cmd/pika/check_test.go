@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Choaterboater/projectctl/internal/profiles"
-	"github.com/Choaterboater/projectctl/internal/verify"
+	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/verify"
 )
 
 // writeFixture lays down a minimal contract plus optional lint script in a

@@ -1,15 +1,15 @@
 {
-  "digest": "b8368b20136f6a038bf04a6fcad326a71f4c3f0bd73aa93b40a2e03eecf420d4",
+  "digest": "4ffe70d74b5af939597d1240b07a977cde75a0888efbdfa1c2430385e417e3de",
   "packs": {
     "core": {
       "version": "1",
       "source": "embedded",
-      "digest": "c8379e01ac9715d9804b87b0ef433923cd276af5bcb8ba61168d236af6b25f9c"
+      "digest": "9d0c2f301cef9b4e57b7582a29778513b98c0e6cfc39c64c2c1e5c5b22145e88"
     },
     "go": {
       "version": "1",
       "source": "embedded",
-      "digest": "bf3e6023642b6aba019b9003964026c68fe0cb00851762c36df86e6cd0824554"
+      "digest": "4ed7917ad2b051f4a9227c6bcb261dde34cc2f07135d6e091e2612107b18b84a"
     }
   }
 }

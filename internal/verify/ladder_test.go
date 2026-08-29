@@ -3,7 +3,7 @@ package verify
 import (
 	"testing"
 
-	"github.com/Choaterboater/projectctl/internal/profiles"
+	"github.com/Choaterboater/pika/internal/profiles"
 )
 
 func TestFromProfilesOverridesDiscoverySentinels(t *testing.T) {

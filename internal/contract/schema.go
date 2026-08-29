@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Choaterboater/projectctl/internal/yamlx"
+	"github.com/Choaterboater/pika/internal/yamlx"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -31,16 +31,16 @@ func compileSchema() (*jsonschema.Schema, error) {
 			return
 		}
 		compiler := jsonschema.NewCompiler()
-		if err := compiler.AddResource("urn:projectctl:contract.schema.json", doc); err != nil {
+		if err := compiler.AddResource("urn:pika:contract.schema.json", doc); err != nil {
 			compileSchemaErr = err
 			return
 		}
-		compiledSchema, compileSchemaErr = compiler.Compile("urn:projectctl:contract.schema.json")
+		compiledSchema, compileSchemaErr = compiler.Compile("urn:pika:contract.schema.json")
 	})
 	return compiledSchema, compileSchemaErr
 }
 
-// Contract is the typed representation of a projectctl contract file
+// Contract is the typed representation of a pika contract file
 // (spec section 5.3 YAML shape).
 type Contract struct {
 	Schema     int                    `yaml:"schema"     json:"schema"`

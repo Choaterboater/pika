@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/Choaterboater/projectctl/internal/initcmd"
+	"github.com/Choaterboater/pika/internal/initcmd"
 )
 
 // profileFlags collects repeated --profile values.
@@ -19,7 +19,7 @@ func (p *profileFlags) Set(v string) error {
 	return nil
 }
 
-// runInit implements `projectctl init [--profile <lang>] [--name <name>]
+// runInit implements `pika init [--profile <lang>] [--name <name>]
 // [--module <path>] [--force] [--json]`. M1's scaffold target is the
 // process working directory.
 //
@@ -38,7 +38,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "projectctl init: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintf(stderr, "pika init: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
 	if err := initcmd.Run(initcmd.InitOptions{

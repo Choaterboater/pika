@@ -1,5 +1,5 @@
 // Package adopt implements the read-only adoption inventory behind
-// `projectctl adopt` (spec §13): discovery-first, non-destructive. Preview
+// `pika adopt` (spec §13): discovery-first, non-destructive. Preview
 // walks the repository with the Task 3 discovery engine, classifies every
 // discovered convention against core@1, runs the discovered check commands
 // once each to record a baseline, and writes exactly two draft files —
@@ -42,10 +42,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Choaterboater/projectctl/internal/checks"
-	"github.com/Choaterboater/projectctl/internal/contract"
-	"github.com/Choaterboater/projectctl/internal/discover"
-	"github.com/Choaterboater/projectctl/internal/profiles"
+	"github.com/Choaterboater/pika/internal/checks"
+	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/discover"
+	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/goccy/go-yaml"
 )
 
@@ -70,7 +70,7 @@ const (
 // exception boilerplate for proposed naming exceptions (spec §5.3: every
 // exception needs rule ID, rationale, owner, and review condition).
 const (
-	exceptionOwner   = "projectctl adopt"
+	exceptionOwner   = "pika adopt"
 	exceptionReason  = "pre-existing repository layout; adopt records the convention instead of renaming files for style conformity"
 	exceptionReview  = "re-review when the path is next modified or at the next convention audit"
 	baselineDeadline = 30 * time.Second
@@ -156,7 +156,7 @@ func Preview(repoRoot string) (*Report, error) {
 		repoRoot = "."
 	}
 	if _, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(committedContractPath))); err == nil {
-		return nil, fmt.Errorf("adopt: %s already exists: repository already adopted; use `projectctl check` or `projectctl upgrade` instead", committedContractPath)
+		return nil, fmt.Errorf("adopt: %s already exists: repository already adopted; use `pika check` or `pika upgrade` instead", committedContractPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("adopt: stat %s: %w", committedContractPath, err)
 	}

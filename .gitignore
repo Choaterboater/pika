@@ -1,0 +1,7 @@
+# Local-only runtime state (spec §14.2) — never commit
+.project/state/
+
+# Build/test scratch
+*.test
+*.out
+.superpowers/

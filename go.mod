@@ -1,4 +1,4 @@
-module github.com/Choaterboater/projectctl
+module github.com/Choaterboater/pika
 
 go 1.26
 

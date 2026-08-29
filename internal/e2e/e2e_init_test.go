@@ -1,10 +1,10 @@
 // Package e2e wires the whole M1 kernel end to end through the real
-// binary: `projectctl init` into a temp directory, `projectctl check
+// binary: `pika init` into a temp directory, `pika check
 // --all` across the five language profiles, the adoption roundtrip,
 // local-vs-CI report parity, and a full MCP session over real stdio
 // pipes (spec §12.6, §13, §8.2).
 //
-// The projectctl binary is built once per test run with CGO_ENABLED=0.
+// The pika binary is built once per test run with CGO_ENABLED=0.
 // Language profiles whose verification slots carry real commands skip
 // with a clear reason when their toolchain is absent: CI matrices vary
 // and a missing toolchain is an honest skip, never a failure.
@@ -24,11 +24,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Choaterboater/projectctl/internal/adopt"
-	"github.com/Choaterboater/projectctl/internal/contract"
+	"github.com/Choaterboater/pika/internal/adopt"
+	"github.com/Choaterboater/pika/internal/contract"
 )
 
-// binPath is the projectctl binary built once by TestMain.
+// binPath is the pika binary built once by TestMain.
 var binPath string
 
 func TestMain(m *testing.M) {
@@ -37,11 +37,11 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "e2e: temp dir:", err)
 		os.Exit(1)
 	}
-	binPath = filepath.Join(dir, "projectctl")
-	build := exec.Command("go", "build", "-o", binPath, "../../cmd/projectctl")
+	binPath = filepath.Join(dir, "pika")
+	build := exec.Command("go", "build", "-o", binPath, "../../cmd/pika")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "e2e: build projectctl: %v\n%s", err, out)
+		fmt.Fprintf(os.Stderr, "e2e: build pika: %v\n%s", err, out)
 		os.Exit(1)
 	}
 	code := m.Run()
@@ -121,15 +121,15 @@ func runCLI(t *testing.T, dir string, wantExit int, args ...string) string {
 	if errors.As(err, &exitErr) {
 		code = exitErr.ExitCode()
 	} else if err != nil {
-		t.Fatalf("projectctl %v: %v", args, err)
+		t.Fatalf("pika %v: %v", args, err)
 	}
 	if code != wantExit {
-		t.Fatalf("projectctl %v in %s: exit %d, want %d\nstderr: %s", args, dir, code, wantExit, stderr.String())
+		t.Fatalf("pika %v in %s: exit %d, want %d\nstderr: %s", args, dir, code, wantExit, stderr.String())
 	}
 	return stdout.String()
 }
 
-// scaffoldRepo runs `projectctl init --profile <lang>` into a fresh temp
+// scaffoldRepo runs `pika init --profile <lang>` into a fresh temp
 // directory and returns its path.
 func scaffoldRepo(t *testing.T, lang string) string {
 	t.Helper()
@@ -287,7 +287,7 @@ func TestE2EParityLocalVsCI(t *testing.T) {
 
 // --- MCP session over real stdio pipes ---
 
-// mcpSession drives one spawned `projectctl mcp` process through its
+// mcpSession drives one spawned `pika mcp` process through its
 // line-delimited JSON-RPC stdio protocol. Requests and responses go over
 // real os.Pipes created by exec; the server answers one line per request
 // (single-flight), so the client reads synchronously.
@@ -300,7 +300,7 @@ type mcpSession struct {
 	nextID int
 }
 
-// startMCP spawns `projectctl mcp` with repoRoot as its working
+// startMCP spawns `pika mcp` with repoRoot as its working
 // directory. Cleanup closes stdin (clean EOF shutdown) and reaps.
 func startMCP(t *testing.T, repoRoot string) *mcpSession {
 	t.Helper()
@@ -317,7 +317,7 @@ func startMCP(t *testing.T, repoRoot string) *mcpSession {
 	s := &mcpSession{t: t, cmd: cmd, stdin: stdin, stdout: bufio.NewReader(stdout)}
 	cmd.Stderr = &s.stderr
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("start projectctl mcp: %v", err)
+		t.Fatalf("start pika mcp: %v", err)
 	}
 	t.Cleanup(func() {
 		stdin.Close()
@@ -413,7 +413,7 @@ func evidenceReceipt() map[string]any {
 		"commands": []any{
 			map[string]any{"cmd": "go test ./...", "exit": 0, "duration_ms": 1200, "output": "ok"},
 		},
-		"surface_scenario":  map[string]any{"ran": true, "description": "ran projectctl check --all locally"},
+		"surface_scenario":  map[string]any{"ran": true, "description": "ran pika check --all locally"},
 		"baseline_failures": []any{},
 		"regressions":       []any{},
 		"review": []any{
@@ -447,8 +447,8 @@ func TestE2EMCPSession(t *testing.T) {
 		t.Fatalf("protocolVersion = %v, want 2024-11-05", result["protocolVersion"])
 	}
 	info, ok := result["serverInfo"].(map[string]any)
-	if !ok || info["name"] != "projectctl" {
-		t.Fatalf("serverInfo = %v, want name projectctl", result["serverInfo"])
+	if !ok || info["name"] != "pika" {
+		t.Fatalf("serverInfo = %v, want name pika", result["serverInfo"])
 	}
 
 	// tools/list: the closed M1 registry.

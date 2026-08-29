@@ -25,15 +25,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Choaterboater/projectctl/internal/adopt"
-	"github.com/Choaterboater/projectctl/internal/checks"
-	"github.com/Choaterboater/projectctl/internal/contract"
-	"github.com/Choaterboater/projectctl/internal/discover"
-	"github.com/Choaterboater/projectctl/internal/envelope"
-	"github.com/Choaterboater/projectctl/internal/evidence"
-	"github.com/Choaterboater/projectctl/internal/profiles"
-	"github.com/Choaterboater/projectctl/internal/verify"
-	"github.com/Choaterboater/projectctl/internal/version"
+	"github.com/Choaterboater/pika/internal/adopt"
+	"github.com/Choaterboater/pika/internal/checks"
+	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/discover"
+	"github.com/Choaterboater/pika/internal/envelope"
+	"github.com/Choaterboater/pika/internal/evidence"
+	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/verify"
+	"github.com/Choaterboater/pika/internal/version"
 )
 
 // protocolVersion is the MCP protocol generation this server speaks.
@@ -280,7 +280,7 @@ func (s *server) dispatch(line string, w io.Writer) {
 		s.respond(w, rpcResponse{ID: req.ID, Result: map[string]any{
 			"protocolVersion": protocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
-			"serverInfo":      map[string]any{"name": "projectctl", "version": version.String()},
+			"serverInfo":      map[string]any{"name": "pika", "version": version.String()},
 		}})
 	case "ping":
 		s.respond(w, rpcResponse{ID: req.ID, Result: map[string]any{}})
@@ -447,7 +447,7 @@ func (s *server) toolPreviewPlan(_ json.RawMessage) (map[string]any, *toolError)
 	}, nil
 }
 
-// toolRunChecks implements run_checks: the same ladder as `projectctl
+// toolRunChecks implements run_checks: the same ladder as `pika
 // check` (contract gate plus profile and discovered commands), scoped by
 // args. Read-only with respect to the repository.
 func (s *server) toolRunChecks(args json.RawMessage) (map[string]any, *toolError) {

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Choaterboater/projectctl/internal/contract"
+	"github.com/Choaterboater/pika/internal/contract"
 )
 
 // writeFile creates rel (slash-separated) under root with the given content.

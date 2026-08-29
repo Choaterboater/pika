@@ -19,8 +19,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Choaterboater/projectctl/internal/contract"
-	"github.com/Choaterboater/projectctl/internal/yamlx"
+	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/yamlx"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -41,11 +41,11 @@ func compileSchema() (*jsonschema.Schema, error) {
 			return
 		}
 		compiler := jsonschema.NewCompiler()
-		if err := compiler.AddResource("urn:projectctl:envelope.schema.json", doc); err != nil {
+		if err := compiler.AddResource("urn:pika:envelope.schema.json", doc); err != nil {
 			compileSchemaErr = err
 			return
 		}
-		compiledSchema, compileSchemaErr = compiler.Compile("urn:projectctl:envelope.schema.json")
+		compiledSchema, compileSchemaErr = compiler.Compile("urn:pika:envelope.schema.json")
 	})
 	return compiledSchema, compileSchemaErr
 }

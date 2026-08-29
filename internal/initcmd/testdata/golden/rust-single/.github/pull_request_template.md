@@ -14,7 +14,7 @@
 
 <!-- Exact commands run and their results. -->
 
-- [ ] `projectctl check` passes locally
+- [ ] `pika check` passes locally
 
 ## Documentation and diagram impact
 

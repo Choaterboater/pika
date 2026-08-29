@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Choaterboater/projectctl/internal/contract"
+	"github.com/Choaterboater/pika/internal/contract"
 )
 
 // languages lists the V1 language profiles in spec §5.4 order. Each gets a
@@ -328,7 +328,7 @@ func TestCISetupCoversContractCommands(t *testing.T) {
 			}
 			for _, want := range required[lang] {
 				if !strings.Contains(string(ci), want) {
-					t.Errorf("generated ci.yml for %s lacks required setup %q; every tool a contract command needs must be installed before `projectctl check --ci`", lang, want)
+					t.Errorf("generated ci.yml for %s lacks required setup %q; every tool a contract command needs must be installed before `pika check --ci`", lang, want)
 				}
 			}
 		})

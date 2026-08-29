@@ -14,7 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Choaterboater/projectctl/internal/contract"
+	"github.com/Choaterboater/pika/internal/contract"
 )
 
 // Kind is one journalable file operation.

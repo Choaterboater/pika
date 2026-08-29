@@ -30,9 +30,9 @@ func fixture() ReceiptInput {
 			{Path: "internal/evidence/receipt.go", Ownership: "kernel"},
 		},
 		Commands: []CommandInput{
-			{Cmd: "go test ./...", Exit: 0, DurationMs: 1200, Output: "ok  \tgithub.com/Choaterboater/projectctl\t1.2s"},
+			{Cmd: "go test ./...", Exit: 0, DurationMs: 1200, Output: "ok  \tgithub.com/Choaterboater/pika\t1.2s"},
 		},
-		SurfaceScenario:  SurfaceScenarioInput{Ran: true, Description: "ran projectctl check --all locally"},
+		SurfaceScenario:  SurfaceScenarioInput{Ran: true, Description: "ran pika check --all locally"},
 		BaselineFailures: []string{},
 		Regressions:      []string{},
 		Review: []ReviewInput{

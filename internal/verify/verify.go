@@ -1,5 +1,5 @@
 // Package verify implements the verification ladder engine behind
-// `projectctl check` (spec §12.6). Gates run in the order given by the
+// `pika check` (spec §12.6). Gates run in the order given by the
 // CheckSet; a failing gate stops every downstream gate, recorded as skips
 // with reasons. Skipped gates (a discovery sentinel with no discovered
 // command) do not stop the ladder. M1 check runs deterministic gates only:

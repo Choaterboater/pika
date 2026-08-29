@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Choaterboater/projectctl/internal/profiles"
+	"github.com/Choaterboater/pika/internal/profiles"
 )
 
 // slotOrder realizes spec §12.6 rungs 2–4 in order: rung 2 is formatting,

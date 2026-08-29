@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Choaterboater/projectctl/internal/profiles"
+	"github.com/Choaterboater/pika/internal/profiles"
 )
 
 // SeverityError marks violations that fail the gate; every other severity

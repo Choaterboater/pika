@@ -1,10 +1,10 @@
-# Rust language profile pack for projectctl M1 (spec §5.4, §6.1, §6.2).
+# Rust language profile pack for pika M1 (spec §5.4, §6.1, §6.2).
 profile: rust
 version: "1"
 
 provenance:
   source: embedded
-  generated-by: "projectctl m1-kernel spec §5.4/§6.1"
+  generated-by: "pika m1-kernel spec §5.4/§6.1"
 
 detection:
   when: "language == rust"

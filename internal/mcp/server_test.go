@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Choaterboater/projectctl/internal/profiles"
+	"github.com/Choaterboater/pika/internal/profiles"
 )
 
 // session drives one stdio MCP server over real OS pipes, mirroring how an
-// MCP client talks to `projectctl mcp`.
+// MCP client talks to `pika mcp`.
 type session struct {
 	t    *testing.T
 	inW  *os.File
@@ -234,7 +234,7 @@ func evidenceArgs() map[string]any {
 				map[string]any{"cmd": "go test ./...", "exit": 0, "duration_ms": 1200,
 					"output": "ok\tsk-ant-api03-abcdefghij0123456789ABCDE\t1.2s"},
 			},
-			"surface_scenario":  map[string]any{"ran": true, "description": "ran projectctl check --all locally"},
+			"surface_scenario":  map[string]any{"ran": true, "description": "ran pika check --all locally"},
 			"baseline_failures": []any{},
 			"regressions":       []any{},
 			"review": []any{
@@ -264,8 +264,8 @@ func TestInitializeToolsListAndRoundtrip(t *testing.T) {
 		t.Fatalf("capabilities = %v, want tools capability", caps)
 	}
 	info, ok := res["serverInfo"].(map[string]any)
-	if !ok || info["name"] != "projectctl" {
-		t.Fatalf("serverInfo = %v, want name projectctl", res["serverInfo"])
+	if !ok || info["name"] != "pika" {
+		t.Fatalf("serverInfo = %v, want name pika", res["serverInfo"])
 	}
 	if id, ok := resp["id"].(float64); !ok || id != 0 {
 		t.Fatalf("response id = %v, want 0", resp["id"])

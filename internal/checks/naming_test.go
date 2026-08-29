@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Choaterboater/projectctl/internal/profiles"
+	"github.com/Choaterboater/pika/internal/profiles"
 )
 
 // coreRules mirrors the resolved core@1 naming rules the check command
@@ -162,7 +162,7 @@ func TestNamingKebabCaseIgnoresFileExtension(t *testing.T) {
 	dir := t.TempDir()
 	writeTree(t, dir, map[string]string{
 		"src/lib/data.ts":             "x\n", // stem data is clean kebab
-		"cmd/projectctl/main.go":      "x\n", // go.mod-style dotted stems stay clean
+		"cmd/pika/main.go":      "x\n", // go.mod-style dotted stems stay clean
 		"docs/superpowers/specs/x.md": "x\n",
 	})
 	if vs := Naming(dir, coreRules(), nil); len(vs) != 0 {

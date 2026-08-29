@@ -1,12 +1,12 @@
-# projectctl Design Specification
+# pika Design Specification
 
 **Status:** Design approved; specification awaiting user review
 **Date:** 2026-08-28
-**Product:** `projectctl`
+**Product:** `pika`
 
 ## 1. Purpose
 
-`projectctl` is a provider-neutral project operating system for creating new repositories, adopting existing repositories, and guiding feature work, bug repair, review, verification, delivery, and maintenance.
+`pika` is a provider-neutral project operating system for creating new repositories, adopting existing repositories, and guiding feature work, bug repair, review, verification, delivery, and maintenance.
 
 It combines:
 
@@ -17,7 +17,7 @@ It combines:
 - deterministic local and GitHub CI verification;
 - public-safe specifications, decisions, plans, sources, and evidence.
 
-The system solves a recurring problem: repository conventions, architecture records, agent instructions, quality commands, and GitHub workflows are usually assembled ad hoc from many unrelated examples. `projectctl` provides one coherent workflow while preserving valid ecosystem and repository conventions.
+The system solves a recurring problem: repository conventions, architecture records, agent instructions, quality commands, and GitHub workflows are usually assembled ad hoc from many unrelated examples. `pika` provides one coherent workflow while preserving valid ecosystem and repository conventions.
 
 ## 2. Goals
 
@@ -54,7 +54,7 @@ The durable repository spine is consistent. Source and test layouts are selected
 
 ### 4.2 One obvious workflow
 
-`projectctl work "<goal>"` is the normal entry point for features, fixes, and maintenance. Specialized commands expose mechanics, not competing development methodologies.
+`pika work "<goal>"` is the normal entry point for features, fixes, and maintenance. Specialized commands expose mechanics, not competing development methodologies.
 
 ### 4.3 AI decides; the kernel transacts
 
@@ -86,7 +86,7 @@ flowchart LR
     R[Researcher] <--> B
     W[Builder] <--> B
     V[Reviewer] <--> B
-    L <--> K[projectctl kernel]
+    L <--> K[pika kernel]
     E <--> K
     R <--> K
     W <--> K
@@ -349,15 +349,15 @@ Only consequential, durable choices become ADRs. Routine implementation detail s
 ### 8.1 Human-facing commands
 
 ```text
-projectctl init
-projectctl adopt
-projectctl work "<goal>"
-projectctl resume [work-id]
-projectctl status [work-id]
-projectctl check [--changed|--all|--ci]
-projectctl upgrade
-projectctl doctor
-projectctl explain <rule-id>
+pika init
+pika adopt
+pika work "<goal>"
+pika resume [work-id]
+pika status [work-id]
+pika check [--changed|--all|--ci]
+pika upgrade
+pika doctor
+pika explain <rule-id>
 ```
 
 - `init` creates a lean contract and selected profiles for a new repository.
@@ -447,7 +447,7 @@ The lead remains the sole integration authority. Review agents are read-only by 
 
 Adapters separate role from execution backend.
 
-A runtime or harness owns the agent loop, tools, and session lifecycle. A provider supplies model inference. Role configuration may select `runtime`, `provider`, `model`, and `effort`; the runtime adapter maps those values to its supported controls. `projectctl` does not implement a new LLM client or coding-agent loop in V1.
+A runtime or harness owns the agent loop, tools, and session lifecycle. A provider supplies model inference. Role configuration may select `runtime`, `provider`, `model`, and `effort`; the runtime adapter maps those values to its supported controls. `pika` does not implement a new LLM client or coding-agent loop in V1.
 
 Preferred order:
 
@@ -585,7 +585,7 @@ A failure creates targeted repair work and returns to the earliest affected gate
 
 ## 13. Existing Repository Adoption
 
-`projectctl adopt` is discovery-first and non-destructive.
+`pika adopt` is discovery-first and non-destructive.
 
 It produces:
 
@@ -692,7 +692,7 @@ Published interfaces follow Semantic Versioning. Changelog format, release notes
 The generated workflow invokes the same binary and contract used locally:
 
 ```text
-projectctl check --ci
+pika check --ci
 ```
 
 Required CI is deterministic and makes no LLM calls. It validates:
@@ -729,7 +729,7 @@ AI review may run as optional automation, but it does not replace deterministic 
 - Platform-neutral path handling and atomic filesystem operations.
 - Runtime adapters loaded from declarative configuration; custom executable code is not embedded in the contract.
 
-## 19. Verification of projectctl
+## 19. Verification of pika
 
 The product test strategy includes:
 

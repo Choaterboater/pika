@@ -17,7 +17,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Choaterboater/projectctl/internal/yamlx"
+	"github.com/Choaterboater/pika/internal/yamlx"
 )
 
 //go:embed packs/core@1.yaml

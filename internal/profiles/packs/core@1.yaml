@@ -1,10 +1,10 @@
-# Core profile pack for projectctl M1 (spec §5.4, §6.2, §15).
+# Core profile pack for pika M1 (spec §5.4, §6.2, §15).
 profile: core
 version: "1"
 
 provenance:
   source: embedded
-  generated-by: "projectctl m1-kernel spec §5.4/§6.2/§15"
+  generated-by: "pika m1-kernel spec §5.4/§6.2/§15"
 
 detection:
   when: always

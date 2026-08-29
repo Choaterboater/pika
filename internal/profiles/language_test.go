@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Choaterboater/projectctl/internal/discover"
-	"github.com/Choaterboater/projectctl/internal/yamlx"
+	"github.com/Choaterboater/pika/internal/discover"
+	"github.com/Choaterboater/pika/internal/yamlx"
 )
 
 // langCase is one language's Resolve expectations, paired with the golden

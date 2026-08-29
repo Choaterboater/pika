@@ -7,10 +7,10 @@ import (
 	"io"
 	"strings"
 
-	"github.com/Choaterboater/projectctl/internal/adopt"
+	"github.com/Choaterboater/pika/internal/adopt"
 )
 
-// runAdopt implements `projectctl adopt [--json]` (spec §8.1, §13): a
+// runAdopt implements `pika adopt [--json]` (spec §8.1, §13): a
 // thin CLI over the read-only adoption inventory. Preview walks the
 // current repository (M1's repo root is the process working directory),
 // classifies every discovered convention against core@1, runs the
@@ -26,7 +26,7 @@ func runAdopt(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "projectctl adopt: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintf(stderr, "pika adopt: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
 	rep, err := adopt.Preview(".")

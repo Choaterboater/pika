@@ -1,11 +1,11 @@
-// Command projectctl is the root entrypoint for the projectctl CLI.
+// Command pika is the root entrypoint for the pika CLI.
 package main
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/Choaterboater/projectctl/internal/version"
+	"github.com/Choaterboater/pika/internal/version"
 )
 
 func main() {
@@ -28,6 +28,6 @@ func main() {
 	if len(args) > 0 && args[0] == "mcp" {
 		os.Exit(runMCP(args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
-	fmt.Fprintln(os.Stderr, "usage: projectctl [--version] | init [--profile <lang>] [--name <name>] [--module <path>] [--force] [--json] | check [--all|--changed|--ci] [--json] [--contract <path>] | adopt [--json] | mcp")
+	fmt.Fprintln(os.Stderr, "usage: pika [--version] | init [--profile <lang>] [--name <name>] [--module <path>] [--force] [--json] | check [--all|--changed|--ci] [--json] [--contract <path>] | adopt [--json] | mcp")
 	os.Exit(2)
 }

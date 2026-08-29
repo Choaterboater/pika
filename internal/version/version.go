@@ -1,10 +1,10 @@
-// Package version exposes the semantic version of the projectctl binary
+// Package version exposes the semantic version of the pika binary
 // and the contract schema versions it supports.
 package version
 
 import "fmt"
 
-// Version is the semantic version of the projectctl binary.
+// Version is the semantic version of the pika binary.
 // Overridden at build time via -ldflags.
 var Version = "0.1.0"
 
@@ -25,7 +25,7 @@ func String() string {
 // (see task 7 report).
 func Check(schema int) error {
 	if schema > MaxContractSchema {
-		return fmt.Errorf("version: contract schema version %d is newer than the highest supported version %d; upgrade projectctl", schema, MaxContractSchema)
+		return fmt.Errorf("version: contract schema version %d is newer than the highest supported version %d; upgrade pika", schema, MaxContractSchema)
 	}
 	return nil
 }

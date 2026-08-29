@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Choaterboater/projectctl/internal/contract"
-	"github.com/Choaterboater/projectctl/internal/yamlx"
+	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/yamlx"
 )
 
 // ExceptionsFile is the exceptions record's location relative to the

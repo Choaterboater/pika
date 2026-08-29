@@ -1,6 +1,6 @@
 package txn
 
-import "github.com/Choaterboater/projectctl/internal/fsutil"
+import "github.com/Choaterboater/pika/internal/fsutil"
 
 // Durability helpers delegate to the shared fsutil package so txn and
 // evidence run one implementation of the per-platform fsync contract
