@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/stephenchoate/projectctl/internal/version"
+	"github.com/Choaterboater/projectctl/internal/version"
 )
 
 func main() {

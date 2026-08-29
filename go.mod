@@ -1,3 +1,3 @@
-module github.com/stephenchoate/projectctl
+module github.com/Choaterboater/projectctl
 
 go 1.26
