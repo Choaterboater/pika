@@ -2,9 +2,10 @@
 // `pika adopt` (spec §13): discovery-first, non-destructive. Preview
 // walks the repository with the Task 3 discovery engine, classifies every
 // discovered convention against core@1, runs the discovered check commands
-// once each to record a baseline, and writes exactly two draft files —
-// .project/contract.yaml.draft and .project/profiles.lock.draft. No tracked
-// file is touched: applying the proposal is a later, transactional step.
+// once each to record a baseline, and writes the adoption proposals: the
+// two .draft files under .project/ plus a visible, plain-language review
+// bundle at review/adoption-review.md. No tracked file is touched:
+// applying the proposal is a later, transactional step.
 //
 // Design decisions recorded for downstream consumers (Task 12 `adopt`,
 // Task 18 e2e):
@@ -55,7 +56,8 @@ const (
 	// means the repository is already adopted.
 	committedContractPath = ".project/contract.yaml"
 
-	// contractDraftPath and lockDraftPath are the only files adopt writes.
+	// contractDraftPath and lockDraftPath are the machine-readable
+	// proposals adopt writes; review.go adds the human-readable bundle.
 	contractDraftPath = ".project/contract.yaml.draft"
 	lockDraftPath     = ".project/profiles.lock.draft"
 )
@@ -201,7 +203,7 @@ func Preview(repoRoot string) (*Report, error) {
 	}
 	sortChanges(changes)
 
-	return &Report{
+	rep := &Report{
 		Inventory:        *inv,
 		DetectedProfiles: detected,
 		ConventionMap:    conventions,
@@ -214,7 +216,13 @@ func Preview(repoRoot string) (*Report, error) {
 			{Path: contractDraftPath, After: string(contractYAML)},
 			{Path: lockDraftPath, After: string(lockJSON)},
 		},
-	}, nil
+	}
+	// The review bundle is the visible, plain-language copy of this
+	// report: .project/ is a dot-folder, and the drafts are YAML.
+	if err := WriteReview(repoRoot, ReviewData{Status: ReviewProposed, Report: rep}); err != nil {
+		return nil, err
+	}
+	return rep, nil
 }
 
 // detectedProfiles maps discovered languages to stack pack references

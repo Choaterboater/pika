@@ -92,7 +92,7 @@ func TestE2EAdoptPreview(t *testing.T) {
 		}
 	}
 	slices.Sort(added)
-	want := []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"}
+	want := []string{".project/contract.yaml.draft", ".project/profiles.lock.draft", "review/adoption-review.md"}
 	if !slices.Equal(added, want) {
 		t.Errorf("adopt wrote %v, want exactly %v", added, want)
 	}

@@ -51,7 +51,8 @@ func messyFixture(t *testing.T) string {
 }
 
 // treeDigest hashes every file under root (path + content) into one digest,
-// skipping the .project draft files when skipDrafts is set.
+// skipping the adoption proposal files — the two .project drafts and the
+// visible review bundle — when skipDrafts is set.
 func treeDigest(t *testing.T, root string, skipDrafts bool) string {
 	t.Helper()
 	var parts []string
@@ -67,7 +68,8 @@ func treeDigest(t *testing.T, root string, skipDrafts bool) string {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if skipDrafts && (rel == ".project/contract.yaml.draft" || rel == ".project/profiles.lock.draft") {
+		if skipDrafts && (rel == ".project/contract.yaml.draft" ||
+			rel == ".project/profiles.lock.draft" || rel == "review/adoption-review.md") {
 			return nil
 		}
 		data, err := os.ReadFile(p)
