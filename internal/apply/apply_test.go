@@ -376,3 +376,36 @@ func TestApplyGate1FailureIsHonest(t *testing.T) {
 		t.Errorf("review bundle does not report the gate-1 failure honestly:\n%s", review)
 	}
 }
+
+// TestApplyCommitFailureReportsRollbackFailure pins honest reporting
+// when the undo is impossible: a commit failure finishes the
+// transaction, so Rollback is refused and the applied mutations remain
+// on disk. The report must NOT claim a rollback, and the error must
+// point at the recovery state instead of claiming the pre-state.
+func TestApplyCommitFailureReportsRollbackFailure(t *testing.T) {
+	root := adoptionFixture(t)
+
+	rep, err := Run(RunOptions{Dir: root, failCommit: true})
+	if err == nil {
+		t.Fatal("injected commit failure: want error, got nil")
+	}
+	if rep.Rollback {
+		t.Error("report.Rollback = true although the undo was refused")
+	}
+	if !strings.Contains(err.Error(), "ROLLBACK FAILED") {
+		t.Errorf("error = %v, want an explicit rollback-failure report", err)
+	}
+	if !strings.Contains(err.Error(), ".project/state/recovery") {
+		t.Errorf("error = %v, want a pointer to the recovery state", err)
+	}
+
+	// The commit completed before the injected failure: the applied
+	// state is durable, which is exactly why the old "rolled back to
+	// the pre-state" claim was a lie.
+	if _, err := os.Stat(filepath.Join(root, ".project", "contract.yaml")); err != nil {
+		t.Errorf("applied contract missing after commit failure: %v", err)
+	}
+	if _, err := contract.Load(filepath.Join(root, ".project", "contract.yaml")); err != nil {
+		t.Errorf("applied contract is invalid: %v", err)
+	}
+}

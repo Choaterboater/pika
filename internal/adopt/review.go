@@ -67,7 +67,10 @@ func WriteReview(repoRoot string, data ReviewData) error {
 
 // renderReview produces the bundle's markdown. Determinism is a
 // property tests pin: no clocks, and every list renders in the sorted
-// order its source carries.
+// order its source carries. The exceptions section renders exactly
+// once, from the adoption report's proposed exceptions for a PROPOSED
+// bundle and from the draft contract's recorded exceptions for an
+// APPLIED one.
 func renderReview(data ReviewData) []byte {
 	var b strings.Builder
 	b.WriteString("# Adoption review\n\n")
@@ -78,7 +81,11 @@ func renderReview(data ReviewData) []byte {
 		b.WriteString("Status: **PROPOSED** — nothing is applied yet; only drafts exist.\n\n")
 		renderProposed(&b, data)
 	}
-	renderExceptions(&b, data.Exceptions)
+	exceptions := data.Exceptions
+	if data.Status != ReviewApplied && data.Report != nil {
+		exceptions = data.Report.Exceptions
+	}
+	renderExceptions(&b, exceptions)
 	renderGate1(&b, data)
 	renderNextStep(&b, data)
 	return []byte(b.String())
@@ -107,16 +114,11 @@ func renderProposed(b *strings.Builder, data ReviewData) {
 		}
 		b.WriteString("\n")
 	}
-	exceptions := data.Exceptions
-	if data.Status != ReviewApplied && data.Report != nil {
-		exceptions = data.Report.Exceptions
-	}
-	renderExceptions(b, exceptions)
-
 	if len(rep.ProposedChanges) == 0 {
 		b.WriteString("## Proposed changes\n\nNone — the repository already matches the core profile.\n\n")
 		return
 	}
+
 	fmt.Fprintf(b, "## Proposed changes (%d)\n\n", len(rep.ProposedChanges))
 	for _, ch := range rep.ProposedChanges {
 		fmt.Fprintf(b, "- [ ] %s `%s` — %s\n", ch.Action, ch.Path, escapeDetail(ch.Detail))

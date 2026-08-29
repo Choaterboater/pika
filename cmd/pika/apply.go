@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/Choaterboater/pika/internal/adopt"
 	"github.com/Choaterboater/pika/internal/apply"
 )
 
@@ -27,11 +28,15 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pika apply: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	rep, err := apply.Run(apply.RunOptions{Dir: ".", JSON: *jsonOut})
+	rep, err := apply.Run(apply.RunOptions{Dir: "."})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
+		// Report.Rollback is truthful: true only when the undo
+		// completed. A false here means the mutations may remain.
 		if rep.Rollback {
 			fmt.Fprintln(stderr, "nothing was applied; the repository is at its pre-state")
+		} else {
+			fmt.Fprintln(stderr, "the pre-state could not be restored; see the error above")
 		}
 		return 1
 	}
@@ -80,8 +85,5 @@ func printApplyReport(rep apply.Report, stdout io.Writer) {
 			fmt.Fprintf(stdout, "  %s\n", w)
 		}
 	}
-	fmt.Fprintf(stdout, "review bundle rewritten: %s\n", applyReviewPath)
+	fmt.Fprintf(stdout, "review bundle rewritten: %s\n", adopt.ReviewPath)
 }
-
-// applyReviewPath names the rewritten review bundle for the summary.
-const applyReviewPath = "review/adoption-review.md"

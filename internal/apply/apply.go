@@ -8,10 +8,15 @@
 // bundle as APPLIED.
 //
 // Every mutation runs inside a txn transaction: a failure at any point
-// after Begin rolls the repository back to its exact pre-state. A
-// failing gate 1 after a successful commit is NOT a rollback: the
-// applied state is valid, it just carries findings, which the report
-// and the review bundle state honestly.
+// after Begin rolls the repository back to its exact pre-state — and
+// the report claims that rollback only when the undo actually
+// completed. When the undo itself is refused (a commit error finishes
+// the transaction; an undo error leaves it open with its journal
+// intact), the error says the mutations may remain instead of claiming
+// a pre-state that no longer holds. A failing gate 1 after a
+// successful commit is NOT a rollback: the applied state is valid, it
+// just carries findings, which the report and the review bundle state
+// honestly.
 package apply
 
 import (
@@ -85,15 +90,16 @@ type Report struct {
 type RunOptions struct {
 	// Dir is the repository root (default ".").
 	Dir string
-	// JSON requests JSON output. Run always returns the Report value;
-	// the CLI layer renders it — human or JSON — so both surfaces stay
-	// byte-stable against the same data.
-	JSON bool
 
 	// failAfter, when > 0, applies only the first failAfter operations
 	// of the plan and then fails, exercising the documented
 	// Begin → Apply → Rollback contract. Test hook; zero in production.
 	failAfter int
+	// failCommit, when true, treats the commit as failed after it
+	// completes, exercising the commit-failure path: the transaction
+	// is already finished, so the undo is refused and the applied
+	// mutations remain on disk. Test hook; false in production.
+	failCommit bool
 }
 
 // Run applies the adoption drafts in opts.Dir. It returns an error —
@@ -111,7 +117,7 @@ func Run(opts RunOptions) (Report, error) {
 
 	// Preconditions, all fail-closed before a single byte is written.
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(contractRel))); err == nil {
-		return Report{}, fmt.Errorf("apply: %s already exists: repository already adopted; use `pika check` or `pika upgrade` instead", contractRel)
+		return Report{}, fmt.Errorf("apply: %s already exists: repository already adopted; use `pika check` instead", contractRel)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Report{}, fmt.Errorf("apply: stat %s: %w", contractRel, err)
 	}
@@ -193,8 +199,15 @@ func Run(opts RunOptions) (Report, error) {
 	if applyErr != nil {
 		return rollback(tx, applyErr)
 	}
-	if err := tx.Commit(); err != nil {
-		return rollback(tx, fmt.Errorf("commit: %w", err))
+	commitErr := tx.Commit()
+	if commitErr == nil && opts.failCommit {
+		// The commit completed (the transaction is finished, its
+		// journal retired); treating it as failed exercises the
+		// rollback-failure reporting path.
+		commitErr = errors.New("commit: injected failure")
+	}
+	if commitErr != nil {
+		return rollback(tx, fmt.Errorf("commit: %w", commitErr))
 	}
 
 	report := Report{Applied: make([]Applied, 0, len(plan))}
@@ -239,10 +252,17 @@ func Run(opts RunOptions) (Report, error) {
 	return report, nil
 }
 
-// rollback undoes the transaction and returns the rolled-back report.
+// rollback undoes the transaction after a failure and reports honestly:
+// Rollback is true only when the undo completed. A failed Rollback —
+// the transaction already finished by a commit error, or an undo that
+// could not restore a file — leaves mutations behind (after a commit
+// failure, all of them), and the returned error says so instead of
+// claiming a pre-state that no longer holds.
 func rollback(tx *txn.Tx, cause error) (Report, error) {
-	if err := tx.Rollback(); err != nil {
-		return Report{Rollback: true}, errors.Join(fmt.Errorf("apply: %w", cause), err)
+	if rerr := tx.Rollback(); rerr != nil {
+		return Report{}, errors.Join(
+			fmt.Errorf("apply: %w", cause),
+			fmt.Errorf("apply: ROLLBACK FAILED — mutations may remain on disk; inspect .project/state/recovery (the journal is preserved for recovery): %w", rerr))
 	}
 	return Report{Rollback: true}, fmt.Errorf("apply: %w (rolled back to the pre-state)", cause)
 }

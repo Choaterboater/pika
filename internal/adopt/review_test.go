@@ -44,9 +44,20 @@ func TestPreviewWritesReviewBundle(t *testing.T) {
 			t.Errorf("review bundle missing %q\n---\n%s", want, review)
 		}
 	}
+
 	// Deviating paths must appear so the human sees what deviates.
 	if !strings.Contains(review, "`utils/`") && !strings.Contains(review, "`utils/helpers.go`") {
 		t.Errorf("review bundle does not list the deviating utils paths\n%s", review)
+	}
+
+	// The exceptions section renders exactly once, from the report's
+	// proposed exceptions — never a contradictory "None" after the
+	// real table.
+	if got := strings.Count(review, "## Exceptions"); got != 1 {
+		t.Errorf("exceptions section rendered %d times, want 1\n%s", got, review)
+	}
+	if strings.Contains(review, "None — no naming deviations were recorded") {
+		t.Errorf("bundle claims no exceptions although the report proposes them:\n%s", review)
 	}
 }
 
