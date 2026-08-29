@@ -197,3 +197,38 @@ func TestSkipsIgnoredDirsAndDepthLimit(t *testing.T) {
 		t.Fatalf("expected only shallow go module, got %+v", inv.Packages)
 	}
 }
+
+func TestParseTOMLValues(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`"myproj" # the name`, "myproj"},
+		{`"weird#name"`, "weird#name"},
+		{`"esc\"aped"`, `esc"aped`},
+		{`"plain"`, "plain"},
+		{`bare # comment`, "bare"},
+		{`plain`, "plain"},
+	}
+	for _, tc := range cases {
+		if got := parseTOMLValue(tc.in); got != tc.want {
+			t.Errorf("parseTOMLValue(%q) = %v, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCargoTOMLQuotedNameWithComment(t *testing.T) {
+	root := t.TempDir()
+	cargo := "[package]\nname = \"myproj\" # the name\nversion = \"0.1.0\"\n[workspace]\nmembers = [\"crates/a\", \"crates/b\"] # all of them\n"
+	if err := os.WriteFile(filepath.Join(root, "Cargo.toml"), []byte(cargo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := readCargoTOML(filepath.Join(root, "Cargo.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Package.Name != "myproj" {
+		t.Errorf("Package.Name = %q, want myproj", c.Package.Name)
+	}
+	want := []string{"crates/a", "crates/b"}
+	if !slices.Equal(c.Workspace.Members, want) {
+		t.Errorf("members = %v, want %v", c.Workspace.Members, want)
+	}
+}

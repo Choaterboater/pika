@@ -665,27 +665,139 @@ func parseTOMLTables(path string) (tomlTables, error) {
 }
 
 // parseTOMLValue converts a trimmed TOML value to a string or []string;
-// anything else is returned verbatim as a string.
+// anything else is returned verbatim as a string. Inline comments are
+// stripped, but never from inside a quoted token.
 func parseTOMLValue(v string) any {
-	if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
-		body := strings.TrimSuffix(strings.TrimPrefix(v, "["), "]")
-		var out []string
-		for _, item := range strings.Split(body, ",") {
-			item = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(item), `"`), `"`)
-			if item != "" {
-				out = append(out, item)
-			}
-		}
-		return out
+	if items, ok := parseTOMLArray(v); ok {
+		return items
 	}
-	if len(v) >= 2 && strings.HasPrefix(v, `"`) && strings.HasSuffix(v, `"`) {
-		return strings.TrimSuffix(strings.TrimPrefix(v, `"`), `"`)
+	if s, ok := parseQuotedTOMLString(v); ok {
+		return s
 	}
-	// Strip trailing comments from bare values.
+	// Bare value: strip trailing comments.
 	if idx := strings.Index(v, "#"); idx >= 0 {
 		v = strings.TrimSpace(v[:idx])
 	}
 	return v
+}
+
+// parseTOMLArray parses a leading "[" ... matching "]" segment into string
+// items, ignoring anything after the closing bracket (typically an inline
+// comment). It reports ok=false when v does not start with "[" or the
+// closing bracket is missing. Quoted items are unquoted; bare items keep
+// their comment-stripped text.
+func parseTOMLArray(v string) ([]string, bool) {
+	if !strings.HasPrefix(v, "[") {
+		return nil, false
+	}
+	depth, inQuote, esc := 0, false, false
+	end := -1
+scan:
+	for i := range len(v) {
+		c := v[i]
+		if esc {
+			esc = false
+			continue
+		}
+		switch {
+		case inQuote:
+			if c == '\\' {
+				esc = true
+			} else if c == '"' {
+				inQuote = false
+			}
+		case c == '"':
+			inQuote = true
+		case c == '[':
+			depth++
+		case c == ']':
+			depth--
+			if depth == 0 {
+				end = i
+				break scan
+			}
+		}
+	}
+	if end < 0 {
+		return nil, false
+	}
+	var items []string
+	start := 1
+	inQuote, esc = false, false
+	for i := 1; i < end; i++ {
+		c := v[i]
+		if esc {
+			esc = false
+			continue
+		}
+		if inQuote {
+			if c == '\\' {
+				esc = true
+			} else if c == '"' {
+				inQuote = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inQuote = true
+		case ',':
+			items = append(items, v[start:i])
+			start = i + 1
+		}
+	}
+	items = append(items, v[start:end])
+	var out []string
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if s, ok := parseQuotedTOMLString(item); ok {
+			out = append(out, s)
+			continue
+		}
+		if idx := strings.Index(item, "#"); idx >= 0 {
+			item = strings.TrimSpace(item[:idx])
+		}
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out, true
+}
+
+// parseQuotedTOMLString parses a leading double-quoted TOML string and
+// returns its unquoted content plus everything after the closing quote
+// (typically an inline comment). It reports ok=false when v does not start
+// with a quote or the closing quote is missing. `\"` and `\\` escapes are
+// resolved; other escape sequences are kept verbatim.
+func parseQuotedTOMLString(v string) (string, bool) {
+	if !strings.HasPrefix(v, `"`) {
+		return "", false
+	}
+	var b strings.Builder
+	for i := 1; i < len(v); i++ {
+		switch c := v[i]; c {
+		case '\\':
+			if i+1 >= len(v) {
+				return "", false
+			}
+			i++
+			switch v[i] {
+			case '"', '\\':
+				b.WriteByte(v[i])
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(v[i])
+			}
+		case '"':
+			return b.String(), true
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return "", false // unterminated string
 }
 
 type goMod struct {
