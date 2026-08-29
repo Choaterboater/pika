@@ -9,12 +9,16 @@ import (
 )
 
 func main() {
-	for _, arg := range os.Args[1:] {
+	args := os.Args[1:]
+	for _, arg := range args {
 		if arg == "--version" || arg == "-version" || arg == "version" {
 			fmt.Println(version.String())
 			return
 		}
 	}
-	fmt.Fprintln(os.Stderr, "usage: projectctl [--version]")
+	if len(args) > 0 && args[0] == "check" {
+		os.Exit(runCheck(args[1:], os.Stdout, os.Stderr))
+	}
+	fmt.Fprintln(os.Stderr, "usage: projectctl [--version] | check [--all|--changed|--ci] [--json] [--contract <path>]")
 	os.Exit(2)
 }
