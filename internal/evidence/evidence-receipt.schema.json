@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:projectctl:evidence-receipt.schema.json",
+  "title": "projectctl evidence receipt (spec section 14.1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "work_id",
+    "contract_version",
+    "profile_lock",
+    "commit",
+    "tree",
+    "roles",
+    "changed_files",
+    "commands",
+    "surface_scenario",
+    "baseline_failures",
+    "regressions",
+    "review",
+    "docs_impact",
+    "completion"
+  ],
+  "properties": {
+    "schema": {"const": 1},
+    "work_id": {
+      "type": "string",
+      "pattern": "^[0-9]{8}-[a-z0-9]+(-[a-z0-9]+)*-[0-9a-f]{4}$"
+    },
+    "contract_version": {"type": "string"},
+    "commit": {"type": "string"},
+    "tree": {"type": "string"},
+    "profile_lock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "packs"],
+      "properties": {
+        "digest": {"type": "string"},
+        "packs": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/pack"}
+        }
+      }
+    },
+    "roles": {"type": "array", "items": {"$ref": "#/$defs/role"}},
+    "changed_files": {"type": "array", "items": {"$ref": "#/$defs/changedFile"}},
+    "commands": {"type": "array", "items": {"$ref": "#/$defs/command"}},
+    "surface_scenario": {"$ref": "#/$defs/surfaceScenario"},
+    "baseline_failures": {"type": "array", "items": {"type": "string"}},
+    "regressions": {"type": "array", "items": {"type": "string"}},
+    "review": {"type": "array", "items": {"$ref": "#/$defs/reviewFinding"}},
+    "docs_impact": {"type": "array", "items": {"type": "string"}},
+    "completion": {"$ref": "#/$defs/completion"}
+  },
+  "$defs": {
+    "pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "source", "digest"],
+      "properties": {
+        "version": {"type": "string"},
+        "source": {"type": "string"},
+        "digest": {"type": "string"}
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "runtime", "provider", "model", "substituted"],
+      "properties": {
+        "role": {"type": "string"},
+        "runtime": {"type": "string"},
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "substituted": {"type": "boolean"}
+      }
+    },
+    "changedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "ownership"],
+      "properties": {
+        "path": {"type": "string"},
+        "ownership": {"type": "string"}
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cmd", "exit", "duration_ms", "output_summary", "output_truncation"],
+      "properties": {
+        "cmd": {"type": "string"},
+        "exit": {"type": "integer"},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "output_summary": {"type": "string", "maxLength": 8192},
+        "output_truncation": {"$ref": "#/$defs/truncation"}
+      }
+    },
+    "truncation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["truncated", "original_bytes"],
+      "properties": {
+        "truncated": {"type": "boolean"},
+        "original_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "surfaceScenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ran", "description"],
+      "properties": {
+        "ran": {"type": "boolean"},
+        "description": {"type": "string"}
+      }
+    },
+    "reviewFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "finding", "disposition"],
+      "properties": {
+        "agent": {"type": "string"},
+        "finding": {"type": "string"},
+        "disposition": {"type": "string"}
+      }
+    },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["complete", "reason"],
+      "properties": {
+        "complete": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "blocker": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"complete": {"const": false}}, "required": ["complete"]},
+          "then": {"properties": {"reason": {"minLength": 1}}, "required": ["reason"]}
+        },
+        {
+          "if": {"properties": {"complete": {"const": true}}, "required": ["complete"]},
+          "then": {"not": {"required": ["blocker"]}}
+        }
+      ]
+    }
+  }
+}
