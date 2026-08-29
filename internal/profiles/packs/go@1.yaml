@@ -1,0 +1,61 @@
+# Go language profile pack for projectctl M1 (spec §5.4, §6.1, §6.2).
+profile: go
+version: "1"
+
+provenance:
+  source: embedded
+  generated-by: "projectctl m1-kernel spec §5.4/§6.1"
+
+detection:
+  when: "language == go"
+
+layout:
+  # Spec §6.1: cmd/ for binaries, internal/ for private packages; pkg/
+  # only for intentionally public reusable APIs.
+  expectations:
+    - "cmd/ for binaries"
+    - "internal/ for private packages"
+    - "pkg/ only for intentionally public reusable APIs"
+
+templates: []
+
+naming:
+  # Core's naming rules apply; the language pack adds none in M1.
+  rules: []
+
+verification:
+  # Discovery sentinels carry the suggested command for when the
+  # repository's own discovery (Makefile, package.json scripts) finds
+  # nothing; the resolver keeps them as sentinels, not commands.
+  checks:
+    - id: format
+      discovery: true
+      hint: [gofmt, -l, -w, .]
+    - id: lint
+      discovery: true
+      hint: [go, vet, ./...]
+    - id: typecheck
+      discovery: true
+      hint: [go, build, ./...]
+    - id: test
+      cmd: [go, test, ./...]
+    - id: smoke
+      discovery: true
+
+doc-triggers: []
+
+agent-guidance: []
+
+migration:
+  steps: []
+
+compatibility:
+  requires: []
+
+conventions:
+  branches:
+    types: [feat, fix, docs, refactor, chore]
+    format: "{type}/{slug}"
+  pull-requests:
+    draft-until-checks-pass: true
+    merge-strategy: squash

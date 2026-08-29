@@ -65,6 +65,26 @@ func TestFromProfilesKeepsProfileCommands(t *testing.T) {
 	}
 }
 
+// TestFromProfilesOverridesProfileCommand asserts precedence over a real
+// profile command (not just a discovery sentinel): a contract command
+// replaces the resolved pack's command for the same slot.
+func TestFromProfilesOverridesProfileCommand(t *testing.T) {
+	cs := profiles.CheckSet{
+		Format:    profiles.Check{ID: "format", Discovery: true},
+		Lint:      profiles.Check{ID: "lint", Discovery: true},
+		Typecheck: profiles.Check{ID: "typecheck", Discovery: true},
+		Test:      profiles.Check{ID: "test", Cmd: []string{"go", "test", "./..."}},
+		Smoke:     profiles.Check{ID: "smoke", Discovery: true},
+	}
+	gates, err := FromProfiles(cs, map[string]string{"test": "make test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gates[3]; got.ID != "test" || len(got.Cmd) != 2 || got.Cmd[0] != "make" || got.Cmd[1] != "test" {
+		t.Fatalf("test gate = %+v, want contract command [make test]", gates[3])
+	}
+}
+
 func TestFromProfilesRejectsEmptyContractCommand(t *testing.T) {
 	cs := profiles.CheckSet{Lint: profiles.Check{ID: "lint", Discovery: true}}
 	if _, err := FromProfiles(cs, map[string]string{"lint": "   "}); err == nil {

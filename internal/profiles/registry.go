@@ -14,8 +14,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"github.com/goccy/go-yaml"
+	"github.com/Choaterboater/projectctl/internal/yamlx"
 )
 
 //go:embed packs/core@1.yaml
@@ -42,22 +43,21 @@ var embeddedPacks = map[string]packEntry{
 	CoreRef: {name: "core", version: "1", data: corePackYAML},
 }
 
-// Pack mirrors the spec §5.4 pack structure.
 type Pack struct {
 	Profile       string        `yaml:"profile"`
 	Version       string        `yaml:"version"`
-	Provenance    Provenance    `yaml:"provenance"`
-	Detection     Detection     `yaml:"detection"`
-	Layout        Layout        `yaml:"layout"`
-	Files         Files         `yaml:"files"`
-	Templates     []Template    `yaml:"templates"`
-	Naming        Naming        `yaml:"naming"`
-	Verification  Verification  `yaml:"verification"`
-	DocTriggers   []DocTrigger  `yaml:"doc-triggers"`
+	Provenance    Provenance    `yaml:"provenance" yamlx:"strict"`
+	Detection     Detection     `yaml:"detection" yamlx:"strict"`
+	Layout        Layout        `yaml:"layout" yamlx:"strict"`
+	Files         Files         `yaml:"files" yamlx:"strict"`
+	Templates     []Template    `yaml:"templates" yamlx:"strict"`
+	Naming        Naming        `yaml:"naming" yamlx:"strict"`
+	Verification  Verification  `yaml:"verification" yamlx:"strict"`
+	DocTriggers   []DocTrigger  `yaml:"doc-triggers" yamlx:"strict"`
 	AgentGuidance []string      `yaml:"agent-guidance"`
-	Migration     Migration     `yaml:"migration"`
-	Compatibility Compatibility `yaml:"compatibility"`
-	Conventions   Conventions   `yaml:"conventions"`
+	Migration     Migration     `yaml:"migration" yamlx:"strict"`
+	Compatibility Compatibility `yaml:"compatibility" yamlx:"strict"`
+	Conventions   Conventions   `yaml:"conventions" yamlx:"strict"`
 }
 
 // Provenance records where the pack came from.
@@ -76,6 +76,9 @@ type Layout struct {
 	ContractPath string   `yaml:"contract-path"`
 	StateDir     string   `yaml:"state-dir"`
 	DocsSpine    []string `yaml:"docs-spine"`
+	// Expectations records the stack-owned layout (spec §6.1) a
+	// language pack requires; core leaves it empty.
+	Expectations []string `yaml:"expectations"`
 }
 
 // Files declares files the profile requires to exist.
@@ -91,7 +94,7 @@ type Template struct {
 
 // Naming groups the naming rules a profile enforces.
 type Naming struct {
-	Rules []namingSpec `yaml:"rules"`
+	Rules []namingSpec `yaml:"rules" yamlx:"strict"`
 }
 
 // namingSpec is the pack-side form of a naming rule.
@@ -105,14 +108,17 @@ type namingSpec struct {
 
 // Verification groups the checks a profile declares.
 type Verification struct {
-	Checks []checkSpec `yaml:"checks"`
+	Checks []checkSpec `yaml:"checks" yamlx:"strict"`
 }
 
-// checkSpec is the pack-side form of a check slot.
+// checkSpec is the pack-side form of a check slot. A discovery sentinel
+// may carry a hint: the suggested command for when the repository's own
+// discovery finds nothing.
 type checkSpec struct {
 	ID        string   `yaml:"id"`
 	Cmd       []string `yaml:"cmd"`
 	Discovery bool     `yaml:"discovery"`
+	Hint      []string `yaml:"hint"`
 }
 
 // DocTrigger names documentation that must stay in sync with changes.
@@ -134,8 +140,8 @@ type Compatibility struct {
 
 // Conventions carries the PR and branch conventions from spec §15.
 type Conventions struct {
-	Branches     BranchConventions      `yaml:"branches"`
-	PullRequests PullRequestConventions `yaml:"pull-requests"`
+	Branches     BranchConventions      `yaml:"branches" yamlx:"strict"`
+	PullRequests PullRequestConventions `yaml:"pull-requests" yamlx:"strict"`
 }
 
 // BranchConventions declares branch naming.
@@ -161,11 +167,13 @@ type Layer struct {
 
 // Check is one verification slot: either an explicit command (command name
 // plus args, never a shell string) or a discovery sentinel meaning the
-// stack layer supplies the real command.
+// stack layer supplies the real command. A discovery sentinel may carry a
+// hint: the suggested command for when repository discovery finds none.
 type Check struct {
 	ID        string
 	Cmd       []string
 	Discovery bool
+	Hint      []string
 }
 
 // CheckSet holds the five verification slots.
@@ -196,38 +204,99 @@ type Resolved struct {
 }
 
 // Resolve composes the selected profile packs, in spec §5.4 order, into a
-// Resolved. M1 resolves exactly [core@1]; any other selection is an error
-// listing the supported packs.
+// Resolved. M1 resolves [core@1] or [core@1, <language>@1]: core exactly
+// once, first, followed by at most one language pack. Each later layer
+// refines the previous ones; a language pack's check slots replace the
+// core sentinels it declares.
 func Resolve(selected []string) (*Resolved, error) {
-	if len(selected) != 1 || selected[0] != CoreRef {
-		return nil, fmt.Errorf("profiles: unsupported selection %v; M1 resolves exactly [%s]", selected, CoreRef)
-	}
-	entry, ok := embeddedPacks[CoreRef]
-	if !ok {
-		return nil, fmt.Errorf("profiles: pack %s not registered", CoreRef)
+	if err := validateSelection(selected); err != nil {
+		return nil, err
 	}
 
-	var pack Pack
-	if err := yaml.UnmarshalWithOptions(entry.data, &pack, yaml.Strict()); err != nil {
-		return nil, fmt.Errorf("profiles: parse %s: %w", CoreRef, err)
-	}
+	resolved := &Resolved{Checks: CheckSet{}}
+	for i, ref := range selected {
+		entry, ok := embeddedPacks[ref]
+		if !ok {
+			return nil, fmt.Errorf("profiles: pack %s not registered (supported packs: %s)", ref, strings.Join(supportedRefs(), ", "))
+		}
 
-	checks, err := pack.checkSet()
-	if err != nil {
-		return nil, fmt.Errorf("profiles: pack %s: %w", CoreRef, err)
-	}
+		var pack Pack
+		if err := yamlx.UnmarshalStrict(entry.data, &pack); err != nil {
+			return nil, fmt.Errorf("profiles: parse %s: %w", ref, err)
+		}
 
-	return &Resolved{
-		Layers: []Layer{{
+		checks, err := pack.checkSet()
+		if err != nil {
+			return nil, fmt.Errorf("profiles: pack %s: %w", ref, err)
+		}
+		if i == 0 {
+			resolved.Checks = checks
+			resolved.NamingRules = namingRules(pack.Naming.Rules)
+		} else {
+			resolved.Checks = mergeChecks(resolved.Checks, checks)
+			resolved.NamingRules = append(resolved.NamingRules, namingRules(pack.Naming.Rules)...)
+		}
+		resolved.DocTriggers = append(resolved.DocTriggers, pack.DocTriggers...)
+		resolved.Layers = append(resolved.Layers, Layer{
 			Name:    entry.name,
 			Version: entry.version,
 			Source:  lockSource,
 			Pack:    pack,
-		}},
-		Checks:      checks,
-		NamingRules: namingRules(pack.Naming.Rules),
-		DocTriggers: pack.DocTriggers,
-	}, nil
+		})
+	}
+	return resolved, nil
+}
+
+// validateSelection enforces the M1 composition rules: exactly one core
+// pack in first position, then at most one language pack.
+func validateSelection(selected []string) error {
+	if len(selected) == 0 || selected[0] != CoreRef {
+		return fmt.Errorf("profiles: unsupported selection %v; supported packs: %s", selected, strings.Join(supportedRefs(), ", "))
+	}
+	if len(selected) > 2 {
+		return fmt.Errorf("profiles: selection %v composes at most [%s, <language>@1]", selected, CoreRef)
+	}
+	if len(selected) == 2 {
+		ref := selected[1]
+		if ref == CoreRef {
+			return fmt.Errorf("profiles: %s may appear exactly once", CoreRef)
+		}
+		if _, ok := embeddedPacks[ref]; !ok {
+			return fmt.Errorf("profiles: unsupported selection %v; supported packs: %s", selected, strings.Join(supportedRefs(), ", "))
+		}
+		if !languagePacks[ref] {
+			return fmt.Errorf("profiles: pack %s is not a language pack; M1 composes only core and language layers", ref)
+		}
+	}
+	return nil
+}
+
+// mergeChecks overlays the language layer's check slots onto the core
+// layer's: each slot the language pack declares replaces the inherited
+// value, so real commands and hinted sentinels win over bare core
+// sentinels.
+func mergeChecks(base, lang CheckSet) CheckSet {
+	out := base
+	baseSlots := map[string]*Check{
+		"format":    &out.Format,
+		"lint":      &out.Lint,
+		"typecheck": &out.Typecheck,
+		"test":      &out.Test,
+		"smoke":     &out.Smoke,
+	}
+	langSlots := map[string]Check{
+		"format":    lang.Format,
+		"lint":      lang.Lint,
+		"typecheck": lang.Typecheck,
+		"test":      lang.Test,
+		"smoke":     lang.Smoke,
+	}
+	for id, c := range langSlots {
+		if c.ID == id {
+			*baseSlots[id] = c
+		}
+	}
+	return out
 }
 
 // checkSet maps the pack's declared checks onto the fixed slots. Every
@@ -254,11 +323,18 @@ func (p *Pack) checkSet() (CheckSet, error) {
 		seen[spec.ID] = true
 		slot.ID = spec.ID
 		if spec.Discovery {
+			if len(spec.Cmd) != 0 {
+				return cs, fmt.Errorf("check %q: discovery takes no cmd", spec.ID)
+			}
 			slot.Discovery = true
+			slot.Hint = spec.Hint
 			continue
 		}
 		if len(spec.Cmd) == 0 {
 			return cs, fmt.Errorf("check %q: need cmd or discovery", spec.ID)
+		}
+		if len(spec.Hint) != 0 {
+			return cs, fmt.Errorf("check %q: hint belongs to a discovery sentinel", spec.ID)
 		}
 		slot.Cmd = spec.Cmd
 	}

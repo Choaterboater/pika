@@ -1,0 +1,62 @@
+# TypeScript/JavaScript language profile pack for projectctl M1
+# (spec §5.4, §6.1, §6.2).
+profile: typescript
+version: "1"
+
+provenance:
+  source: embedded
+  generated-by: "projectctl m1-kernel spec §5.4/§6.1"
+
+detection:
+  when: "language == typescript"
+
+layout:
+  # Spec §6.1: src/ for a single package; apps/ and packages/ for a
+  # workspace when the chosen package manager supports it.
+  expectations:
+    - "src/ for a single package"
+    - "apps/ and packages/ for a workspace when the chosen package manager supports it"
+
+templates: []
+
+naming:
+  # Core's naming rules apply; the language pack adds none in M1.
+  rules: []
+
+verification:
+  # TypeScript checks live in package.json scripts: every slot stays a
+  # discovery sentinel and the hint is the suggested command for when the
+  # script is absent.
+  checks:
+    - id: format
+      discovery: true
+      hint: [npm, run, format]
+    - id: lint
+      discovery: true
+      hint: [npm, run, lint]
+    - id: typecheck
+      discovery: true
+      hint: [npx, tsc, --noEmit]
+    - id: test
+      discovery: true
+      hint: [npm, test]
+    - id: smoke
+      discovery: true
+
+doc-triggers: []
+
+agent-guidance: []
+
+migration:
+  steps: []
+
+compatibility:
+  requires: []
+
+conventions:
+  branches:
+    types: [feat, fix, docs, refactor, chore]
+    format: "{type}/{slug}"
+  pull-requests:
+    draft-until-checks-pass: true
+    merge-strategy: squash

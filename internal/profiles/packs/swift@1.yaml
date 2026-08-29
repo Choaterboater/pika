@@ -1,0 +1,55 @@
+# Swift language profile pack for projectctl M1 (spec §5.4, §6.1, §6.2).
+profile: swift
+version: "1"
+
+provenance:
+  source: embedded
+  generated-by: "projectctl m1-kernel spec §5.4/§6.1"
+
+detection:
+  when: "language == swift"
+
+layout:
+  # Spec §6.1: preserve Xcode or Swift Package Manager structures; do not
+  # introduce a synthetic universal src/ directory.
+  expectations:
+    - "preserve Xcode or Swift Package Manager structures"
+    - "no synthetic universal src/ directory"
+
+templates: []
+
+naming:
+  # Core's naming rules apply; the language pack adds none in M1.
+  rules: []
+
+verification:
+  checks:
+    - id: format
+      discovery: true
+      hint: [swift, format]
+    - id: lint
+      discovery: true
+    - id: typecheck
+      cmd: [swift, build]
+    - id: test
+      cmd: [swift, test]
+    - id: smoke
+      discovery: true
+
+doc-triggers: []
+
+agent-guidance: []
+
+migration:
+  steps: []
+
+compatibility:
+  requires: []
+
+conventions:
+  branches:
+    types: [feat, fix, docs, refactor, chore]
+    format: "{type}/{slug}"
+  pull-requests:
+    draft-until-checks-pass: true
+    merge-strategy: squash

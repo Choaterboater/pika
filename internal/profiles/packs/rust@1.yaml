@@ -1,0 +1,58 @@
+# Rust language profile pack for projectctl M1 (spec §5.4, §6.1, §6.2).
+profile: rust
+version: "1"
+
+provenance:
+  source: embedded
+  generated-by: "projectctl m1-kernel spec §5.4/§6.1"
+
+detection:
+  when: "language == rust"
+
+layout:
+  # Spec §6.1: preserve Cargo src/, tests, examples, benches, and
+  # workspace crates.
+  expectations:
+    - "preserve Cargo src/, tests, examples, benches, and workspace crates"
+
+templates: []
+
+naming:
+  # Core's naming rules apply; the language pack adds none in M1.
+  rules: []
+
+verification:
+  # Format and lint stay discovery sentinels so advisory-gate policy (the
+  # --check and -D warnings hardenings live in the hints) is decided at
+  # check time; typecheck and test are fixed Cargo commands.
+  checks:
+    - id: format
+      discovery: true
+      hint: [cargo, fmt, --, --check]
+    - id: lint
+      discovery: true
+      hint: [cargo, clippy, --, -D, warnings]
+    - id: typecheck
+      cmd: [cargo, build]
+    - id: test
+      cmd: [cargo, test]
+    - id: smoke
+      discovery: true
+
+doc-triggers: []
+
+agent-guidance: []
+
+migration:
+  steps: []
+
+compatibility:
+  requires: []
+
+conventions:
+  branches:
+    types: [feat, fix, docs, refactor, chore]
+    format: "{type}/{slug}"
+  pull-requests:
+    draft-until-checks-pass: true
+    merge-strategy: squash

@@ -1,0 +1,60 @@
+# Python language profile pack for projectctl M1 (spec §5.4, §6.1, §6.2).
+profile: python
+version: "1"
+
+provenance:
+  source: embedded
+  generated-by: "projectctl m1-kernel spec §5.4/§6.1"
+
+detection:
+  when: "language == python"
+
+layout:
+  # Spec §6.1: src/<import-package>/ and tests/, unless an adopted
+  # repository has a coherent alternative.
+  expectations:
+    - "src/<import-package>/ for the import package"
+    - "tests/ for the test suite, unless an adopted repository has a coherent alternative"
+
+templates: []
+
+naming:
+  # Core's naming rules apply; the language pack adds none in M1.
+  rules: []
+
+verification:
+  # Discovery sentinels carry the suggested command for when the
+  # repository's own discovery (Makefile, pyproject scripts) finds
+  # nothing; the resolver keeps them as sentinels, not commands.
+  checks:
+    - id: format
+      discovery: true
+      hint: [ruff, format, .]
+    - id: lint
+      discovery: true
+      hint: [ruff, check, .]
+    - id: typecheck
+      discovery: true
+      hint: [mypy, .]
+    - id: test
+      cmd: [python, -m, pytest]
+    - id: smoke
+      discovery: true
+
+doc-triggers: []
+
+agent-guidance: []
+
+migration:
+  steps: []
+
+compatibility:
+  requires: []
+
+conventions:
+  branches:
+    types: [feat, fix, docs, refactor, chore]
+    format: "{type}/{slug}"
+  pull-requests:
+    draft-until-checks-pass: true
+    merge-strategy: squash
