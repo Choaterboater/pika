@@ -1,0 +1,8 @@
+schema: 1
+schema: 2
+project:
+  name: fixture
+  topology: single
+profiles: [core@1]
+evidence:
+  publish: sanitized

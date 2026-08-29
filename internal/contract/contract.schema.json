@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema", "project", "profiles", "github", "evidence"],
+  "properties": {
+    "schema": {"type": "integer", "minimum": 1},
+    "project": {
+      "type": "object",
+      "required": ["name", "topology"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "topology": {"enum": ["single", "workspace"]}
+      },
+      "additionalProperties": false
+    },
+    "profiles": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "packages": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/definitions/package"}
+    },
+    "commands": {
+      "type": "object",
+      "properties": {
+        "format": {"type": "string"},
+        "lint": {"type": "string"},
+        "typecheck": {"type": "string"},
+        "test": {"type": "string"},
+        "smoke": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "agents": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/definitions/agent"}
+    },
+    "github": {
+      "type": "object",
+      "required": ["merge"],
+      "properties": {
+        "merge": {"enum": ["squash", "merge", "rebase"]}
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["publish"],
+      "properties": {
+        "publish": {"enum": ["sanitized", "local-only"]}
+      },
+      "additionalProperties": false
+    },
+    "exceptions": {"type": "array"},
+    "extensions": {"type": "object"}
+  },
+  "definitions": {
+    "package": {
+      "type": "object",
+      "required": ["root", "profiles"],
+      "properties": {
+        "root": {"type": "string"},
+        "profiles": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "agent": {
+      "type": "object",
+      "required": ["runtime"],
+      "properties": {
+        "runtime": {"type": "string", "enum": ["omp", "codex", "claude", "gemini", "opencode", "acp", "custom"]},
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "effort": {"enum": ["low", "medium", "high"]}
+      },
+      "additionalProperties": false
+    }
+  }
+}

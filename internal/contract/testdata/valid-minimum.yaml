@@ -1,0 +1,13 @@
+schema: 1
+project:
+  name: fixture
+  topology: single
+profiles:
+  - core@1
+commands:
+  test: go test ./...
+evidence:
+  publish: sanitized
+github:
+  merge: squash
+extensions: {}
