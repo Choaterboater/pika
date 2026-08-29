@@ -490,6 +490,33 @@ func TestReadContractIncludesResolvedProfiles(t *testing.T) {
 	}
 }
 
+func TestReadContractRejectsPathTraversal(t *testing.T) {
+	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\nextensions: {}\n"
+	root := fixtureRepo(t, contract, "")
+	// A secret outside any contract location: even if the tool read it, no
+	// content may come back through a path argument.
+	writeFile(t, root, ".ssh/id_rsa", "SECRET-KEY-MATERIAL")
+	s := startServer(t, root)
+	s.initialize()
+
+	for _, path := range []string{"../../.ssh/id_rsa", ".contracts/../../etc/passwd", "/etc/passwd"} {
+		resp := s.callTool(1, "read_contract", map[string]any{"path": path})
+		errObj := wantToolError(t, resp, "invalid_params")
+		if msg, _ := errObj["message"].(string); strings.Contains(msg, "SECRET-KEY-MATERIAL") {
+			t.Fatalf("path %q leaked file contents", path)
+		}
+	}
+}
+
+func TestReadContractMissingContractCode(t *testing.T) {
+	root := fixtureRepo(t, "", "")
+	s := startServer(t, root)
+	s.initialize()
+
+	resp := s.callTool(1, "read_contract", nil)
+	wantToolError(t, resp, "contract_invalid")
+}
+
 func TestStableProtocolErrorCodes(t *testing.T) {
 	root := fixtureRepo(t, "", "")
 	s := startServer(t, root)

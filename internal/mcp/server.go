@@ -364,7 +364,14 @@ func (s *server) toolReadContract(args json.RawMessage) (map[string]any, *toolEr
 	}
 	path := contractPath
 	if params.Path != "" {
-		path = params.Path
+		// The path argument must name a file inside the repository: reads
+		// stay inside the repo root, so no argument can exfiltrate files
+		// from outside it.
+		rel, err := contract.NormalizeRepoPath(params.Path)
+		if err != nil {
+			return nil, toolErrf(errInvalidParams, "read_contract path: %v", err)
+		}
+		path = rel
 	}
 	c, err := contract.Load(filepath.Join(s.repoRoot, filepath.FromSlash(path)))
 	if err != nil {
@@ -469,13 +476,13 @@ func (s *server) toolRunChecks(args json.RawMessage) (map[string]any, *toolError
 	if err != nil {
 		return nil, toolErrf(errContractInvalid, "%v", err)
 	}
-	// Rung 1 (spec §12.6): contract ceiling, exceptions record, and the
-	// naming/ownership projection checks — identical to the check command.
+	// Rung 1 (spec §12.6): the shared kernel gate — identical to the
+	// check command by construction.
 	var gate1Warnings []string
 	gates := verify.CheckSet{{
 		ID: "contract",
 		Func: func(context.Context) (int, string) {
-			exit, output, warnings := gate1Checks(s.repoRoot, c, resolved)
+			exit, output, warnings := checks.Gate1(s.repoRoot, c, resolved)
 			gate1Warnings = warnings
 			return exit, output
 		},
@@ -491,33 +498,6 @@ func (s *server) toolRunChecks(args json.RawMessage) (map[string]any, *toolError
 	}
 	report.Warnings = append(report.Warnings, gate1Warnings...)
 	return map[string]any{"report": report}, nil
-}
-
-// gate1Checks is verification-ladder rung 1 (spec §12.6), the same
-// in-process gate the check command runs: schema ceiling, exceptions record,
-// and the naming/ownership projection checks. Error-severity findings fail
-// the gate; warnings ride along as review signals.
-func gate1Checks(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (int, string, []string) {
-	if err := version.Check(c.Schema); err != nil {
-		return 1, err.Error(), nil
-	}
-	exceptions, err := checks.LoadExceptions(repoRoot)
-	if err != nil {
-		return 1, err.Error(), nil
-	}
-	var findings, warnings []string
-	for _, v := range checks.Naming(repoRoot, resolved.NamingRules, exceptions) {
-		line := fmt.Sprintf("%s: %s: %s", v.RuleID, v.Path, v.Message)
-		if v.Severity == checks.SeverityError {
-			findings = append(findings, line)
-			continue
-		}
-		warnings = append(warnings, line)
-	}
-	if len(findings) > 0 {
-		return 1, strings.Join(findings, "\n"), warnings
-	}
-	return 0, "", warnings
 }
 
 // toolAcquireScope implements acquire_scope: an envelope-backed lease over

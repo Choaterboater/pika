@@ -6,13 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/Choaterboater/projectctl/internal/checks"
 	"github.com/Choaterboater/projectctl/internal/contract"
 	"github.com/Choaterboater/projectctl/internal/profiles"
 	"github.com/Choaterboater/projectctl/internal/verify"
-	"github.com/Choaterboater/projectctl/internal/version"
 )
 
 // defaultContractPath is the core profile's contract location relative to
@@ -92,7 +90,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	gates := verify.CheckSet{{
 		ID: "contract",
 		Func: func(context.Context) (int, string) {
-			exit, output, warnings := gate1Checks(repoRoot, c, resolved)
+			exit, output, warnings := checks.Gate1(repoRoot, c, resolved)
 			gate1Warnings = warnings
 			return exit, output
 		},
@@ -125,37 +123,6 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
-}
-
-// gate1Checks runs verification-ladder rung 1 (spec §12.6) against the
-// loaded contract and resolved profiles: the contract schema-version
-// ceiling, the exceptions record load, and the naming/ownership
-// projection checks. An error-severity violation (or an exceptions file
-// that fails to load — unverifiable records must not silently widen the
-// rules) fails the gate and stops every downstream gate; warning-severity
-// violations come back as review-signal warnings that check reports
-// without failing.
-func gate1Checks(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (int, string, []string) {
-	if err := version.Check(c.Schema); err != nil {
-		return 1, err.Error(), nil
-	}
-	exceptions, err := checks.LoadExceptions(repoRoot)
-	if err != nil {
-		return 1, err.Error(), nil
-	}
-	var findings, warnings []string
-	for _, v := range checks.Naming(repoRoot, resolved.NamingRules, exceptions) {
-		line := fmt.Sprintf("%s: %s: %s", v.RuleID, v.Path, v.Message)
-		if v.Severity == checks.SeverityError {
-			findings = append(findings, line)
-			continue
-		}
-		warnings = append(warnings, line)
-	}
-	if len(findings) > 0 {
-		return 1, strings.Join(findings, "\n"), warnings
-	}
-	return 0, "", warnings
 }
 
 // printReport writes the human-readable check report.
