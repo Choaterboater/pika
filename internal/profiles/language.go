@@ -46,11 +46,11 @@ func init() {
 	embeddedPacks[GoRef] = packEntry{name: "go", version: "1", data: goPackYAML}
 }
 
-// LanguageRef maps a discover.Inventory language id ("typescript",
+// LanguagePack maps a discover.Inventory language id ("typescript",
 // "python", "swift", "rust", "go") to its pack reference. It is the
 // pairing between stack detection and profile selection: a detected
 // language id selects exactly one language pack.
-func LanguageRef(language string) (string, bool) {
+func LanguagePack(language string) (string, bool) {
 	switch language {
 	case "typescript":
 		return TypeScriptRef, true

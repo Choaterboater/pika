@@ -137,7 +137,7 @@ func TestCoreProfileResolve(t *testing.T) {
 
 func TestWriteLockDigest(t *testing.T) {
 	first := filepath.Join(t.TempDir(), "profiles.lock")
-	if err := WriteLock(first); err != nil {
+	if err := WriteLock(first, []string{CoreRef}); err != nil {
 		t.Fatalf("WriteLock: %v", err)
 	}
 	raw, err := os.ReadFile(first)
@@ -145,26 +145,31 @@ func TestWriteLockDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	var lock struct {
-		Core   string `json:"core"`
-		Source string `json:"source"`
-		Digest string `json:"digest"`
+		Digest string              `json:"digest"`
+		Packs  map[string]lockPack `json:"packs"`
 	}
 	if err := json.Unmarshal(raw, &lock); err != nil {
 		t.Fatalf("profiles.lock is not valid JSON: %v", err)
 	}
-	if lock.Core != "1" {
-		t.Errorf("core version = %q, want 1", lock.Core)
+	if lock.Packs["core"].Version != "1" {
+		t.Errorf("core version = %q, want 1", lock.Packs["core"].Version)
 	}
-	if lock.Source != "embedded" {
-		t.Errorf("source = %q, want embedded", lock.Source)
+	if lock.Packs["core"].Source != "embedded" {
+		t.Errorf("source = %q, want embedded", lock.Packs["core"].Source)
 	}
 	sum := sha256.Sum256(corePackYAML)
-	if lock.Digest != hex.EncodeToString(sum[:]) {
-		t.Errorf("digest = %q, want sha256 of embedded pack bytes", lock.Digest)
+	if lock.Packs["core"].Digest != hex.EncodeToString(sum[:]) {
+		t.Errorf("core digest = %q, want sha256 of embedded pack bytes", lock.Packs["core"].Digest)
+	}
+	if lock.Digest != PackDigest() {
+		t.Errorf("digest = %q, want canonical PackDigest", lock.Digest)
+	}
+	if len(lock.Packs) != 1 {
+		t.Errorf("single-pack lock has %d entries, want 1", len(lock.Packs))
 	}
 
 	second := filepath.Join(t.TempDir(), "profiles.lock")
-	if err := WriteLock(second); err != nil {
+	if err := WriteLock(second, []string{CoreRef}); err != nil {
 		t.Fatalf("WriteLock (second): %v", err)
 	}
 	raw2, err := os.ReadFile(second)
@@ -173,6 +178,60 @@ func TestWriteLockDigest(t *testing.T) {
 	}
 	if string(raw2) != string(raw) {
 		t.Errorf("lock output not stable across calls:\nfirst:  %s\nsecond: %s", raw, raw2)
+	}
+}
+
+// TestWriteLockTwoPacks asserts the two-pack lock: per-pack entries with
+// each pack's own digest, in a byte-stable document.
+func TestWriteLockTwoPacks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profiles.lock")
+	if err := WriteLock(path, []string{CoreRef, GoRef}); err != nil {
+		t.Fatalf("WriteLock: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock struct {
+		Digest string              `json:"digest"`
+		Packs  map[string]lockPack `json:"packs"`
+	}
+	if err := json.Unmarshal(raw, &lock); err != nil {
+		t.Fatalf("profiles.lock is not valid JSON: %v", err)
+	}
+	if lock.Packs["core"].Version != "1" || lock.Packs["go"].Version != "1" {
+		t.Errorf("pack versions = %v, want core and go at version 1", lock.Packs)
+	}
+	sumCore := sha256.Sum256(corePackYAML)
+	sumGo := sha256.Sum256(goPackYAML)
+	if lock.Packs["core"].Digest != hex.EncodeToString(sumCore[:]) {
+		t.Errorf("core digest = %q, want sha256 of core pack bytes", lock.Packs["core"].Digest)
+	}
+	if lock.Packs["go"].Digest != hex.EncodeToString(sumGo[:]) {
+		t.Errorf("go digest = %q, want sha256 of go pack bytes", lock.Packs["go"].Digest)
+	}
+	if lock.Digest != PackDigest() {
+		t.Errorf("digest = %q, want canonical PackDigest", lock.Digest)
+	}
+
+	second := filepath.Join(t.TempDir(), "profiles.lock")
+	if err := WriteLock(second, []string{CoreRef, GoRef}); err != nil {
+		t.Fatalf("WriteLock (second): %v", err)
+	}
+	raw2, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw2) != string(raw) {
+		t.Errorf("two-pack lock output not stable across calls")
+	}
+}
+
+// TestWriteLockRejectsUnknownRef asserts the lock only pins registered
+// packs.
+func TestWriteLockRejectsUnknownPack(t *testing.T) {
+	if err := WriteLock(filepath.Join(t.TempDir(), "profiles.lock"), []string{CoreRef, "bogus@9"}); err == nil {
+		t.Error("WriteLock with unknown pack: want error, got none")
 	}
 }
 

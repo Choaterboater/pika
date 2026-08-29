@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/Choaterboater/projectctl/internal/yamlx"
@@ -361,26 +362,72 @@ func namingRules(specs []namingSpec) []NamingRule {
 	return rules
 }
 
-// PackDigest returns the hex sha256 of the embedded core pack bytes.
-func PackDigest() string {
-	sum := sha256.Sum256(corePackYAML)
+// packDigest returns the hex sha256 of one pack's raw bytes.
+func packDigest(data []byte) string {
+	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
 
-// WriteLock writes the profiles.lock JSON to path: each resolved pack name
-// mapped to its version, plus the pack source and the sha256 digest of the
-// embedded pack bytes. Task 12's init calls this for .project/profiles.lock.
-func WriteLock(path string) error {
-	r, err := Resolve([]string{CoreRef})
-	if err != nil {
-		return err
+// PackDigest returns the canonical integrity digest over ALL embedded
+// packs: every pack reference in sorted order, each followed by its raw
+// bytes, hashed together. Adding or editing any embedded pack changes
+// the digest.
+func PackDigest() string {
+	refs := make([]string, 0, len(embeddedPacks))
+	for ref := range embeddedPacks {
+		refs = append(refs, ref)
 	}
-	lock := map[string]string{
-		"source": lockSource,
-		"digest": PackDigest(),
+	slices.Sort(refs)
+	h := sha256.New()
+	for _, ref := range refs {
+		h.Write([]byte(ref))
+		h.Write([]byte{0})
+		h.Write(embeddedPacks[ref].data)
 	}
-	for _, l := range r.Layers {
-		lock[l.Name] = l.Version
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// lockPack is one profiles.lock entry: the pinned version, the pack
+// source, and the sha256 digest of the embedded pack bytes.
+type lockPack struct {
+	Version string `json:"version"`
+	Source  string `json:"source"`
+	Digest  string `json:"digest"`
+}
+
+// lockFile is the profiles.lock document: the canonical digest over all
+// embedded packs plus one entry per selected pack. encoding/json sorts
+// map keys, so the same selection marshals to identical bytes.
+type lockFile struct {
+	Digest string              `json:"digest"`
+	Packs  map[string]lockPack `json:"packs"`
+}
+
+// WriteLock writes the profiles.lock JSON to path for the selected pack
+// references: the canonical registry digest plus one entry per selected
+// pack carrying its version, source, and the sha256 digest of the
+// embedded pack bytes. Task 12's init calls this for
+// .project/profiles.lock; adopt calls it for the draft lock with the
+// selection pinned in its draft contract, so lock and contract agree.
+func WriteLock(path string, selected []string) error {
+	lock := lockFile{Digest: PackDigest(), Packs: make(map[string]lockPack, len(selected))}
+	for _, ref := range selected {
+		entry, ok := embeddedPacks[ref]
+		if !ok {
+			return fmt.Errorf("profiles: pack %s not registered (supported packs: %s)", ref, strings.Join(supportedRefs(), ", "))
+		}
+		var pack Pack
+		if err := yamlx.UnmarshalStrict(entry.data, &pack); err != nil {
+			return fmt.Errorf("profiles: parse %s: %w", ref, err)
+		}
+		if _, err := pack.checkSet(); err != nil {
+			return fmt.Errorf("profiles: pack %s: %w", ref, err)
+		}
+		lock.Packs[entry.name] = lockPack{
+			Version: entry.version,
+			Source:  lockSource,
+			Digest:  packDigest(entry.data),
+		}
 	}
 	out, err := json.MarshalIndent(lock, "", "  ")
 	if err != nil {

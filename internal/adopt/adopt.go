@@ -79,17 +79,6 @@ const (
 // baselineTimeout is a package variable so tests can shrink the deadline.
 var baselineTimeout = baselineDeadline
 
-// languagePacks maps a discovered language to its (future) stack pack
-// reference. M1 resolves only core@1, but the draft contract pins the
-// detected stack so later composition has the selection on record.
-var languagePacks = map[string]string{
-	"go":         "go@1",
-	"python":     "python@1",
-	"rust":       "rust@1",
-	"swift":      "swift@1",
-	"typescript": "typescript@1",
-}
-
 // slotByVerb maps discovery check verbs to contract command slots. Discovered
 // verbs without a contract slot (build) are recorded as conventions only.
 var slotByVerb = map[string]string{
@@ -228,12 +217,13 @@ func Preview(repoRoot string) (*Report, error) {
 	}, nil
 }
 
-// detectedProfiles maps discovered languages to stack pack references with
-// core@1 always first.
+// detectedProfiles maps discovered languages to stack pack references
+// with core@1 always first. The language-to-pack mapping is profiles':
+// the same pairing LanguagePack exposes to composition.
 func detectedProfiles(languages []string) []string {
 	out := []string{profiles.CoreRef}
 	for _, lang := range languages { // discover returns languages sorted
-		if ref := languagePacks[lang]; ref != "" && !slices.Contains(out, ref) {
+		if ref, ok := profiles.LanguagePack(lang); ok && !slices.Contains(out, ref) {
 			out = append(out, ref)
 		}
 	}
@@ -265,7 +255,7 @@ func buildDraft(repoRoot string, inv *discover.Inventory, detected []string) *co
 			key = c.Project.Name
 		}
 		profilesList := []string{profiles.CoreRef}
-		if ref := languagePacks[p.Language]; ref != "" && ref != profiles.CoreRef {
+		if ref, ok := profiles.LanguagePack(p.Language); ok {
 			profilesList = append(profilesList, ref)
 		}
 		c.Packages[key] = contract.Package{Root: p.Root, Profiles: profilesList}
@@ -494,7 +484,7 @@ func writeDrafts(repoRoot string, draft *contract.Contract) ([]byte, error) {
 	if _, err := contract.Load(contractDraft); err != nil {
 		return nil, fmt.Errorf("adopt: generated draft contract is invalid: %w", err)
 	}
-	if err := profiles.WriteLock(filepath.Join(projDir, "profiles.lock.draft")); err != nil {
+	if err := profiles.WriteLock(filepath.Join(projDir, "profiles.lock.draft"), draft.Profiles); err != nil {
 		return nil, fmt.Errorf("adopt: write %s: %w", lockDraftPath, err)
 	}
 	return contractYAML, nil

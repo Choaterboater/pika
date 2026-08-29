@@ -114,9 +114,9 @@ func TestLanguageProfileResolve(t *testing.T) {
 			if !slices.Contains(inv.DetectedLanguages, tc.language) {
 				t.Fatalf("fixture %s detected %v, want %q", tc.fixture, inv.DetectedLanguages, tc.language)
 			}
-			ref, ok := LanguageRef(tc.language)
+			ref, ok := LanguagePack(tc.language)
 			if !ok || ref != tc.ref {
-				t.Fatalf("LanguageRef(%q) = %q, %v; want %q", tc.language, ref, ok, tc.ref)
+				t.Fatalf("LanguagePack(%q) = %q, %v; want %q", tc.language, ref, ok, tc.ref)
 			}
 
 			r, err := Resolve([]string{CoreRef, ref})
