@@ -324,3 +324,39 @@ func TestCISetupCoversContractCommands(t *testing.T) {
 		})
 	}
 }
+
+// prTemplateSections lists the sections a pull request must state per
+// spec §15.2. The scaffolded PR template carries one heading per
+// section.
+var prTemplateSections = []string{
+	"## Why",
+	"## Observable behavior",
+	"## Implementation boundary",
+	"## Verification evidence",
+	"## Documentation and diagram impact",
+	"## State migration and rollback",
+	"## Remaining limitations",
+}
+
+func TestPullRequestTemplateCarriesSpecSections(t *testing.T) {
+	out, err := renderCore("pull_request_template.md.tmpl", tmplData{Name: "demo"})
+	if err != nil {
+		t.Fatalf("render PR template: %v", err)
+	}
+	for _, section := range prTemplateSections {
+		if !strings.Contains(string(out), section) {
+			t.Errorf("scaffolded PR template lacks spec §15.2 section %q", section)
+		}
+	}
+}
+
+func TestRenderCoreMissingTemplateFails(t *testing.T) {
+	const name = "nonexistent.md.tmpl"
+	_, err := renderCore(name, tmplData{Name: "demo"})
+	if err == nil {
+		t.Fatalf("renderCore(%q) succeeded, want hard error", name)
+	}
+	if !strings.Contains(err.Error(), name) {
+		t.Errorf("error %q does not name the missing template %q", err.Error(), name)
+	}
+}

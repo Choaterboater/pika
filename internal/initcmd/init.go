@@ -6,9 +6,9 @@
 // AGENTS, CONTRIBUTING, GitHub CI and PR template), and — only for the
 // selected language — the stack-owned layout (spec §6.1). It never
 // deletes user files: --force rewrites the managed files in place, and
-// that is all. The scaffold templates are embedded at build time as
-// separately named files under templates/, so a later task can relocate
-// them into the core pack without restructuring.
+// that is all. The core pack's docs templates are served by
+// internal/profiles from the pack itself; the language stack templates
+// are embedded at build time under templates/.
 package initcmd
 
 import (
@@ -328,7 +328,7 @@ func buildFiles(lang, name, module string, contractYAML []byte) ([]genFile, erro
 		{"pull_request_template.md.tmpl", ".github/pull_request_template.md"},
 		{"ci.yml.tmpl", ".github/workflows/ci.yml"},
 	} {
-		rendered, err := render(pair[0], data)
+		rendered, err := renderCore(pair[0], data)
 		if err != nil {
 			return nil, err
 		}
@@ -376,7 +376,26 @@ func stackFiles(lang string, data tmplData) []genFile {
 	}
 }
 
-// render executes one embedded template by file name.
+// renderCore renders one core-pack docs template fetched through
+// profiles.Template. A template missing from the pack is a hard error
+// carrying the name, so init fails before writing anything.
+func renderCore(name string, data tmplData) ([]byte, error) {
+	src, err := profiles.Template(name)
+	if err != nil {
+		return nil, err
+	}
+	t, err := template.New(name).Parse(src)
+	if err != nil {
+		return nil, fmt.Errorf("projectctl init: parse template %s: %w", name, err)
+	}
+	var buf strings.Builder
+	if err := t.Execute(&buf, data); err != nil {
+		return nil, fmt.Errorf("projectctl init: render %s: %w", name, err)
+	}
+	return []byte(buf.String()), nil
+}
+
+// render executes one embedded stack template by file name.
 func render(name string, data tmplData) ([]byte, error) {
 	t, err := template.ParseFS(templatesFS, path.Join("templates", name))
 	if err != nil {

@@ -17,8 +17,9 @@ import (
 //
 // An error-severity violation — or an exceptions file that fails to load
 // (unverifiable records must not silently widen the rules) — fails the
-// gate: exit 1 with the findings joined as gate output and no warnings.
-// Warning-severity violations are review signals returned as warnings
+// gate: exit 1 with the findings joined as gate output, and any
+// warnings accumulated before the failure are still returned. A
+// warning-severity violation is a review signal returned as a warning
 // without failing. Exit is 0 when nothing error-severity was found.
 func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (exit int, output string, warnings []string) {
 	if err := version.Check(c.Schema); err != nil {

@@ -45,20 +45,20 @@ var embeddedPacks = map[string]packEntry{
 }
 
 type Pack struct {
-	Profile       string        `yaml:"profile"`
-	Version       string        `yaml:"version"`
-	Provenance    Provenance    `yaml:"provenance" yamlx:"strict"`
-	Detection     Detection     `yaml:"detection" yamlx:"strict"`
-	Layout        Layout        `yaml:"layout" yamlx:"strict"`
-	Files         Files         `yaml:"files" yamlx:"strict"`
-	Templates     []Template    `yaml:"templates" yamlx:"strict"`
-	Naming        Naming        `yaml:"naming" yamlx:"strict"`
-	Verification  Verification  `yaml:"verification" yamlx:"strict"`
-	DocTriggers   []DocTrigger  `yaml:"doc-triggers" yamlx:"strict"`
-	AgentGuidance []string      `yaml:"agent-guidance"`
-	Migration     Migration     `yaml:"migration" yamlx:"strict"`
-	Compatibility Compatibility `yaml:"compatibility" yamlx:"strict"`
-	Conventions   Conventions   `yaml:"conventions" yamlx:"strict"`
+	Profile       string             `yaml:"profile"`
+	Version       string             `yaml:"version"`
+	Provenance    Provenance         `yaml:"provenance" yamlx:"strict"`
+	Detection     Detection          `yaml:"detection" yamlx:"strict"`
+	Layout        Layout             `yaml:"layout" yamlx:"strict"`
+	Files         Files              `yaml:"files" yamlx:"strict"`
+	Templates     []ScaffoldTemplate `yaml:"templates" yamlx:"strict"`
+	Naming        Naming             `yaml:"naming" yamlx:"strict"`
+	Verification  Verification       `yaml:"verification" yamlx:"strict"`
+	DocTriggers   []DocTrigger       `yaml:"doc-triggers" yamlx:"strict"`
+	AgentGuidance []string           `yaml:"agent-guidance"`
+	Migration     Migration          `yaml:"migration" yamlx:"strict"`
+	Compatibility Compatibility      `yaml:"compatibility" yamlx:"strict"`
+	Conventions   Conventions        `yaml:"conventions" yamlx:"strict"`
 }
 
 // Provenance records where the pack came from.
@@ -87,8 +87,8 @@ type Files struct {
 	Required []string `yaml:"required"`
 }
 
-// Template names a scaffold template shipped by the pack.
-type Template struct {
+// ScaffoldTemplate names a scaffold template shipped by the pack.
+type ScaffoldTemplate struct {
 	ID   string `yaml:"id"`
 	Path string `yaml:"path"`
 }
