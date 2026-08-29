@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
+	"github.com/Choaterboater/projectctl/internal/checks"
 	"github.com/Choaterboater/projectctl/internal/contract"
 	"github.com/Choaterboater/projectctl/internal/profiles"
 	"github.com/Choaterboater/projectctl/internal/verify"
@@ -18,11 +20,12 @@ import (
 const defaultContractPath = ".project/contract.yaml"
 
 // runCheck implements `projectctl check [--all|--changed|--ci] [--json]`.
-// The verification ladder (spec §12.6): gate 1 is contract/profile
-// validation (Task 8 fills this slot with projection checks; it currently
-// runs the contract schema-version ceiling), gates 2-4 are the ordered
-// CheckSet entries from profiles.Resolve with contract commands overriding
-// discovery sentinels, and gate 5 (agent review) is never part of check.
+// The verification ladder (spec §12.6): gate 1 runs the contract/profile
+// validation — the schema-version ceiling, the exceptions record, and the
+// naming and ownership projection checks (Task 8); gates 2-4 are the
+// ordered CheckSet entries from profiles.Resolve with contract commands
+// overriding discovery sentinels; gate 5 (agent review) is never part of
+// check.
 //
 // Exit codes: 0 all gates pass or skip, 1 any gate failed, 2 usage or
 // configuration error.
@@ -59,6 +62,10 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		scope = verify.Changed
 	}
 
+	// M1's repo root is the process working directory; the contract and
+	// exceptions records are resolved beneath it (spec §5.2).
+	repoRoot := "."
+
 	path := *contractPath
 	if path == "" {
 		path = defaultContractPath
@@ -78,14 +85,16 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	// Gate 1 (rung 1, spec §12.6): contract schema ceiling, exceptions
+	// record, and naming/ownership projection checks. Warnings raised by
+	// the projection checks are review signals carried on the report.
+	var gate1Warnings []string
 	gates := verify.CheckSet{{
 		ID: "contract",
 		Func: func(context.Context) (int, string) {
-			// Task 8's projection checks join this gate.
-			if err := version.Check(c.Schema); err != nil {
-				return 1, err.Error()
-			}
-			return 0, ""
+			exit, output, warnings := gate1Checks(repoRoot, c, resolved)
+			gate1Warnings = warnings
+			return exit, output
 		},
 	}}
 	ordered, err := verify.FromProfiles(resolved.Checks, c.Commands)
@@ -100,6 +109,7 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "projectctl check:", err)
 		return 2
 	}
+	rep.Warnings = append(rep.Warnings, gate1Warnings...)
 
 	if *jsonOut {
 		data, err := json.Marshal(rep)
@@ -115,6 +125,37 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// gate1Checks runs verification-ladder rung 1 (spec §12.6) against the
+// loaded contract and resolved profiles: the contract schema-version
+// ceiling, the exceptions record load, and the naming/ownership
+// projection checks. An error-severity violation (or an exceptions file
+// that fails to load — unverifiable records must not silently widen the
+// rules) fails the gate and stops every downstream gate; warning-severity
+// violations come back as review-signal warnings that check reports
+// without failing.
+func gate1Checks(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (int, string, []string) {
+	if err := version.Check(c.Schema); err != nil {
+		return 1, err.Error(), nil
+	}
+	exceptions, err := checks.LoadExceptions(repoRoot)
+	if err != nil {
+		return 1, err.Error(), nil
+	}
+	var findings, warnings []string
+	for _, v := range checks.Naming(repoRoot, resolved.NamingRules, exceptions) {
+		line := fmt.Sprintf("%s: %s: %s", v.RuleID, v.Path, v.Message)
+		if v.Severity == checks.SeverityError {
+			findings = append(findings, line)
+			continue
+		}
+		warnings = append(warnings, line)
+	}
+	if len(findings) > 0 {
+		return 1, strings.Join(findings, "\n"), warnings
+	}
+	return 0, "", warnings
 }
 
 // printReport writes the human-readable check report.

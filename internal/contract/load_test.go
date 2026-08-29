@@ -18,6 +18,7 @@ func TestNormalizeRepoPath(t *testing.T) {
 		{name: "trailing slash cleaned", in: "web/app/", want: "web/app"},
 		{name: "backslash normalized", in: `web\app`, want: "web/app"},
 		{name: "single segment", in: "cmd", want: "cmd"},
+		{name: "repo root is legal", in: ".", want: "."},
 		{name: "escape rejected", in: "../../etc", wantErr: "path escapes repository root: ../../etc"},
 		{name: "parent rejected", in: "..", wantErr: "path escapes repository root: .."},
 		{name: "absolute rejected", in: "/etc", wantErr: "path escapes repository root: /etc"},

@@ -32,13 +32,22 @@ templates: []
 naming:
   rules:
     - rule-id: naming-kebab-case
-      severity: error
+      severity: warning
       scope: path-segments
       pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
     - rule-id: naming-catch-all
       severity: error
       scope: path-segments
-      banned: [utils, helpers, common, misc]
+      banned: [utils, helpers, common, misc, manager]
+    - rule-id: file-size-review
+      severity: warning
+      scope: file-lines
+      pattern: "500"
+    # M1 has no generated files; the rule mechanism ships with no
+    # patterns, so it matches nothing until a language pack declares them.
+    - rule-id: generated-owner
+      severity: error
+      scope: generated-patterns
 
 verification:
   checks:

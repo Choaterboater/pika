@@ -67,13 +67,17 @@ func TestCoreProfileResolve(t *testing.T) {
 		}
 	}
 
-	var kebab, catchAll *NamingRule
+	var kebab, catchAll, fileSize, generatedOwner *NamingRule
 	for i := range r.NamingRules {
 		switch r.NamingRules[i].RuleID {
 		case "naming-kebab-case":
 			kebab = &r.NamingRules[i]
 		case "naming-catch-all":
 			catchAll = &r.NamingRules[i]
+		case "file-size-review":
+			fileSize = &r.NamingRules[i]
+		case "generated-owner":
+			generatedOwner = &r.NamingRules[i]
 		}
 	}
 	if kebab == nil {
@@ -82,16 +86,36 @@ func TestCoreProfileResolve(t *testing.T) {
 	if catchAll == nil {
 		t.Fatalf("naming rules %v missing naming-catch-all", r.NamingRules)
 	}
+	if fileSize == nil {
+		t.Fatalf("naming rules %v missing file-size-review", r.NamingRules)
+	}
+	if generatedOwner == nil {
+		t.Fatalf("naming rules %v missing generated-owner", r.NamingRules)
+	}
 	if kebab.Pattern == "" {
 		t.Errorf("naming-kebab-case: empty pattern")
+	}
+	// Size thresholds and style drift are review signals, not hard
+	// failures (spec §6.2).
+	if kebab.Severity != "warning" {
+		t.Errorf("naming-kebab-case severity = %q, want warning", kebab.Severity)
 	}
 	if catchAll.Severity != "error" {
 		t.Errorf("naming-catch-all severity = %q, want error", catchAll.Severity)
 	}
-	for _, banned := range []string{"utils", "helpers", "common", "misc"} {
+	for _, banned := range []string{"utils", "helpers", "common", "misc", "manager"} {
 		if !slices.Contains(catchAll.Banned, banned) {
 			t.Errorf("naming-catch-all banned = %v, missing %q", catchAll.Banned, banned)
 		}
+	}
+	if fileSize.Severity != "warning" || fileSize.Scope != "file-lines" || fileSize.Pattern == "" {
+		t.Errorf("file-size-review = %+v, want a warning file-lines rule with a threshold", fileSize)
+	}
+	if generatedOwner.Severity != "error" || generatedOwner.Scope != "generated-patterns" {
+		t.Errorf("generated-owner = %+v, want an error generated-patterns rule", generatedOwner)
+	}
+	if len(generatedOwner.Pattern) != 0 && len(generatedOwner.Banned) != 0 {
+		t.Errorf("generated-owner must stay patternless in M1 (no generated files): %+v", generatedOwner)
 	}
 
 	if len(r.DocTriggers) == 0 {

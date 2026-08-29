@@ -238,3 +238,124 @@ evidence:
 		t.Fatalf("summary = %+v, want 5 downstream skips", rep.Summary)
 	}
 }
+
+// writeCheckFixture extends writeFixture with a file tree laid out in the
+// fixture repository.
+func writeCheckFixture(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := writeFixture(t, `  format: "true"
+  lint: "true"
+  typecheck: "true"
+  test: "true"
+  smoke: "true"
+`, "")
+	for rel, body := range files {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+const validException = `src/utils/helpers.ts:
+  rule-id: naming-catch-all
+  reason: legacy module pending split
+  owner: alice
+  review-condition: revisit at the 2026-10 architecture sync
+`
+
+func TestCheckNamingCatchAllFailsGate1(t *testing.T) {
+	writeCheckFixture(t, map[string]string{"src/utils/helpers.ts": "// helpers\n"})
+	var stdout, stderr bytes.Buffer
+	if code := runCheck([]string{"--json"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit = %d, want 1; stderr: %s", code, stderr.String())
+	}
+	var rep verify.Report
+	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	g := rep.Gates[0]
+	if g.ID != "contract" || g.Status != verify.StatusFail {
+		t.Fatalf("gate 1 = %+v, want a failed contract gate", g)
+	}
+	if !strings.Contains(g.OutputTail, "naming-catch-all") || !strings.Contains(g.OutputTail, "src/utils/helpers.ts") {
+		t.Fatalf("gate output %q should name the rule and path", g.OutputTail)
+	}
+	// Gate 1 is the top of the ladder: its failure stops gates 2-4.
+	if rep.Summary.Skip != 5 {
+		t.Fatalf("summary = %+v, want 5 downstream skips", rep.Summary)
+	}
+	if len(rep.Regressions) == 0 || rep.Regressions[0].Gate != "contract" {
+		t.Fatalf("regressions = %+v, want a contract-gate regression", rep.Regressions)
+	}
+}
+
+func TestCheckNamingExceptionCleansGate1(t *testing.T) {
+	writeCheckFixture(t, map[string]string{
+		"src/utils/helpers.ts":     "// helpers\n",
+		".project/exceptions.yaml": validException,
+	})
+	var stdout, stderr bytes.Buffer
+	if code := runCheck([]string{"--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, want 0 with a valid exception; stderr: %s", code, stderr.String())
+	}
+	var rep verify.Report
+	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Pass || rep.Gates[0].Status != verify.StatusPass {
+		t.Fatalf("report = %+v, want gate 1 passing", rep)
+	}
+	if len(rep.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none for an excepted path", rep.Warnings)
+	}
+}
+
+func TestCheckMalformedExceptionFailsGate1(t *testing.T) {
+	writeCheckFixture(t, map[string]string{
+		"src/utils/helpers.ts":     "// helpers\n",
+		".project/exceptions.yaml": "src/utils/helpers.ts:\n  rule-id: naming-catch-all\n  reason: r\n  review-condition: c\n",
+	})
+	var stdout, stderr bytes.Buffer
+	if code := runCheck([]string{"--json"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit = %d, want 1 for a malformed exceptions file; stderr: %s", code, stderr.String())
+	}
+	var rep verify.Report
+	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Gates[0].Status != verify.StatusFail || !strings.Contains(rep.Gates[0].OutputTail, "owner") {
+		t.Fatalf("gate 1 = %+v, want a load error naming the missing owner", rep.Gates[0])
+	}
+	if rep.Summary.Skip != 5 {
+		t.Fatalf("summary = %+v, want 5 downstream skips", rep.Summary)
+	}
+}
+
+func TestCheckKebabWarningCarriesInJSON(t *testing.T) {
+	writeCheckFixture(t, map[string]string{"src/BadName.go": "package src\n"})
+	var stdout, stderr bytes.Buffer
+	if code := runCheck([]string{"--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, want 0; warnings never fail the ladder; stderr: %s", code, stderr.String())
+	}
+	var rep verify.Report
+	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Gates[0].Status != verify.StatusPass {
+		t.Fatalf("gate 1 = %+v, want pass", rep.Gates[0])
+	}
+	var namingWarning bool
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "naming-kebab-case") && strings.Contains(w, "src/BadName.go") {
+			namingWarning = true
+		}
+	}
+	if !namingWarning {
+		t.Fatalf("warnings = %v, want a naming-kebab-case warning for src/BadName.go", rep.Warnings)
+	}
+}
