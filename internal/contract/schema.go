@@ -8,8 +8,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/goccy/go-yaml"
-	"github.com/goccy/go-yaml/parser"
+	"github.com/Choaterboater/projectctl/internal/yamlx"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -83,27 +82,17 @@ type Evidence struct {
 	Publish string `yaml:"publish" json:"publish"`
 }
 
-// Load reads, strictly parses, duplicate-key checks, and JSON-Schema-validates
-// the contract file at path. The returned Contract has typed fields matching
-// the schema; keys outside it are rejected unless nested under extensions.
+// Load reads, strictly parses, and JSON-Schema-validates the contract file
+// at path. The returned Contract has typed fields matching the schema; keys
+// outside it are rejected unless nested under extensions.
 func Load(path string) (*Contract, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("contract: read %s: %w", path, err)
 	}
 
-	file, err := parser.ParseBytes(src, 0, parser.AllowDuplicateMapKey())
-	if err != nil {
-		return nil, fmt.Errorf("contract: %s: parse yaml: %w", path, err)
-	}
-	for _, doc := range file.Docs {
-		if err := checkDuplicateKeys(doc); err != nil {
-			return nil, fmt.Errorf("contract: %s: %w", path, err)
-		}
-	}
-
 	var c Contract
-	if err := yaml.UnmarshalWithOptions(src, &c, yaml.Strict()); err != nil {
+	if err := yamlx.UnmarshalStrict(src, &c); err != nil {
 		return nil, fmt.Errorf("contract: %s: %w", path, err)
 	}
 
