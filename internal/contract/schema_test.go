@@ -35,11 +35,11 @@ func TestRejectDuplicateYAMLKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected duplicate-key error, got nil")
 	}
-	if !strings.Contains(err.Error(), `duplicate key "schema"`) {
-		t.Fatalf("error should name the duplicate key, got: %v", err)
+	// The second `schema` key is on line 2, column 1 of the fixture.
+	if !strings.Contains(err.Error(), `[2:1] duplicate key "schema"`) {
+		t.Fatalf("error should report [line:col] and name the duplicate key, got: %v", err)
 	}
 }
-
 func TestRejectUnknownTopLevelKey(t *testing.T) {
 	_, err := Load("testdata/invalid-unknown-key.yaml")
 	if err == nil {

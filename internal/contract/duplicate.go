@@ -21,8 +21,12 @@ func checkDuplicateKeys(node ast.Node) error {
 	case *ast.MappingNode:
 		seen := make(map[string]struct{}, len(n.Values))
 		for _, v := range n.Values {
-			key := v.Key.GetToken().Value
+			tk := v.Key.GetToken()
+			key := tk.Value
 			if _, dup := seen[key]; dup {
+				if pos := tk.Position; pos != nil {
+					return fmt.Errorf("[%d:%d] duplicate key %q", pos.Line, pos.Column, key)
+				}
 				return fmt.Errorf("duplicate key %q", key)
 			}
 			seen[key] = struct{}{}
