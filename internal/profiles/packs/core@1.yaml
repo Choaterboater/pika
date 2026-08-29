@@ -1,0 +1,80 @@
+# Core profile pack for projectctl M1 (spec §5.4, §6.2, §15).
+profile: core
+version: "1"
+
+provenance:
+  source: embedded
+  generated-by: "projectctl m1-kernel spec §5.4/§6.2/§15"
+
+detection:
+  when: always
+
+layout:
+  contract-path: .project/contract.yaml
+  state-dir: .project/state/
+  docs-spine:
+    - docs/architecture
+    - docs/decisions
+    - docs/guides
+    - docs/reference
+    - docs/work
+
+files:
+  required:
+    - README.md
+    - AGENTS.md
+    - CONTRIBUTING.md
+    - .github/workflows/
+    - .github/pull_request_template.md
+
+templates: []
+
+naming:
+  rules:
+    - rule-id: naming-kebab-case
+      severity: error
+      scope: path-segments
+      pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+    - rule-id: naming-catch-all
+      severity: error
+      scope: path-segments
+      banned: [utils, helpers, common, misc]
+
+verification:
+  checks:
+    - id: format
+      discovery: true
+    - id: lint
+      discovery: true
+    - id: typecheck
+      discovery: true
+    - id: test
+      discovery: true
+    - id: smoke
+      discovery: true
+
+doc-triggers:
+  - id: docs-spine-sync
+    when: source-change
+    paths:
+      - docs/architecture
+      - docs/decisions
+      - docs/guides
+      - docs/reference
+      - docs/work
+
+agent-guidance: []
+
+migration:
+  steps: []
+
+compatibility:
+  requires: []
+
+conventions:
+  branches:
+    types: [feat, fix, docs, refactor, chore]
+    format: "{type}/{slug}"
+  pull-requests:
+    draft-until-checks-pass: true
+    merge-strategy: squash
