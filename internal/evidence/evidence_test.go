@@ -226,3 +226,54 @@ func TestWriteAtomic(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildRejectsCredentialShapedPackKey(t *testing.T) {
+	oauth := "sk-ant-api03-abcdefghij0123456789ABCDE"
+	in := fixture()
+	in.ProfileLock.Packs[oauth] = PackInput{Version: "1.0.0", Source: "builtin", Digest: "sha256:42"}
+	_, err := Build(in)
+	if err == nil {
+		t.Fatal("Build accepted a credential-shaped pack key")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "<redacted:oauth>") {
+		t.Errorf("error does not name the redacted key form: %v", err)
+	}
+	if strings.Contains(msg, oauth) {
+		t.Errorf("error leaks the raw pack key: %v", err)
+	}
+}
+
+func TestWriteFsyncsCreatedDirectoryChain(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "docs", "work", "run", "evidence.json")
+
+	var calls [][2]string
+	origChain, origDir := syncCreatedChain, syncDir
+	syncCreatedChain = func(d, anchor string) error {
+		calls = append(calls, [2]string{d, anchor})
+		return origChain(d, anchor)
+	}
+	syncDir = origDir
+	defer func() { syncCreatedChain, syncDir = origChain, origDir }()
+
+	r, err := Build(fixture())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := Write(path, r); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("syncCreatedChain called %d times, want 1", len(calls))
+	}
+	gotDir, gotAnchor := calls[0][0], calls[0][1]
+	if gotDir != filepath.Dir(path) {
+		t.Errorf("chain start = %q, want %q", gotDir, filepath.Dir(path))
+	}
+	// The anchor must be the nearest pre-existing ancestor (the temp
+	// root), not a directory MkdirAll just created.
+	if gotAnchor != dir {
+		t.Errorf("anchor = %q, want pre-existing %q", gotAnchor, dir)
+	}
+}

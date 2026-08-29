@@ -1,11 +1,11 @@
 //go:build unix
 
-package txn
+package fsutil
 
 import "os"
 
-// syncFile fsyncs a file so its contents survive a crash.
-func syncFile(path string) error {
+// SyncFile fsyncs a file so its contents survive a crash.
+func SyncFile(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -14,8 +14,8 @@ func syncFile(path string) error {
 	return f.Sync()
 }
 
-// syncDir fsyncs a directory so entries created in it survive a crash.
-func syncDir(dir string) error {
+// SyncDir fsyncs a directory so entries created in it survive a crash.
+func SyncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
 		return err

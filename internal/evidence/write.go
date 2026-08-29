@@ -4,18 +4,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/Choaterboater/projectctl/internal/fsutil"
 )
 
 // tempPrefix names evidence temp files; Write removes them on failure,
 // and tests use the prefix to assert no leftovers.
 const tempPrefix = ".evidence-"
 
+// sync hooks delegate to fsutil; tests override them to observe the
+// durability contract.
+var (
+	syncDir          = fsutil.SyncDir
+	syncCreatedChain = fsutil.SyncCreatedChain
+	existingAncestor = fsutil.ExistingAncestor
+)
+
 // Write durably writes the receipt to path as indented JSON, creating
-// parent directories as needed. The write is atomic: the payload goes to
-// a temp file in the target's directory, is fsynced, renamed over the
-// target, and the directory is fsynced so the rename itself survives a
-// crash. On Windows the directory fsync is best-effort (see
-// sync_windows.go).
+// parent directories as needed. The write is atomic and crash-durable:
+// the payload goes to a temp file in the target's directory, is fsynced,
+// and renamed over the target. Directory durability is handled in two
+// steps: the chain of directories MkdirAll created is fsynced up to the
+// nearest pre-existing ancestor (so the directories themselves survive a
+// crash), then the target directory is fsynced again so the rename entry
+// survives. On Windows the directory fsyncs are best-effort (see
+// internal/fsutil/sync_windows.go).
 func Write(path string, r *Receipt) error {
 	bs, err := encode(r)
 	if err != nil {
@@ -27,8 +40,12 @@ func Write(path string, r *Receipt) error {
 		return fmt.Errorf("evidence: resolve %q: %w", path, err)
 	}
 	dir := filepath.Dir(abs)
+	anchor := existingAncestor(dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("evidence: create %s: %w", dir, err)
+	}
+	if err := syncCreatedChain(dir, anchor); err != nil {
+		return fmt.Errorf("evidence: fsync created directory chain: %w", err)
 	}
 
 	tmp, err := os.CreateTemp(dir, tempPrefix+"*")

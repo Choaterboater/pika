@@ -257,8 +257,18 @@ func Build(input ReceiptInput) (*Receipt, error) {
 			Blocker:  redact.Apply(input.Completion.Blocker),
 		},
 	}
+	// Pack keys are strings too and must obey the redact-everything
+	// invariant. A key that changes under redaction is credential- or
+	// path-shaped; rather than emit an unredactable key (or silently
+	// merge several into one placeholder), Build fails closed naming
+	// only the redacted form — never the raw key, which may be a live
+	// secret.
 	for id, p := range input.ProfileLock.Packs {
-		r.ProfileLock.Packs[id] = Pack{
+		key := redact.Apply(id)
+		if key != id {
+			return nil, fmt.Errorf("evidence: pack key redacts to %q; refusing credential-shaped pack key in receipt", key)
+		}
+		r.ProfileLock.Packs[key] = Pack{
 			Version: redact.Apply(p.Version),
 			Source:  redact.Apply(p.Source),
 			Digest:  redact.Apply(p.Digest),

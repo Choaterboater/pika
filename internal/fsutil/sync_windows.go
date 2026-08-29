@@ -1,6 +1,6 @@
 //go:build windows
 
-package txn
+package fsutil
 
 import (
 	"errors"
@@ -15,11 +15,13 @@ import (
 // attempts on files and directories are tolerated as best-effort and
 // never fail an operation.
 
-func syncFile(path string) error {
+// SyncFile fsyncs a file so its contents survive a crash.
+func SyncFile(path string) error {
 	return syncHandle(func() (*os.File, error) { return os.Open(path) })
 }
 
-func syncDir(dir string) error {
+// SyncDir fsyncs a directory so entries created in it survive a crash.
+func SyncDir(dir string) error {
 	return syncHandle(func() (*os.File, error) { return os.Open(dir) })
 }
 

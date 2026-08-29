@@ -368,33 +368,3 @@ func (tx *Tx) finish() error {
 func (tx *Tx) abs(rel string) string {
 	return filepath.Join(tx.root, filepath.FromSlash(rel))
 }
-
-// existingAncestor returns the nearest existing ancestor of dir,
-// including dir itself when it already exists.
-func existingAncestor(dir string) string {
-	for {
-		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return dir
-		}
-		dir = parent
-	}
-}
-
-// syncCreatedChain fsyncs every directory from dir up to and including
-// anchor, making the links that bind the newly created recovery tree
-// into the repository durable.
-func syncCreatedChain(dir, anchor string) error {
-	for {
-		if err := syncDir(dir); err != nil {
-			return err
-		}
-		if dir == anchor {
-			return nil
-		}
-		dir = filepath.Dir(dir)
-	}
-}
