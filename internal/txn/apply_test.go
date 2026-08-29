@@ -579,3 +579,58 @@ func TestRecoverRejectsCorruptDest(t *testing.T) {
 		t.Errorf("escape target touched: %v", err)
 	}
 }
+
+// TestSyncCreatedChainShape unit-tests the walk logic: the fsync chain
+// must run from dir up to and including the pre-creation anchor, and
+// existingAncestor must find the deepest existing directory.
+func TestSyncCreatedChainShape(t *testing.T) {
+	root := t.TempDir()
+	// Simulate first-ever Begin: neither .project nor state nor
+	// recovery exists; the anchor must be root itself.
+	rec := filepath.Join(root, ".project", "state", "recovery")
+	if got := existingAncestor(rec); got != root {
+		t.Errorf("existingAncestor(fresh) = %q, want root %q", got, root)
+	}
+	// The chain from rec to root covers exactly rec, state, .project,
+	// root — every level MkdirAll creates.
+	seen := 0
+	for dir := rec; ; dir = filepath.Dir(dir) {
+		seen++
+		if dir == root {
+			break
+		}
+	}
+	if seen != 4 {
+		t.Errorf("chain length = %d, want 4 (recovery, state, .project, root)", seen)
+	}
+	// First creation wave: only .project exists, so the next Begin's
+	// anchor is .project, not root.
+	if err := os.MkdirAll(filepath.Join(root, ".project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(root, ".project")
+	if got := existingAncestor(rec); got != proj {
+		t.Errorf("existingAncestor(partial) = %q, want %q", got, proj)
+	}
+	if err := os.MkdirAll(filepath.Join(proj, "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncCreatedChain(filepath.Join(proj, "state"), proj); err != nil {
+		t.Fatalf("syncCreatedChain state: %v", err)
+	}
+
+	// Once recDir itself exists it anchors at itself.
+	if err := os.MkdirAll(rec, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := existingAncestor(rec); got != rec {
+		t.Errorf("existingAncestor(existing rec) = %q, want %q", got, rec)
+	}
+	if err := syncCreatedChain(rec, rec); err != nil {
+		t.Fatalf("syncCreatedChain self: %v", err)
+	}
+	// The full-chain walk from the first transaction still works.
+	if err := syncCreatedChain(rec, root); err != nil {
+		t.Fatalf("syncCreatedChain: %v", err)
+	}
+}

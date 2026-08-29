@@ -138,8 +138,19 @@ func Begin(root string) (*Tx, error) {
 		return nil, fmt.Errorf("txn: resolve root %q: %w", root, err)
 	}
 	recDir := filepath.Join(abs, filepath.FromSlash(recoveryRelPath))
+	// Remember which ancestor existed before creation: the chain of
+	// links to fsync is exactly what MkdirAll is about to create.
+	anchor := existingAncestor(recDir)
 	if err := os.MkdirAll(recDir, 0o755); err != nil {
 		return nil, fmt.Errorf("txn: create recovery dir: %w", err)
+	}
+	// Persist every directory link created by this MkdirAll: recDir's
+	// link lives in its parent, that parent's in its own parent, and so
+	// on up to the anchor. Missing one lets a crash lose the whole
+	// recovery tree the first time it is created — the fsynced journal,
+	// lock, and backups along with it.
+	if err := syncCreatedChain(recDir, anchor); err != nil {
+		return nil, fmt.Errorf("txn: sync recovery chain: %w", err)
 	}
 	txid, err := newTxID()
 	if err != nil {
@@ -356,4 +367,34 @@ func (tx *Tx) finish() error {
 
 func (tx *Tx) abs(rel string) string {
 	return filepath.Join(tx.root, filepath.FromSlash(rel))
+}
+
+// existingAncestor returns the nearest existing ancestor of dir,
+// including dir itself when it already exists.
+func existingAncestor(dir string) string {
+	for {
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return dir
+		}
+		dir = parent
+	}
+}
+
+// syncCreatedChain fsyncs every directory from dir up to and including
+// anchor, making the links that bind the newly created recovery tree
+// into the repository durable.
+func syncCreatedChain(dir, anchor string) error {
+	for {
+		if err := syncDir(dir); err != nil {
+			return err
+		}
+		if dir == anchor {
+			return nil
+		}
+		dir = filepath.Dir(dir)
+	}
 }
