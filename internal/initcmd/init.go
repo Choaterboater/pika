@@ -68,10 +68,15 @@ type genFile struct {
 	data []byte
 }
 
-// tmplData is the data every scaffold template renders with.
+// tmplData is the data every scaffold template renders with. PyName,
+// RustName, and SwiftName are the language-level identifiers derived from
+// the project name; each is guarded to start with a letter because cargo
+// package names, Python module names, and Swift identifiers cannot begin
+// with a digit even though the contract name pattern allows one.
 type tmplData struct {
 	Name      string
 	Module    string
+	RustName  string
 	PyName    string
 	SwiftName string
 	CIPaths   string
@@ -255,6 +260,17 @@ func byteRuneToUpper(r rune) rune {
 	return r
 }
 
+// digitSafe prefixes prefix when s starts with a digit: the contract
+// project-name pattern ^[a-z0-9][a-z0-9-]*$ admits a leading digit, but
+// the language-level identifiers derived from it (cargo package name,
+// Python module, Swift type) do not.
+func digitSafe(s, prefix string) string {
+	if s == "" || (s[0] >= '0' && s[0] <= '9') {
+		return prefix + s
+	}
+	return s
+}
+
 // buildContract composes the initial contract: schema 1, single topology,
 // one root package carrying the selection, the language pack's real
 // commands where its check slots are not discovery sentinels, and the M1
@@ -308,8 +324,9 @@ func buildFiles(lang, name, module string, contractYAML []byte) ([]genFile, erro
 	data := tmplData{
 		Name:      name,
 		Module:    module,
-		PyName:    strings.ReplaceAll(name, "-", "_"),
-		SwiftName: camel(name),
+		RustName:  digitSafe(name, "p"),
+		PyName:    digitSafe(strings.ReplaceAll(name, "-", "_"), "p"),
+		SwiftName: digitSafe(camel(name), "P"),
 		CIPaths:   ciPaths(lang),
 		CISteps:   ciSteps(lang),
 	}
@@ -365,6 +382,7 @@ func stackFiles(lang string, data tmplData) []genFile {
 		return []genFile{
 			{path: "Package.swift", data: render1("Package.swift.tmpl", data)},
 			{path: path.Join("Sources", data.SwiftName, data.SwiftName+".swift"), data: render1("swift-main.swift.tmpl", data)},
+			{path: path.Join("Tests", data.SwiftName+"Tests", data.SwiftName+"Tests.swift"), data: render1("swift-test.swift.tmpl", data)},
 		}
 	case "rust":
 		return []genFile{

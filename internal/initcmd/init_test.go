@@ -360,3 +360,43 @@ func TestRenderCoreMissingTemplateFails(t *testing.T) {
 		t.Errorf("error %q does not name the missing template %q", err.Error(), name)
 	}
 }
+
+// TestDigitLeadingNamesProduceValidStackIdentifiers scaffolds directories
+// whose derived project name starts with a digit — legal under the
+// contract name pattern — and asserts the language-level identifiers stay
+// valid: cargo package names, Python module names, and Swift identifiers
+// cannot begin with a digit. The contract keeps the raw name.
+func TestDigitLeadingNamesProduceValidStackIdentifiers(t *testing.T) {
+	for _, tc := range []struct {
+		lang     string
+		want     string // the guarded identifier that must appear in the scaffold
+		file     string // scaffold-relative file carrying it
+		fragment string
+	}{
+		{lang: "rust", want: "p1-check", file: "Cargo.toml", fragment: `name = "p1-check"`},
+		{lang: "swift", want: "P1CheckTests", file: "Tests/P1CheckTests/P1CheckTests.swift", fragment: "final class P1CheckTests"},
+		{lang: "python", want: "p1_check", file: "tests/test_init.py", fragment: "import p1_check"},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "1-check")
+			if err := Run(InitOptions{Dir: dir, Profiles: []string{tc.lang}}); err != nil {
+				t.Fatalf("init %s: %v", tc.lang, err)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(tc.file)))
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.file, err)
+			}
+			if !strings.Contains(string(data), tc.fragment) {
+				t.Errorf("%s does not contain %q (want guarded identifier %q)", tc.file, tc.fragment, tc.want)
+			}
+			// The contract name itself keeps the raw, schema-legal form.
+			c, err := contract.Load(filepath.Join(dir, ".project", "contract.yaml"))
+			if err != nil {
+				t.Fatalf("contract.Load: %v", err)
+			}
+			if c.Project.Name != "1-check" {
+				t.Errorf("contract project name = %q, want 1-check", c.Project.Name)
+			}
+		})
+	}
+}

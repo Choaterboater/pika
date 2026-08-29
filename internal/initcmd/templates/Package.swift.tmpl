@@ -4,6 +4,13 @@ import PackageDescription
 let package = Package(
     name: "{{.SwiftName}}",
     targets: [
-        .executableTarget(name: "{{.SwiftName}}")
+        .executableTarget(name: "{{.SwiftName}}"),
+        // The contract's test gate runs `swift test`, which fails with
+        // "no tests found" unless the package declares a test target, so
+        // the scaffold ships one with a passing smoke test.
+        .testTarget(
+            name: "{{.SwiftName}}Tests",
+            dependencies: ["{{.SwiftName}}"]
+        ),
     ]
 )
