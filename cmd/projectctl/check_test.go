@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Choaterboater/projectctl/internal/profiles"
 	"github.com/Choaterboater/projectctl/internal/verify"
 )
 
@@ -32,6 +33,11 @@ evidence:
 commands:
 ` + commands
 	if err := os.WriteFile(filepath.Join(dir, ".project", "contract.yaml"), []byte(contract), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Gate 1 validates the profile lock, so the fixture pins the same
+	// selection the contract declares.
+	if err := profiles.WriteLock(filepath.Join(dir, ".project", "profiles.lock"), []string{"core@1"}); err != nil {
 		t.Fatal(err)
 	}
 	if lintScript != "" {

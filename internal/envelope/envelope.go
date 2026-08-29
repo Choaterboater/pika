@@ -2,8 +2,10 @@
 // record that states, per change class, what a task is allowed to do
 // (spec section 12.4). Policy is deny-by-default everywhere — an absent
 // class denies, an empty list denies, and only explicit entries allow.
-// The envelope file itself is runtime state at .project/state/envelope.yaml
-// (gitignored); the schema describing its shape is embedded here.
+// The envelope file itself is runtime state at .project/state/
+// envelope.yaml (gitignored). The schema describing its shape is
+// embedded here, at internal/envelope/envelope.schema.json — the one
+// canonical in-repo copy.
 package envelope
 
 import (
@@ -124,6 +126,14 @@ func Validate(data []byte) (*Env, error) {
 	}
 	if err := s.Validate(instance); err != nil {
 		return nil, fmt.Errorf("envelope: schema validation failed: %w", err)
+	}
+	// A bare "*" exec entry would match every command (the prefix
+	// wildcard consumes nothing) — the one silent allow-all in a
+	// fail-closed module. Operators must list the commands they mean.
+	for i, e := range env.Allow.Exec {
+		if e == "*" {
+			return nil, fmt.Errorf("envelope: allow.exec[%d]: a bare \"*\" entry grants every command; list the specific commands instead", i)
+		}
 	}
 	for i, p := range env.Allow.FSWrite {
 		norm, err := contract.NormalizeRepoPath(p)

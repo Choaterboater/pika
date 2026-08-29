@@ -334,6 +334,7 @@ func buildFiles(lang, name, module string, contractYAML []byte) ([]genFile, erro
 	files := []genFile{
 		{path: contractRel, data: contractYAML},
 		{path: ".project/exceptions.yaml", data: []byte("{}\n")},
+		{path: ".gitignore", data: []byte(gitignore(lang))},
 	}
 	for _, d := range docsSpine {
 		files = append(files, genFile{path: path.Join("docs", d, ".gitkeep")})
@@ -357,6 +358,25 @@ func buildFiles(lang, name, module string, contractYAML []byte) ([]genFile, erro
 	return files, nil
 }
 
+// gitignore returns the .gitignore init scaffolds: .project/state/ always
+// (spec §14.2 — envelopes, boards, and recovery journals hold unredacted
+// runtime records and must never be committed) plus the standard ignores
+// of the selected stack's build artifacts.
+func gitignore(lang string) string {
+	lines := []string{".project/state/"}
+	switch lang {
+	case "typescript":
+		lines = append(lines, "node_modules/")
+	case "python":
+		lines = append(lines, "__pycache__/", ".venv/")
+	case "rust":
+		lines = append(lines, "target/")
+	case "swift":
+		lines = append(lines, ".build/", ".swiftpm/")
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 // stackFiles returns the stack-owned layout for the selected language
 // (spec §6.1): minimal but genuinely runnable entry files. A core-only
 // scaffold gets none.
@@ -366,6 +386,16 @@ func stackFiles(lang string, data tmplData) []genFile {
 		return []genFile{
 			{path: "go.mod", data: render1("go.mod.tmpl", data)},
 			{path: path.Join("cmd", data.Name, "main.go"), data: render1("go-main.go.tmpl", data)},
+		}
+	case "swift":
+		// The module identifiers stay PascalCase (Swift imports them),
+		// but the source tree they live in is kebab-case and Package.swift
+		// points the targets at it, so the scaffold passes its own
+		// kebab-case naming rule.
+		return []genFile{
+			{path: "Package.swift", data: render1("Package.swift.tmpl", data)},
+			{path: path.Join("Sources", data.Name, "main.swift"), data: render1("swift-main.swift.tmpl", data)},
+			{path: path.Join("Tests", data.Name+"-tests", data.Name+"-tests.swift"), data: render1("swift-test.swift.tmpl", data)},
 		}
 	case "typescript":
 		return []genFile{
@@ -377,12 +407,6 @@ func stackFiles(lang string, data tmplData) []genFile {
 			{path: "pyproject.toml", data: render1("pyproject.toml.tmpl", data)},
 			{path: path.Join("src", data.PyName, "__init__.py"), data: render1("py-init.py.tmpl", data)},
 			{path: path.Join("tests", "test_init.py"), data: render1("py-test.py.tmpl", data)},
-		}
-	case "swift":
-		return []genFile{
-			{path: "Package.swift", data: render1("Package.swift.tmpl", data)},
-			{path: path.Join("Sources", data.SwiftName, data.SwiftName+".swift"), data: render1("swift-main.swift.tmpl", data)},
-			{path: path.Join("Tests", data.SwiftName+"Tests", data.SwiftName+"Tests.swift"), data: render1("swift-test.swift.tmpl", data)},
 		}
 	case "rust":
 		return []genFile{

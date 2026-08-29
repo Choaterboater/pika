@@ -34,7 +34,14 @@ naming:
     - rule-id: naming-kebab-case
       severity: warning
       scope: path-segments
-      pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+      # Lowercase words with dash, dot, or underscore separators (the
+      # brief's default path pattern): kebab-case first, but Python's
+      # snake_case modules and dotted stems stay legal.
+      pattern: '^[a-z0-9][a-z0-9._-]*$'
+      # Ecosystem-conventional stems that cannot be lowercased (README,
+      # Makefile, Cargo.toml, Package.swift, Apple's Sources/Tests/ dirs,
+      # Python's __init__) are exempt from the rule.
+      exempt-stems: [README, AGENTS, CONTRIBUTING, Makefile, LICENSE, Dockerfile, Cargo, Package, Sources, Tests, __init__]
     - rule-id: naming-catch-all
       severity: error
       scope: path-segments

@@ -1,13 +1,21 @@
 package checks
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/Choaterboater/projectctl/internal/contract"
 	"github.com/Choaterboater/projectctl/internal/profiles"
 	"github.com/Choaterboater/projectctl/internal/version"
 )
+
+// lockRelPath is the profiles lock location relative to the repository
+// root (spec §5.3).
+const lockRelPath = ".project/profiles.lock"
 
 // Gate1 runs verification-ladder rung 1 (spec §12.6): the contract
 // schema-version ceiling, the exceptions record load, and the
@@ -29,6 +37,12 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 	if err != nil {
 		return 1, err.Error(), nil
 	}
+	// Spec §16: CI validates the contract and profile locks; §5.3 pins
+	// the profile versions in profiles.lock. An unpinned, stale, or
+	// drifted lock is a gate failure, never a silent pass.
+	if err := checkLock(repoRoot, c); err != nil {
+		return 1, err.Error(), nil
+	}
 	var findings []string
 	for _, v := range Naming(repoRoot, resolved.NamingRules, exceptions) {
 		line := fmt.Sprintf("%s: %s: %s", v.RuleID, v.Path, v.Message)
@@ -42,4 +56,61 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 		return 1, strings.Join(findings, "\n"), warnings
 	}
 	return 0, "", warnings
+}
+
+// checkLock verifies .project/profiles.lock against the contract's
+// profile selection (spec §16, §5.3): the lock must exist, must pin
+// every contract profile ref at the contract's version, and every
+// pinned digest must match the embedded registry's current digest for
+// that pack.
+func checkLock(repoRoot string, c *contract.Contract) error {
+	lock, err := profiles.ReadLock(filepath.Join(repoRoot, filepath.FromSlash(lockRelPath)))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%s missing; run `projectctl init` (or `projectctl adopt`) to write the profile lock (spec §5.3)", lockRelPath)
+		}
+		return fmt.Errorf("profiles.lock: %w", err)
+	}
+	var problems []string
+	for _, ref := range contractProfileRefs(c) {
+		name, wantVersion, ok := strings.Cut(ref, "@")
+		if !ok || name == "" || wantVersion == "" {
+			problems = append(problems, fmt.Sprintf("contract profile ref %q is not a pack reference (expected name@version)", ref))
+			continue
+		}
+		pinned, ok := lock.Packs[name]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("pack %s (contract ref %s) is not pinned in profiles.lock; regenerate the lock with `projectctl init --force`", name, ref))
+			continue
+		}
+		if pinned.Version != wantVersion {
+			problems = append(problems, fmt.Sprintf("pack %s pinned at version %s in profiles.lock, contract requires %s; regenerate the lock with `projectctl init --force`", name, pinned.Version, wantVersion))
+			continue
+		}
+		digest, ok := profiles.PackDigestFor(ref)
+		if !ok {
+			problems = append(problems, fmt.Sprintf("contract profile ref %q is not a registered pack", ref))
+			continue
+		}
+		if pinned.Digest != digest {
+			problems = append(problems, fmt.Sprintf("pack %s digest %s in profiles.lock does not match the embedded pack %s; regenerate the lock with `projectctl init --force`", name, pinned.Digest, ref))
+		}
+	}
+	if len(problems) > 0 {
+		return errors.New("profiles.lock: " + strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// contractProfileRefs collects the contract's profile refs: the
+// project-level selection plus every package's profiles, deduplicated
+// in sorted order.
+func contractProfileRefs(c *contract.Contract) []string {
+	var refs []string
+	refs = append(refs, c.Profiles...)
+	for _, p := range c.Packages {
+		refs = append(refs, p.Profiles...)
+	}
+	slices.Sort(refs)
+	return slices.Compact(refs)
 }

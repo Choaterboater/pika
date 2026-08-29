@@ -1,10 +1,10 @@
 {
-  "digest": "2e1a31e223b8cbfb21a71b75cba07931de6a323db2415869d66c6325fdafbbee",
+  "digest": "b8368b20136f6a038bf04a6fcad326a71f4c3f0bd73aa93b40a2e03eecf420d4",
   "packs": {
     "core": {
       "version": "1",
       "source": "embedded",
-      "digest": "1068a53b79c0cf0c887a94da7564b994be530d454297bab332f1dd1d0300d6cf"
+      "digest": "c8379e01ac9715d9804b87b0ef433923cd276af5bcb8ba61168d236af6b25f9c"
     },
     "go": {
       "version": "1",

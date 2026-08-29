@@ -197,6 +197,12 @@ func (cr compiledRule) pathSegmentViolation(rel string) []Violation {
 	}
 	var bad []string
 	for _, nm := range names {
+		// Stem exemptions (e.g. README, Makefile) are names the
+		// ecosystem has made conventional; they are never style
+		// violations of a pattern rule.
+		if slices.Contains(cr.rule.Exempt, nm) {
+			continue
+		}
 		if !cr.re.MatchString(nm) {
 			bad = append(bad, nm)
 		}

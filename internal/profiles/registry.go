@@ -105,6 +105,7 @@ type namingSpec struct {
 	Scope    string   `yaml:"scope"`
 	Pattern  string   `yaml:"pattern"`
 	Banned   []string `yaml:"banned"`
+	Exempt   []string `yaml:"exempt-stems"`
 }
 
 // Verification groups the checks a profile declares.
@@ -194,6 +195,7 @@ type NamingRule struct {
 	Scope    string
 	Pattern  string
 	Banned   []string
+	Exempt   []string
 }
 
 // Resolved is the composition result consumed by downstream tasks.
@@ -357,6 +359,7 @@ func namingRules(specs []namingSpec) []NamingRule {
 			Scope:    s.Scope,
 			Pattern:  s.Pattern,
 			Banned:   s.Banned,
+			Exempt:   s.Exempt,
 		})
 	}
 	return rules
@@ -387,9 +390,9 @@ func PackDigest() string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// lockPack is one profiles.lock entry: the pinned version, the pack
+// LockPack is one profiles.lock entry: the pinned version, the pack
 // source, and the sha256 digest of the embedded pack bytes.
-type lockPack struct {
+type LockPack struct {
 	Version string `json:"version"`
 	Source  string `json:"source"`
 	Digest  string `json:"digest"`
@@ -400,7 +403,38 @@ type lockPack struct {
 // map keys, so the same selection marshals to identical bytes.
 type lockFile struct {
 	Digest string              `json:"digest"`
-	Packs  map[string]lockPack `json:"packs"`
+	Packs  map[string]LockPack `json:"packs"`
+}
+
+// Lock is the parsed profiles.lock document: the canonical registry
+// digest plus one pinned entry per selected pack.
+type Lock struct {
+	Digest string              `json:"digest"`
+	Packs  map[string]LockPack `json:"packs"`
+}
+
+// ReadLock reads and parses the profiles.lock document at path.
+func ReadLock(path string) (*Lock, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var raw lockFile
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("profiles: parse %s: %w", path, err)
+	}
+	return &Lock{Digest: raw.Digest, Packs: raw.Packs}, nil
+}
+
+// PackDigestFor returns the current sha256 digest of the embedded pack
+// bytes for the pack reference ref (e.g. "go@1"); ok is false when the
+// ref is not registered.
+func PackDigestFor(ref string) (digest string, ok bool) {
+	entry, ok := embeddedPacks[ref]
+	if !ok {
+		return "", false
+	}
+	return packDigest(entry.data), true
 }
 
 // WriteLock writes the profiles.lock JSON to path for the selected pack
@@ -410,7 +444,7 @@ type lockFile struct {
 // .project/profiles.lock; adopt calls it for the draft lock with the
 // selection pinned in its draft contract, so lock and contract agree.
 func WriteLock(path string, selected []string) error {
-	lock := lockFile{Digest: PackDigest(), Packs: make(map[string]lockPack, len(selected))}
+	lock := lockFile{Digest: PackDigest(), Packs: make(map[string]LockPack, len(selected))}
 	for _, ref := range selected {
 		entry, ok := embeddedPacks[ref]
 		if !ok {
@@ -423,7 +457,7 @@ func WriteLock(path string, selected []string) error {
 		if _, err := pack.checkSet(); err != nil {
 			return fmt.Errorf("profiles: pack %s: %w", ref, err)
 		}
-		lock.Packs[entry.name] = lockPack{
+		lock.Packs[entry.name] = LockPack{
 			Version: entry.version,
 			Source:  lockSource,
 			Digest:  packDigest(entry.data),

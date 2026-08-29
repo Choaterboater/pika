@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Choaterboater/projectctl/internal/profiles"
 )
 
 // session drives one stdio MCP server over real OS pipes, mirroring how an
@@ -177,6 +179,11 @@ func fixtureRepo(t *testing.T, contract, envelopeYAML string) string {
 	writeFile(t, root, "go.mod", "module example.com/fixture\n\ngo 1.21\n")
 	if contract != "" {
 		writeFile(t, root, ".project/contract.yaml", contract)
+		// Gate 1 validates the profile lock, so a contract fixture pins
+		// the same selection the contract declares.
+		if err := profiles.WriteLock(filepath.Join(root, ".project", "profiles.lock"), []string{"core@1"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if envelopeYAML != "" {
 		writeFile(t, root, ".project/state/envelope.yaml", envelopeYAML)

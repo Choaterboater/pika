@@ -17,7 +17,8 @@ func coreRules() []profiles.NamingRule {
 			RuleID:   "naming-kebab-case",
 			Severity: "warning",
 			Scope:    "path-segments",
-			Pattern:  `^[a-z0-9]+(-[a-z0-9]+)*$`,
+			Pattern:  `^[a-z0-9][a-z0-9._-]*$`,
+			Exempt:   []string{"README", "AGENTS", "CONTRIBUTING", "Makefile", "LICENSE", "Dockerfile", "Cargo", "Package", "Sources", "Tests", "__init__"},
 		},
 		{
 			RuleID:   "naming-catch-all",
@@ -166,6 +167,48 @@ func TestNamingKebabCaseIgnoresFileExtension(t *testing.T) {
 	})
 	if vs := Naming(dir, coreRules(), nil); len(vs) != 0 {
 		t.Fatalf("kebab-case fired on extension or dotted segments: %+v", vs)
+	}
+}
+
+func TestNamingKebabCaseExemptStems(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"README.md":       "x\n",
+		"AGENTS.md":       "x\n",
+		"CONTRIBUTING.md": "x\n",
+		"Makefile":        "x\n",
+		"LICENSE":         "x\n",
+		"Dockerfile":      "x\n",
+		"README":          "x\n", // extensionless conventional stem
+	})
+	if vs := Naming(dir, coreRules(), nil); len(vs) != 0 {
+		t.Fatalf("conventional stems must not trip the kebab rule: %+v", vs)
+	}
+}
+
+func TestNamingKebabCaseExemptIsStemExact(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"src/Readme.md":     "x\n", // wrong case is not the exempt stem
+		"src/README.bak.md": "x\n", // stem README.bak is not exempt
+	})
+	vs := Naming(dir, coreRules(), nil)
+	if len(vs) != 2 {
+		t.Fatalf("violations = %+v, want 2 for non-exempt spellings", vs)
+	}
+}
+
+func TestNamingKebabCaseToleratesSnakeCaseAndDunderInit(t *testing.T) {
+	// Python's package layout is snake_case by language mandate (PEP 8);
+	// the kebab rule's pattern admits lowercase snake and dotted stems,
+	// and __init__ is a conventional exempt stem.
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"src/python_single/__init__.py": "x\n",
+		"tests/test_init.py":            "x\n",
+	})
+	if vs := Naming(dir, coreRules(), nil); len(vs) != 0 {
+		t.Fatalf("python-conventional paths must not trip the kebab rule: %+v", vs)
 	}
 }
 

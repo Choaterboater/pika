@@ -95,6 +95,12 @@ func TestCoreProfileResolve(t *testing.T) {
 	if kebab.Pattern == "" {
 		t.Errorf("naming-kebab-case: empty pattern")
 	}
+	// The kebab rule must exempt the ecosystem-conventional stems:
+	for _, stem := range []string{"README", "AGENTS", "CONTRIBUTING", "Makefile", "LICENSE", "Dockerfile", "Cargo", "Package", "Sources", "Tests", "__init__"} {
+		if !slices.Contains(kebab.Exempt, stem) {
+			t.Errorf("naming-kebab-case exempt-stems missing %q (got %v)", stem, kebab.Exempt)
+		}
+	}
 	// Size thresholds and style drift are review signals, not hard
 	// failures (spec §6.2).
 	if kebab.Severity != "warning" {
@@ -146,7 +152,7 @@ func TestWriteLockDigest(t *testing.T) {
 	}
 	var lock struct {
 		Digest string              `json:"digest"`
-		Packs  map[string]lockPack `json:"packs"`
+		Packs  map[string]LockPack `json:"packs"`
 	}
 	if err := json.Unmarshal(raw, &lock); err != nil {
 		t.Fatalf("profiles.lock is not valid JSON: %v", err)
@@ -194,7 +200,7 @@ func TestWriteLockTwoPacks(t *testing.T) {
 	}
 	var lock struct {
 		Digest string              `json:"digest"`
-		Packs  map[string]lockPack `json:"packs"`
+		Packs  map[string]LockPack `json:"packs"`
 	}
 	if err := json.Unmarshal(raw, &lock); err != nil {
 		t.Fatalf("profiles.lock is not valid JSON: %v", err)

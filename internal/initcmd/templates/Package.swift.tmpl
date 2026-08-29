@@ -4,13 +4,18 @@ import PackageDescription
 let package = Package(
     name: "{{.SwiftName}}",
     targets: [
-        .executableTarget(name: "{{.SwiftName}}"),
+        // The module names are PascalCase (Swift identifiers), but the
+        // source tree is kebab-case so the repository passes its own
+        // kebab-case naming rule; the explicit paths point the targets
+        // at it.
+        .executableTarget(name: "{{.SwiftName}}", path: "Sources/{{.Name}}"),
         // The contract's test gate runs `swift test`, which fails with
         // "no tests found" unless the package declares a test target, so
         // the scaffold ships one with a passing smoke test.
         .testTarget(
             name: "{{.SwiftName}}Tests",
-            dependencies: ["{{.SwiftName}}"]
+            dependencies: ["{{.SwiftName}}"],
+            path: "Tests/{{.Name}}-tests"
         ),
     ]
 )

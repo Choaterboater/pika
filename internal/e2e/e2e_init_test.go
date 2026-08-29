@@ -193,6 +193,23 @@ func TestE2EInitCheckAllLanguages(t *testing.T) {
 			if rep.Gates[0].Status != "pass" {
 				t.Fatalf("contract gate status = %q, want pass:\n%s", rep.Gates[0].Status, out)
 			}
+			// The scaffold must not trip its own kebab gate: every
+			// ecosystem-conventional top-level name is exempt.
+			for _, w := range rep.Warnings {
+				if strings.Contains(w, "naming-kebab-case") {
+					t.Errorf("check emitted a kebab-case warning on the scaffold: %s", w)
+				}
+			}
+
+			// State lives under .project/state/ (spec §14.2) and must be
+			// gitignored by the scaffold.
+			gi, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+			if err != nil {
+				t.Fatalf("scaffold .gitignore: %v", err)
+			}
+			if !strings.Contains(string(gi), ".project/state/") {
+				t.Errorf(".gitignore = %q, want it to ignore .project/state/", gi)
+			}
 
 			// Adopt-style roundtrip: a committed contract makes the repo
 			// already adopted. Preview must refuse read-only — no drafts.

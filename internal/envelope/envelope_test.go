@@ -278,17 +278,27 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-func TestEmbeddedSchemaMatchesRepoSchema(t *testing.T) {
-	// schemas/envelope.schema.json is the canonical in-repo schema; the
-	// embedded copy must never drift from it.
-	canon, err := os.ReadFile(filepath.Join("..", "..", "schemas", "envelope.schema.json"))
-	if err != nil {
-		t.Fatalf("read canonical schema: %v", err)
-	}
-	if string(canon) != string(schemaJSON) {
-		t.Fatal("schemas/envelope.schema.json and the embedded schema differ")
-	}
+func TestEmbeddedSchemaIsCanonical(t *testing.T) {
+	// The schema embedded at internal/envelope/envelope.schema.json is
+	// the one canonical in-repo envelope schema; it is closed.
 	if !strings.Contains(string(schemaJSON), "additionalProperties") {
 		t.Fatal("schema must be closed")
+	}
+	if !strings.Contains(string(schemaJSON), `"exec"`) {
+		t.Fatal("schema must constrain the exec allow list")
+	}
+}
+
+func TestValidateRejectsBareStarExec(t *testing.T) {
+	// A bare "*" exec entry grants every command — the one silent
+	// allow-all in a fail-closed module. Validate must refuse it and
+	// name the offending entry.
+	const doc = `{"schema":1,"allow":{"exec":["*"]}}`
+	_, err := Validate([]byte(doc))
+	if err == nil {
+		t.Fatal("Validate accepted a bare \"*\" exec entry")
+	}
+	if !strings.Contains(err.Error(), `"*"`) {
+		t.Errorf("error %q must name the bare \"*\" entry", err)
 	}
 }

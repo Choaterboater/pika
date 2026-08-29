@@ -106,6 +106,16 @@ func TestGoldenPerLanguage(t *testing.T) {
 			if c.Evidence.Publish != "sanitized" {
 				t.Errorf("contract evidence.publish = %q, want sanitized", c.Evidence.Publish)
 			}
+
+			// The scaffold must gitignore the state directory (spec
+			// §14.2): state carries unredacted runtime records.
+			gi, ok := generated[".gitignore"]
+			if !ok {
+				t.Fatal("scaffold is missing .gitignore")
+			}
+			if !strings.Contains(string(gi), ".project/state/") {
+				t.Errorf(".gitignore = %q, want it to ignore .project/state/", gi)
+			}
 		})
 	}
 }
@@ -374,7 +384,7 @@ func TestDigitLeadingNamesProduceValidStackIdentifiers(t *testing.T) {
 		fragment string
 	}{
 		{lang: "rust", want: "p1-check", file: "Cargo.toml", fragment: `name = "p1-check"`},
-		{lang: "swift", want: "P1CheckTests", file: "Tests/P1CheckTests/P1CheckTests.swift", fragment: "final class P1CheckTests"},
+		{lang: "swift", want: "P1CheckTests", file: "Tests/1-check-tests/1-check-tests.swift", fragment: "final class P1CheckTests"},
 		{lang: "python", want: "p1_check", file: "tests/test_init.py", fragment: "import p1_check"},
 	} {
 		t.Run(tc.lang, func(t *testing.T) {
