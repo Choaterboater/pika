@@ -2,8 +2,10 @@ package verify
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGateFailureStopsLadder(t *testing.T) {
@@ -175,5 +177,62 @@ func TestContextCancelFailsGate(t *testing.T) {
 	}
 	if rep.Gates[0].Status != StatusFail {
 		t.Fatalf("cancelled gate status = %q, want fail", rep.Gates[0].Status)
+	}
+}
+
+// TestGateTimeoutBoundsExecution exercises a real per-gate deadline with a
+// short injected timeout (F2): the sleeping gate is reaped on the deadline
+// and its downstream gates are skipped, with Run returning in bounded wall
+// time instead of waiting out the sleep.
+func TestGateTimeoutBoundsExecution(t *testing.T) {
+	cs := CheckSet{
+		{ID: "g1", Cmd: []string{"sleep", "60"}},
+		{ID: "g2", Cmd: []string{"true"}},
+	}
+	start := time.Now()
+	rep, err := Run(context.Background(), cs, All, WithGateTimeout(100*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Run took %s; timeout did not bound the gate", elapsed)
+	}
+	g1 := rep.Gates[0]
+	if g1.Status != StatusFail || g1.Exit != -1 {
+		t.Fatalf("g1 = %+v, want fail with exit -1", g1)
+	}
+	if !strings.Contains(g1.Reason, "timed out") {
+		t.Fatalf("g1 reason %q should name the timeout", g1.Reason)
+	}
+	if rep.Gates[1].Status != StatusSkip || rep.Gates[1].Reason == "" {
+		t.Fatalf("g2 = %+v, want skip with reason after timeout", rep.Gates[1])
+	}
+	if rep.Pass {
+		t.Fatal("report.Pass = true after a timeout failure")
+	}
+}
+
+// TestTimeoutReapsProcessTree asserts the process-group kill: the gate
+// shell spawns a background sleep (a grandchild) that inherits the
+// combined-output pipe, then waits on it. The group kill must reap both,
+// so Run returns near the deadline instead of blocking on the pipe until
+// the reap delay. Skipped on Windows, which has no portable group kill
+// (documented in sysproc_windows.go).
+func TestTimeoutReapsProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no portable process-group kill on Windows")
+	}
+	cs := CheckSet{{ID: "g1", Cmd: []string{"sh", "-c", "sleep 60 & wait"}}}
+	start := time.Now()
+	rep, err := Run(context.Background(), cs, All,
+		WithGateTimeout(100*time.Millisecond), WithReapDelay(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Run took %s; grandchild was not reaped with the process group", elapsed)
+	}
+	if rep.Gates[0].Status != StatusFail || !strings.Contains(rep.Gates[0].Reason, "timed out") {
+		t.Fatalf("g1 = %+v, want timeout fail", rep.Gates[0])
 	}
 }

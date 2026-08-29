@@ -15,13 +15,40 @@ import (
 )
 
 const (
-	// gateTimeout bounds each gate execution.
-	gateTimeout = 10 * time.Minute
+	// defaultGateTimeout bounds each gate execution unless overridden
+	// with WithGateTimeout.
+	defaultGateTimeout = 10 * time.Minute
+
+	// defaultReapDelay bounds how long Wait may block on orphaned
+	// output-pipe holders (grandchildren) after a timeout kill unless
+	// overridden with WithReapDelay.
+	defaultReapDelay = 5 * time.Second
 
 	// outputTailBytes keeps the last 8 KiB of combined gate output
 	// (spec §14.1 bounded output summaries).
 	outputTailBytes = 8 * 1024
 )
+
+// runConfig carries the tunables injected through Run options; tests use
+// them to exercise real deadlines without waiting minutes.
+type runConfig struct {
+	gateTimeout time.Duration
+	reapDelay   time.Duration
+}
+
+// Option tunes a Run.
+type Option func(*runConfig)
+
+// WithGateTimeout overrides the per-gate execution deadline.
+func WithGateTimeout(d time.Duration) Option {
+	return func(rc *runConfig) { rc.gateTimeout = d }
+}
+
+// WithReapDelay overrides how long Wait may block on orphaned pipe
+// holders after the timeout kill.
+func WithReapDelay(d time.Duration) Option {
+	return func(rc *runConfig) { rc.reapDelay = d }
+}
 
 // Gate statuses recorded in GateResult.
 const (
@@ -99,8 +126,15 @@ type Report struct {
 
 // Run executes the ladder: gates in order, first failure skips every
 // downstream gate. Run returns an error only for a malformed CheckSet;
-// gate failures are data in the Report, not errors.
-func Run(ctx context.Context, cs CheckSet, scope Scope) (*Report, error) {
+// gate failures are data in the Report, not errors. Options tune the
+// per-gate execution deadline and post-kill reap delay (used by tests to
+// exercise real deadlines quickly).
+func Run(ctx context.Context, cs CheckSet, scope Scope, opts ...Option) (*Report, error) {
+	rc := runConfig{gateTimeout: defaultGateTimeout, reapDelay: defaultReapDelay}
+	for _, opt := range opts {
+		opt(&rc)
+	}
+
 	rep := &Report{Gates: make([]GateResult, 0, len(cs))}
 	if scope == Changed {
 		rep.Warnings = append(rep.Warnings,
@@ -123,7 +157,7 @@ func Run(ctx context.Context, cs CheckSet, scope Scope) (*Report, error) {
 			rep.Summary.Skip++
 			continue
 		}
-		res, err := runGate(ctx, g)
+		res, err := runGate(ctx, g, rc)
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +182,7 @@ func Run(ctx context.Context, cs CheckSet, scope Scope) (*Report, error) {
 }
 
 // runGate executes one gate and returns its result.
-func runGate(ctx context.Context, g Gate) (GateResult, error) {
+func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 	if g.SkipReason != "" {
 		return GateResult{ID: g.ID, Status: StatusSkip, Reason: g.SkipReason}, nil
 	}
@@ -167,12 +201,22 @@ func runGate(ctx context.Context, g Gate) (GateResult, error) {
 		return GateResult{}, fmt.Errorf("verify: gate %q has neither cmd nor func", g.ID)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, gateTimeout)
+	ctx, cancel := context.WithTimeout(ctx, rc.gateTimeout)
 	defer cancel()
 
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, g.Cmd[0], g.Cmd[1:]...)
 	// Stdin stays nil: gates read /dev/null and can never prompt.
+	setGroup(cmd)
+	// exec.CommandContext's default Cancel kills only the direct child;
+	// kill the gate's whole process group instead so grandchildren die
+	// with it.
+	cmd.Cancel = func() error { return killGroup(cmd) }
+	// A grandchild that escaped the group (or a platform without group
+	// kill) can still hold the combined-output pipe forever; WaitDelay
+	// makes Wait close the pipes and return after reapDelay regardless,
+	// so check can never hang past the deadline.
+	cmd.WaitDelay = rc.reapDelay
 	output, err := cmd.CombinedOutput()
 	res := GateResult{
 		ID:         g.ID,
@@ -188,7 +232,7 @@ func runGate(ctx context.Context, g Gate) (GateResult, error) {
 	case ctx.Err() != nil:
 		res.Exit = -1
 		res.Status = StatusFail
-		res.Reason = fmt.Sprintf("gate timed out after %s", gateTimeout)
+		res.Reason = fmt.Sprintf("gate timed out after %s", rc.gateTimeout)
 	default:
 		res.Status = StatusFail
 		if errors.As(err, &exitErr) {
