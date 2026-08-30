@@ -65,11 +65,9 @@ func Build(opts Options) (*envelope.Env, error) {
 		env.Allow.FSWrite = append([]string(nil), projectPaths...)
 	case ScopeRepo:
 		// "." is the canonical repository-root path
-		// contract.NormalizeRepoPath produces. Known open defect,
-		// owned by envelope enforcement rather than by this package:
-		// envelope.matchesPath compares `norm == entry` or the
-		// `entry+"/"` prefix, so a "." entry currently matches the
-		// literal path "." and nothing beneath it.
+		// contract.NormalizeRepoPath produces, and
+		// envelope.matchesPath reads it as the whole repository
+		// subtree: this grant authorizes writes anywhere in the repo.
 		env.Allow.FSWrite = []string{"."}
 	default:
 		return nil, fmt.Errorf("authorize: unknown scope %q (want %s, %s, or %s)",

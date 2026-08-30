@@ -215,17 +215,17 @@ func envelopeYAML(paths ...string) string {
 }
 
 // writeGeneratedEnvelope writes the envelope `pika authorize --scope
-// project` would generate for the repository at root. Using the real
+// <scope>` would generate for the repository at root. Using the real
 // generator rather than a hand-written document is the point: it proves
 // what authorize grants and what this package enforces are the same
 // thing, and it fails the moment the two drift.
-func writeGeneratedEnvelope(t *testing.T, root string) {
+func writeGeneratedEnvelope(t *testing.T, root, scope string) {
 	t.Helper()
 	r, err := repopath.At(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := authorize.Build(authorize.Options{Root: r, Scope: authorize.ScopeProject})
+	env, err := authorize.Build(authorize.Options{Root: r, Scope: scope})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +475,7 @@ func TestPreviewPlanProducesDrafts(t *testing.T) {
 func TestRunChecksReport(t *testing.T) {
 	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\ncommands:\n  test: go version\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\n"
 	root := fixtureRepo(t, contract, "")
-	writeGeneratedEnvelope(t, root)
+	writeGeneratedEnvelope(t, root, authorize.ScopeProject)
 	s := startServer(t, root)
 	s.initialize()
 
@@ -516,7 +516,7 @@ func TestRunChecksRunsGatesInRepoRoot(t *testing.T) {
 	// exec'd with no shell, so a bare argv is what fits here.
 	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\ncommands:\n  test: /bin/pwd\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\n"
 	root := fixtureRepo(t, contract, "")
-	writeGeneratedEnvelope(t, root)
+	writeGeneratedEnvelope(t, root, authorize.ScopeProject)
 	want, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatal(err)
@@ -591,7 +591,7 @@ func TestRunChecksDeniedWithoutExecGrant(t *testing.T) {
 // repository's checks.
 func TestRunChecksAllowedWithGeneratedEnvelope(t *testing.T) {
 	root := fixtureRepo(t, minContract, "")
-	writeGeneratedEnvelope(t, root)
+	writeGeneratedEnvelope(t, root, authorize.ScopeProject)
 	s := startServer(t, root)
 	s.initialize()
 
@@ -603,6 +603,22 @@ func TestRunChecksAllowedWithGeneratedEnvelope(t *testing.T) {
 	if rep["pass"] != true {
 		t.Fatalf("report = %v, want pass", rep)
 	}
+}
+
+// The read scope authorizing no checks is a product decision, not an
+// accident of the fixture: it grants no exec entries at all, so the real
+// generated artifact — not a hand-written stand-in — must deny a
+// run_checks that spawns a gate.
+func TestRunChecksDeniedWithGeneratedReadScopeEnvelope(t *testing.T) {
+	// minContract's test gate is a real argv, so a gate really is
+	// spawned and the exec question really is asked.
+	root := fixtureRepo(t, minContract, "")
+	writeGeneratedEnvelope(t, root, authorize.ScopeRead)
+	s := startServer(t, root)
+	s.initialize()
+
+	resp := s.callTool(1, "run_checks", map[string]any{"scope": "all"})
+	wantToolError(t, resp, "envelope_denied")
 }
 
 // A gate with no argv is the in-process contract gate or a recorded

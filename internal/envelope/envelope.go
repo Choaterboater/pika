@@ -251,6 +251,10 @@ func (e *Envelope) Allows(op Operation) bool {
 	if e == nil || e.Env == nil {
 		return false
 	}
+	// Enforcement coverage as of M1: only fs_write and exec have a
+	// caller that asks before acting. fs_read, network, credential,
+	// github and budget are answered correctly here and validated by
+	// the schema, but no kernel code path consults them yet.
 	switch op.Kind {
 	case KindFSRead:
 		return e.allowsRead(op.Target)
