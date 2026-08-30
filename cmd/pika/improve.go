@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
+	"time"
 
 	"github.com/Choaterboater/pika/internal/cliout"
 	"github.com/Choaterboater/pika/internal/contract"
@@ -58,7 +60,10 @@ func runHandoff(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(*jsonOut, stdout, stderr, "handoff", codeConfig, err.Error())
 	}
-	handoff, err := improve.CreateHandoff(context.Background(), root.Dir(), report, runner)
+	// `pika handoff` has no run record of its own: no M2 task gives it one, so
+	// it still mints an unidentified bundle directory here. Routed to Task 4.
+	bundleDir := filepath.Join(root.Dir(), ".project", "state", "handoffs", fmt.Sprintf("%d", time.Now().UTC().UnixNano()))
+	handoff, err := improve.CreateHandoff(context.Background(), root.Dir(), bundleDir, report, runner)
 	if err != nil {
 		if *jsonOut && emitFailure(stdout, stderr, "handoff", err, nil) {
 			return 1

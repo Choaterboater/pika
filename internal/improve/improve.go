@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Choaterboater/pika/internal/verify"
 )
@@ -79,7 +81,9 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return result, err
 	}
 	result.Branch = cfg.Branch
-	handoff, err := CreateHandoff(ctx, cfg.Root, before, cfg.Runner)
+	// Task 4 replaces this with the run record's own (*workrec.Handle).HandoffDir().
+	bundleDir := filepath.Join(cfg.Root, handoffStateDir, fmt.Sprintf("%d", time.Now().UTC().UnixNano()))
+	handoff, err := CreateHandoff(ctx, cfg.Root, bundleDir, before, cfg.Runner)
 	result.Handoff = handoff
 	if err != nil {
 		return result, err

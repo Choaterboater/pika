@@ -11,12 +11,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Choaterboater/pika/internal/redact"
 	"github.com/Choaterboater/pika/internal/verify"
 )
 
+// handoffStateDir is the retired bundle location. Nothing writes here any
+// more; changePaths still filters it so a bundle left by an older Pika is
+// never swept into a commit.
 const handoffStateDir = ".project/state/handoffs"
 
 // ErrNoActionableFindings indicates that a check report has no failed gates
@@ -79,15 +81,25 @@ type Handoff struct {
 	ResultPath string `json:"resultPath"`
 }
 
-// CreateHandoff writes a private redacted report and a repair-only prompt,
-// then runs the supplied agent. It never puts warning-only findings into the
-// prompt: documented exceptions and review signals are not destructive work.
-func CreateHandoff(ctx context.Context, root string, report *verify.Report, runner Runner) (Handoff, error) {
+// CreateHandoff writes a private redacted report and a repair-only prompt
+// into bundleDir, then runs the supplied agent. It never puts warning-only
+// findings into the prompt: documented exceptions and review signals are not
+// destructive work.
+//
+// root and bundleDir are independent: root is the repository the agent and
+// the Git-state checks operate on, while bundleDir is wherever the caller's
+// run record keeps its bundle. Neither is derived from the other, and
+// bundleDir is mandatory — defaulting it would let a caller silently recreate
+// the unidentified orphan bundles this parameter exists to remove.
+func CreateHandoff(ctx context.Context, root, bundleDir string, report *verify.Report, runner Runner) (Handoff, error) {
 	if report == nil {
 		return Handoff{}, errors.New("improve: check report is required")
 	}
 	if runner == nil {
 		return Handoff{}, errors.New("improve: agent runner is required")
+	}
+	if strings.TrimSpace(bundleDir) == "" {
+		return Handoff{}, errors.New("improve: handoff bundle directory is required")
 	}
 	failed := failedGates(report)
 	if len(failed) == 0 {
@@ -97,17 +109,16 @@ func CreateHandoff(ctx context.Context, root string, report *verify.Report, runn
 	if err != nil {
 		return Handoff{}, err
 	}
-	dir := filepath.Join(root, handoffStateDir, fmt.Sprintf("%d", time.Now().UTC().UnixNano()))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(bundleDir, 0o700); err != nil {
 		return Handoff{}, fmt.Errorf("create handoff directory: %w", err)
 	}
 	handoff := Handoff{
-		Dir:        dir,
-		ReportPath: filepath.Join(dir, "checks-before.json"),
-		PromptPath: filepath.Join(dir, "prompt.md"),
-		ResultPath: filepath.Join(dir, "codex-last-message.md"),
+		Dir:        bundleDir,
+		ReportPath: filepath.Join(bundleDir, "checks-before.json"),
+		PromptPath: filepath.Join(bundleDir, "prompt.md"),
+		ResultPath: filepath.Join(bundleDir, "codex-last-message.md"),
 	}
-	rawResultPath := filepath.Join(dir, "codex-last-message.raw")
+	rawResultPath := filepath.Join(bundleDir, "codex-last-message.raw")
 	defer os.Remove(rawResultPath)
 	reportJSON, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
