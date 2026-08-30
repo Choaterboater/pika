@@ -363,3 +363,19 @@ evidence:
 	}
 	return root
 }
+
+// The receipt reads its tree and its file list back out of Git by
+// commit. Unguarded, `git diff-tree --output=<path>` writes that file
+// before it fails, so an option-shaped commit escapes the repository
+// through the code that exists to describe it.
+func TestLeadingDashDeliveredCommitIsNotReadAsAnOption(t *testing.T) {
+	root := newFixture(t, "")
+	written := filepath.Join(t.TempDir(), "written")
+
+	if _, _, err := delivered(context.Background(), root, "--output="+written); err == nil {
+		t.Fatal("delivered accepted an option-shaped commit, want a refusal")
+	}
+	if _, err := os.Stat(written); !os.IsNotExist(err) {
+		t.Fatalf("git wrote %s: the commit argument was executed as an option", written)
+	}
+}

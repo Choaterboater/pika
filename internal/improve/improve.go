@@ -671,8 +671,17 @@ func deliveredCommit(ctx context.Context, root string, rec workrec.Record, branc
 // commitShape reads the two facts that identify a run's own delivery: the
 // commit's parents and its subject. Both come from one Git call so they
 // describe the same object even if the repository moves underneath.
+//
+// The commit is passed after `--end-of-options` rather than after `--`.
+// `git show` is a revision command: `--` there means "paths follow", and
+// `git show --format=... -- <commit>` reads the commit as a pathspec,
+// prints nothing and exits zero — a silent wrong answer where a refusal
+// belongs. `--end-of-options` is the separator that says "operands
+// follow" without saying they are paths, so an argument beginning with
+// `-` is read as a revision. Unguarded it is read as an option, and
+// `git show --output=<path>` writes a file and exits zero.
 func commitShape(ctx context.Context, root, commit string) ([]string, string, error) {
-	shown, err := runGit(ctx, root, "show", "--no-patch", "--format=%P%n%s", commit)
+	shown, err := runGit(ctx, root, "show", "--no-patch", "--format=%P%n%s", "--end-of-options", commit)
 	if err != nil {
 		return nil, "", err
 	}
@@ -685,6 +694,13 @@ func commitShape(ctx context.Context, root, commit string) ([]string, string, er
 // needed is a question only Git can answer — a run interrupted between
 // creating its branch and recording it leaves a branch the record cannot
 // name — so it is asked rather than assumed.
+//
+// Only the switch to an existing branch takes a separator, and it is the
+// bare `--`: `git switch` has no pathspec, so `--` unambiguously ends the
+// options. The creating form needs none and must not have one — `-c`
+// takes the next argument as its value whatever it starts with, so
+// `git switch -c -- <branch>` would name the branch `--` and then read
+// <branch> as options.
 func enterBranch(ctx context.Context, root, branch string) error {
 	state, err := currentGitState(ctx, root)
 	if err != nil {
@@ -696,7 +712,7 @@ func enterBranch(ctx context.Context, root, branch string) error {
 	if _, exists, err := branchCommit(ctx, root, branch); err != nil {
 		return err
 	} else if exists {
-		_, err = runGit(ctx, root, "switch", branch)
+		_, err = runGit(ctx, root, "switch", "--", branch)
 		return err
 	}
 	_, err = runGit(ctx, root, "switch", "-c", branch)

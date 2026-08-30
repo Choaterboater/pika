@@ -1656,3 +1656,38 @@ func (r refusingRunner) Run(context.Context, string, string, string) error {
 	r.t.Fatalf("the agent must not run: %s", r.why)
 	return nil
 }
+
+// A branch name is a value. Git reads a leading `-` as the start of an
+// option unless it is told where the options stop, so a branch called
+// `-weird` is either switched to or mistaken for a bundle of short
+// flags. Such a branch is unusual but reachable — `git update-ref`
+// creates one — and the day a branch name reaches Pika from anywhere but
+// an operator's own flag, the difference between those two readings is
+// the difference between a refusal and an argument Pika did not write.
+func TestLeadingDashBranchIsSwitchedToAsAValue(t *testing.T) {
+	root := newFixture(t, "")
+	gitRun(t, root, "update-ref", "refs/heads/-weird", "HEAD")
+
+	if err := enterBranch(context.Background(), root, "-weird"); err != nil {
+		t.Fatalf("enterBranch on a branch named %q: %v", "-weird", err)
+	}
+	if head := gitOutput(t, root, "symbolic-ref", "--short", "HEAD"); head != "-weird" {
+		t.Fatalf("HEAD = %q, want %q", head, "-weird")
+	}
+}
+
+// The same reading applied to a commit is worse than a wrong branch:
+// `git show --output=<path>` writes a file and exits zero, so an
+// argument read as an option acts on the filesystem and reports success.
+// The refusal is the point — the file must not appear.
+func TestLeadingDashCommitIsNotReadAsAnOption(t *testing.T) {
+	root := newFixture(t, "")
+	written := filepath.Join(t.TempDir(), "written")
+
+	if _, _, err := commitShape(context.Background(), root, "--output="+written); err == nil {
+		t.Fatal("commitShape accepted an option-shaped commit, want a refusal")
+	}
+	if _, err := os.Stat(written); !os.IsNotExist(err) {
+		t.Fatalf("git wrote %s: the commit argument was executed as an option", written)
+	}
+}

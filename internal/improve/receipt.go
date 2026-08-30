@@ -207,11 +207,20 @@ func delivered(ctx context.Context, root, commit string) (string, []evidence.Cha
 	if commit == "" {
 		return "", nil, nil
 	}
-	tree, err := gitValue(ctx, root, "rev-parse", commit+"^{tree}")
+	// Both calls end their options with `--end-of-options`, not `--`:
+	// these are revision commands, where `--` would make the commit a
+	// pathspec. `rev-parse` additionally needs `--verify` — in its
+	// default filter mode it echoes arguments it does not recognise,
+	// `--end-of-options` among them, and the tree would come back with
+	// that word in front of it. `--verify` also asks for exactly the one
+	// revision this wants. Unguarded, `rev-parse` returns an
+	// option-shaped argument to the caller with a zero status, and
+	// `git diff-tree --output=<path>` writes that file before it fails.
+	tree, err := gitValue(ctx, root, "rev-parse", "--verify", "--end-of-options", commit+"^{tree}")
 	if err != nil {
 		return "", nil, err
 	}
-	names, err := gitPorcelain(ctx, root, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", commit)
+	names, err := gitPorcelain(ctx, root, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", "--end-of-options", commit)
 	if err != nil {
 		return "", nil, err
 	}
