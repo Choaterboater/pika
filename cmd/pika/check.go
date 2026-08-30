@@ -27,7 +27,7 @@ const defaultContractPath = ".project/contract.yaml"
 //
 // Exit codes: 0 all gates pass or skip, 1 any gate failed, 2 usage or
 // configuration error.
-func runCheck(args []string, stdout, stderr io.Writer) int {
+func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	all := fs.Bool("all", false, "run every gate")

@@ -18,7 +18,7 @@ import (
 // exactly the two .draft proposal files — no tracked file is touched.
 //
 // Exit codes: 0 preview produced, 1 failure, 2 usage error.
-func runAdopt(args []string, stdout, stderr io.Writer) int {
+func runAdopt(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("adopt", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "emit the adoption report as JSON on stdout")

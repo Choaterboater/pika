@@ -17,7 +17,7 @@ import (
 // the visible review bundle as APPLIED.
 //
 // Exit codes: 0 applied, 1 failure, 2 usage error.
-func runApply(args []string, stdout, stderr io.Writer) int {
+func runApply(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "emit the apply report as JSON on stdout")

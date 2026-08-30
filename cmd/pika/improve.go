@@ -20,7 +20,7 @@ const defaultImproveBranch = "chore/pika-improve"
 // runHandoff implements `pika handoff [--agent builder] [--json]`. It is the
 // explicit agent stage used by improve and can also be run independently when
 // a caller wants to inspect the private bundle before acting on it.
-func runHandoff(args []string, stdout, stderr io.Writer) int {
+func runHandoff(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("handoff", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	agent := fs.String("agent", "builder", "contract agent name (must use the Codex runtime)")
@@ -70,7 +70,7 @@ func runHandoff(args []string, stdout, stderr io.Writer) int {
 
 // runImprove implements `pika improve`. The only Git mutation it performs is
 // a local branch and verified local commit. Publishing remains a human choice.
-func runImprove(args []string, stdout, stderr io.Writer) int {
+func runImprove(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("improve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	branch := fs.String("branch", defaultImproveBranch, "local branch for verified fixes")
@@ -141,7 +141,7 @@ func configuredCodexRunner(agent string) (improve.Runner, error) {
 
 func currentCheckReport() (*verify.Report, error) {
 	var stdout, stderr bytes.Buffer
-	code := runCheck([]string{"--all", "--json"}, &stdout, &stderr)
+	code := runCheck([]string{"--all", "--json"}, nil, &stdout, &stderr)
 	if code == 2 {
 		return nil, errors.New(stderr.String())
 	}

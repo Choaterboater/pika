@@ -25,7 +25,7 @@ func (p *profileFlags) Set(v string) error {
 //
 // Exit codes: 0 scaffold created, 1 scaffold refused (an existing
 // contract), 2 usage error.
-func runInit(args []string, stdout, stderr io.Writer) int {
+func runInit(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var profilesFlag profileFlags

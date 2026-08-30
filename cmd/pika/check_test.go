@@ -62,7 +62,7 @@ func TestCheckPassingFixtureGoldenJSON(t *testing.T) {
 `, "")
 
 	var stdout, stderr bytes.Buffer
-	code := runCheck([]string{"--json"}, &stdout, &stderr)
+	code := runCheck([]string{"--json"}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -87,7 +87,7 @@ func TestCheckFailingLintFixtureGoldenJSON(t *testing.T) {
 `, "#!/bin/sh\necho 'lint failure: unexpected semicolon'\nexit 1\n")
 
 	var stdout, stderr bytes.Buffer
-	code := runCheck([]string{"--json"}, &stdout, &stderr)
+	code := runCheck([]string{"--json"}, strings.NewReader(""), &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1; stderr: %s", code, stderr.String())
 	}
@@ -126,7 +126,7 @@ func TestCheckDiscoverySentinelsSkippedWithReason(t *testing.T) {
 	writeFixture(t, `  format: "true"
 `, "")
 	var stdout, stderr bytes.Buffer
-	code := runCheck([]string{"--json"}, &stdout, &stderr)
+	code := runCheck([]string{"--json"}, strings.NewReader(""), &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; skips are not failures; stderr: %s", code, stderr.String())
 	}
@@ -150,25 +150,25 @@ func TestCheckUsageAndConfigErrorsExit2(t *testing.T) {
 
 	// Unknown flag.
 	var stdout, stderr bytes.Buffer
-	if code := runCheck([]string{"--bogus"}, &stdout, &stderr); code != 2 {
+	if code := runCheck([]string{"--bogus"}, strings.NewReader(""), &stdout, &stderr); code != 2 {
 		t.Fatalf("unknown flag exit = %d, want 2", code)
 	}
 	// Missing contract.
 	stdout.Reset()
 	stderr.Reset()
-	if code := runCheck(nil, &stdout, &stderr); code != 2 {
+	if code := runCheck(nil, strings.NewReader(""), &stdout, &stderr); code != 2 {
 		t.Fatalf("missing contract exit = %d, want 2; stderr: %s", code, stderr.String())
 	}
 	// Mutually exclusive scopes.
 	stdout.Reset()
 	stderr.Reset()
-	if code := runCheck([]string{"--all", "--ci"}, &stdout, &stderr); code != 2 {
+	if code := runCheck([]string{"--all", "--ci"}, strings.NewReader(""), &stdout, &stderr); code != 2 {
 		t.Fatalf("conflicting scopes exit = %d, want 2", code)
 	}
 	// Extra positional argument.
 	stdout.Reset()
 	stderr.Reset()
-	if code := runCheck([]string{"junk"}, &stdout, &stderr); code != 2 {
+	if code := runCheck([]string{"junk"}, strings.NewReader(""), &stdout, &stderr); code != 2 {
 		t.Fatalf("extra arg exit = %d, want 2", code)
 	}
 }
@@ -177,7 +177,7 @@ func TestCheckChangedScopeWarnsInJSON(t *testing.T) {
 	writeFixture(t, `  test: "true"
 `, "")
 	var stdout, stderr bytes.Buffer
-	if code := runCheck([]string{"--json", "--changed"}, &stdout, &stderr); code != 0 {
+	if code := runCheck([]string{"--json", "--changed"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
@@ -194,7 +194,7 @@ func TestCheckCIScopeRunsAll(t *testing.T) {
   smoke: "true"
 `, "")
 	var stdout, stderr bytes.Buffer
-	if code := runCheck([]string{"--json", "--ci"}, &stdout, &stderr); code != 0 {
+	if code := runCheck([]string{"--json", "--ci"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
@@ -226,7 +226,7 @@ evidence:
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := runCheck([]string{"--json"}, &stdout, &stderr); code != 1 {
+	if code := runCheck([]string{"--json"}, strings.NewReader(""), &stdout, &stderr); code != 1 {
 		t.Fatalf("exit = %d, want 1; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
@@ -277,7 +277,7 @@ const validException = `src/utils/helpers.ts:
 func TestCheckNamingCatchAllFailsGate1(t *testing.T) {
 	writeCheckFixture(t, map[string]string{"src/utils/helpers.ts": "// helpers\n"})
 	var stdout, stderr bytes.Buffer
-	if code := runCheck([]string{"--json"}, &stdout, &stderr); code != 1 {
+	if code := runCheck([]string{"--json"}, strings.NewReader(""), &stdout, &stderr); code != 1 {
 		t.Fatalf("exit = %d, want 1; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
@@ -306,7 +306,7 @@ func TestCheckNamingExceptionCleansGate1(t *testing.T) {
 		".project/exceptions.yaml": validException,
 	})
 	var stdout, stderr bytes.Buffer
-	if code := runCheck([]string{"--json"}, &stdout, &stderr); code != 0 {
+	if code := runCheck([]string{"--json"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d, want 0 with a valid exception; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
@@ -327,7 +327,7 @@ func TestCheckMalformedExceptionFailsGate1(t *testing.T) {
 		".project/exceptions.yaml": "src/utils/helpers.ts:\n  rule-id: naming-catch-all\n  reason: r\n  review-condition: c\n",
 	})
 	var stdout, stderr bytes.Buffer
-	if code := runCheck([]string{"--json"}, &stdout, &stderr); code != 1 {
+	if code := runCheck([]string{"--json"}, strings.NewReader(""), &stdout, &stderr); code != 1 {
 		t.Fatalf("exit = %d, want 1 for a malformed exceptions file; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
@@ -345,7 +345,7 @@ func TestCheckMalformedExceptionFailsGate1(t *testing.T) {
 func TestCheckKebabWarningCarriesInJSON(t *testing.T) {
 	writeCheckFixture(t, map[string]string{"src/BadName.go": "package src\n"})
 	var stdout, stderr bytes.Buffer
-	if code := runCheck([]string{"--json"}, &stdout, &stderr); code != 0 {
+	if code := runCheck([]string{"--json"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d, want 0; warnings never fail the ladder; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
