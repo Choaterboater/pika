@@ -509,8 +509,7 @@ func lifecycle(ctx context.Context, cfg Config, kind string, handle *workrec.Han
 	if state.Branch != cfg.Branch {
 		return result, fmt.Errorf("improve: expected branch %q before commit, found %q", cfg.Branch, state.Branch)
 	}
-	addArgs := append([]string{"add", "--"}, result.ChangedFiles...)
-	if _, err := runGit(ctx, cfg.Root, addArgs...); err != nil {
+	if err := stageChanges(ctx, cfg.Root, result.ChangedFiles); err != nil {
 		return result, err
 	}
 	if _, err := runGit(ctx, cfg.Root, "commit", "-m", deliverMessage); err != nil {
@@ -812,6 +811,46 @@ func runGit(ctx context.Context, root string, args ...string) (string, error) {
 		return "", fmt.Errorf("improve: git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return string(output), nil
+}
+
+// stageChanges stages exactly the paths the ladder proved, and nothing
+// Git chose to read into them.
+//
+// `git add` takes its arguments as PATHSPECS, not as filenames. A path
+// holding a glob metacharacter is therefore a pattern, and in a pathspec
+// `*` matches `/` as well — so an agent that leaves behind a file named
+// `.project/stat*` hands Pika's own commit step a pattern covering the
+// whole of `.project/state`: the run record, the handoff bundle inside
+// it, the envelope, the board. changePaths dropped every one of those
+// paths a few lines above, and the command meant to enforce that filter
+// puts them back. It is the same defect `-z` closed in the status
+// parser, one line later: this code believes it is naming exact paths
+// and Git is reading something more permissive.
+//
+// Three flags are needed and none of them is sufficient alone.
+// `--literal-pathspecs` is the one that turns matching off, so `*`, `?`
+// and `[` are the characters they are and a leading `:` is not pathspec
+// magic. `--pathspec-from-file=-` with `--pathspec-file-nul` is how the
+// list arrives verbatim: read from stdin the paths are NUL-delimited
+// records rather than argv, so a name holding a newline or a quote is
+// neither split nor unescaped, and a large change set cannot run into a
+// bounded argv. Passing the paths literally on the command line would
+// still be pattern matching, and passing them NUL-delimited without
+// `--literal-pathspecs` still is.
+func stageChanges(ctx context.Context, root string, paths []string) error {
+	var stdin bytes.Buffer
+	for _, path := range paths {
+		stdin.WriteString(path)
+		stdin.WriteByte(0)
+	}
+	cmd := exec.CommandContext(ctx, "git", "--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul")
+	cmd.Dir = root
+	cmd.Stdin = &stdin
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("improve: git add: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 // readStatus reads the working tree exactly as the guards below need to

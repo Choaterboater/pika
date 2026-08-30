@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -425,6 +426,68 @@ func TestRunCommitsANonASCIIPathVerbatim(t *testing.T) {
 	receipt, _ := readReceipt(t, root, result.WorkID)
 	if len(receipt.ChangedFiles) != 1 || receipt.ChangedFiles[0].Path != repaired {
 		t.Fatalf("receipt changed files = %+v, want exactly %q", receipt.ChangedFiles, repaired)
+	}
+}
+
+// A verbatim path still is not a literal one. `git add` reads what it is
+// handed as PATHSPECS, so the last gate before `git commit` is pattern
+// matching rather than naming, and in a pathspec `*` matches `/` as well
+// as everything else. A file an agent leaves behind named
+// `.project/stat*` is therefore a pattern covering the whole of
+// `.project/state` — the run record, the handoff bundle inside it, the
+// envelope, the board — and every one of those is a path changePaths had
+// already dropped from this commit. The filter runs, and the command
+// meant to enforce it puts them back.
+//
+// It is the defect `-z` closed in the status parser, one line later and
+// in the other direction: there Git handed Pika a quoted string where it
+// expected a path, here Pika hands Git a path where Git expects a
+// pattern. It lands on the one commit whose entire promise is that it
+// contains only what the ladder verified, built out of a working tree an
+// agent has just been editing.
+//
+// Windows cannot hold this filename at all — `*` is not a legal
+// character there — so on Windows the input is unreachable rather than
+// unguarded.
+func TestRunStagesGlobMetacharacterPathsLiterally(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a Windows filename cannot contain `*`, so this pathspec cannot exist there")
+	}
+	// The fixture does not ignore `.project/state`, for the reason
+	// TestRunDoesNotCommitAgentStagedPrivateState gives: once Git ignores
+	// it, Git never offers those paths to a commit and this test would
+	// pass however the pathspec were matched.
+	const repaired = ".project/stat*"
+	root := fixtureRepositoryWithoutStateIgnore(t)
+	checks := []*verify.Report{
+		{Pass: false, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}},
+		{Pass: true},
+	}
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check: func() (*verify.Report, error) {
+			report := checks[0]
+			checks = checks[1:]
+			return report, nil
+		},
+		Runner: repairRunner{path: repaired, body: "verified fix\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Excluding private state proves nothing if there was none to
+	// exclude: the record is what the over-matching pathspec reaches.
+	record := filepath.Join(root, filepath.FromSlash(privateStateDir), "work", result.WorkID, "record.json")
+	if _, err := os.Stat(record); err != nil {
+		t.Fatalf("run record: %v: the pathspec had nothing to over-match", err)
+	}
+	if strings.Join(result.ChangedFiles, ",") != repaired {
+		t.Fatalf("ChangedFiles = %q, want exactly [%q]", result.ChangedFiles, repaired)
+	}
+	committed := gitOutput(t, root, "-c", "core.quotePath=false", "show", "--format=", "--name-only", "HEAD")
+	if committed != repaired {
+		t.Fatalf("committed files = %q, want exactly %q: the pathspec matched more than it named", committed, repaired)
 	}
 }
 
