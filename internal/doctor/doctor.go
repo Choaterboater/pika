@@ -101,13 +101,17 @@ func checkContract(rep *Report, root *repopath.Root) *contract.Contract {
 
 func checkProfiles(rep *Report, root *repopath.Root, c *contract.Contract) *profiles.Resolved {
 	if c == nil {
-		rep.add("lock", SeverityError, "not checked: no contract", "")
+		// One root cause must produce one error. The contract finding
+		// already carries the actionable remediation; this is a warning
+		// recording that the lock was never examined.
+		rep.add("lock", SeverityWarn, "not checked: no contract", "")
 		return nil
 	}
 	resolved, err := profiles.Resolve(c.Profiles)
 	if err != nil {
 		rep.add("profiles", SeverityError, err.Error(),
 			"correct the profiles list in the contract")
+		rep.add("lock", SeverityWarn, "not checked: profiles did not resolve", "")
 		return nil
 	}
 	if _, err := profiles.ReadLock(root.Lock()); err != nil {

@@ -1,8 +1,10 @@
 package doctor
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Choaterboater/pika/internal/profiles"
@@ -157,8 +159,54 @@ func TestUndiscoveredGateSurfacesPackHint(t *testing.T) {
 	if f.Severity != SeverityWarn {
 		t.Errorf("gate.lint severity = %q, want %q", f.Severity, SeverityWarn)
 	}
-	if f.Remediation == "" {
-		t.Fatal("gate.lint carries no hint")
+	// The pack's lint hint is [npm, run, lint]; asserting the rendered
+	// hint content is the only way this test can detect the hints map
+	// being disconnected, since the fallback remediation is also
+	// non-empty.
+	if !strings.Contains(f.Remediation, "npm run lint") {
+		t.Fatalf("gate.lint remediation = %q, want it to surface the pack hint %q", f.Remediation, "npm run lint")
+	}
+}
+
+// A never-checked lock is not a second failure: one missing contract must
+// yield one error. The lock finding still exists so every category is
+// reported, but at warn severity.
+func TestNeverCheckedLockIsAWarning(t *testing.T) {
+	root, err := repopath.At(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findingByID(t, Run(root), "lock").Severity; got != SeverityWarn {
+		t.Errorf("lock severity with no contract = %q, want %q", got, SeverityWarn)
+	}
+
+	// Symmetry: an unresolvable profile must also leave a lock finding,
+	// with the same never-checked shape.
+	dir := t.TempDir()
+	writeProject(t, dir, "core@1")
+	contractPath := filepath.Join(dir, ".project", "contract.yaml")
+	doc, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = bytes.Replace(doc, []byte("profiles: [core@1]"), []byte("profiles: [core@1, nosuchpack@1]"), 1)
+	if err := os.WriteFile(contractPath, doc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root2, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := Run(root2)
+	if got := findingByID(t, rep, "profiles").Severity; got != SeverityError {
+		t.Errorf("profiles severity = %q, want %q", got, SeverityError)
+	}
+	f := findingByID(t, rep, "lock")
+	if f.Severity != SeverityWarn {
+		t.Errorf("lock severity with unresolvable profile = %q, want %q", f.Severity, SeverityWarn)
+	}
+	if f.Detail != "not checked: profiles did not resolve" {
+		t.Errorf("lock detail = %q", f.Detail)
 	}
 }
 
