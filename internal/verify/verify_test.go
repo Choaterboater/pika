@@ -2,6 +2,8 @@ package verify
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -126,17 +128,111 @@ func TestOutputTailKeepsLast8KB(t *testing.T) {
 	}
 }
 
-func TestChangedScopeWarnsAndRunsAll(t *testing.T) {
+// The reserved-scope warning is gone: --changed is a real scope now, and
+// a warning claiming otherwise would be a lie in every report.
+func TestChangedScopeRunsGatesWithoutTheReservedWarning(t *testing.T) {
 	cs := CheckSet{{ID: "g1", Cmd: []string{"true"}}}
 	rep, err := Run(context.Background(), cs, Changed)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rep.Gates[0].Status != StatusPass {
-		t.Fatalf("changed scope must run gates in M1; got %q", rep.Gates[0].Status)
+		t.Fatalf("changed scope must run the gates it is given; got %q", rep.Gates[0].Status)
 	}
-	if len(rep.Warnings) == 0 {
-		t.Fatal("changed scope must record a warning in the report")
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "reserved") {
+			t.Errorf("changed scope still warns %q", w)
+		}
+	}
+}
+
+// A gate skipped for scope must be distinguishable in the report from a
+// gate with no discovered command and from a gate skipped by a cascade.
+// Collapsing the three would make a narrowed run indistinguishable from a
+// broken one.
+func TestScopeSkipReasonIsDistinct(t *testing.T) {
+	cs := CheckSet{
+		{ID: "contract", Cmd: []string{"true"}},
+		{ID: "lint", SkipReason: ScopeSkipReason},
+		{ID: "test", SkipReason: "no command discovered for test"},
+	}
+	rep, err := Run(context.Background(), cs, Changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rep.Gates[1].Reason; got != ScopeSkipReason {
+		t.Errorf("scope skip reason = %q, want %q", got, ScopeSkipReason)
+	}
+	if rep.Gates[1].Status != StatusSkip {
+		t.Errorf("scope-skipped gate status = %q, want %q", rep.Gates[1].Status, StatusSkip)
+	}
+	if rep.Gates[1].Reason == rep.Gates[2].Reason {
+		t.Error("scope skip reuses the discovery skip reason")
+	}
+	if strings.Contains(ScopeSkipReason, "no command discovered") ||
+		strings.HasPrefix(ScopeSkipReason, "skipped: gate") {
+		t.Errorf("ScopeSkipReason = %q collides with an existing reason", ScopeSkipReason)
+	}
+	// A scope skip must not stop the ladder.
+	if rep.Summary.Skip != 2 || rep.Summary.Pass != 1 || !rep.Pass {
+		t.Errorf("summary = %+v pass=%v, want 1 pass / 2 skips / pass", rep.Summary, rep.Pass)
+	}
+}
+
+// `go build -o /dev/null ./...` is the go@1 typecheck gate; the -o keeps
+// the gate from linking a binary into the repository. cmd/go recognizes
+// the null sink by comparing against os.DevNull, which is "NUL" on
+// Windows, so a literal "/dev/null" there is an ordinary path and cmd/go
+// refuses to write multiple packages to it. The rewrite is exact-match
+// only: nothing else in the argv may move.
+func TestNullDeviceArgIsRewrittenForWindows(t *testing.T) {
+	cmd := []string{"go", "build", "-o", "/dev/null", "./..."}
+	got := substituteNullDevice(cmd, "NUL")
+	want := []string{"go", "build", "-o", "NUL", "./..."}
+	if len(got) != len(want) {
+		t.Fatalf("argv = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("argv = %v, want %v", got, want)
+		}
+	}
+	if cmd[3] != "/dev/null" {
+		t.Errorf("the caller's argv was mutated: %v", cmd)
+	}
+}
+
+func TestNullDeviceRewriteIsExactMatchOnly(t *testing.T) {
+	// Nothing merely containing the null path is touched: this is not
+	// general path translation.
+	cmd := []string{"sh", "-c", "echo >/dev/null", "/dev/null/x", "dev/null"}
+	got := substituteNullDevice(cmd, "NUL")
+	for i := range cmd {
+		if got[i] != cmd[i] {
+			t.Errorf("argv[%d] = %q, want %q untouched", i, got[i], cmd[i])
+		}
+	}
+}
+
+// On Unix the rewrite is the identity and must not allocate a new slice.
+func TestNullDeviceRewriteIsIdentityOnUnix(t *testing.T) {
+	cmd := []string{"go", "build", "-o", "/dev/null", "./..."}
+	got := substituteNullDevice(cmd, "/dev/null")
+	if &got[0] != &cmd[0] {
+		t.Error("identity rewrite copied the argv")
+	}
+}
+
+// The report must show the argv that actually ran, so evidence names the
+// real command rather than a pre-translation one.
+func TestGateResultReportsTheExecutedArgv(t *testing.T) {
+	cs := CheckSet{{ID: "g1", Cmd: []string{"true"}}}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Gates[0].Cmd) != 1 || rep.Gates[0].Cmd[0] != "true" {
+		t.Errorf("Cmd = %v, want [true]", rep.Gates[0].Cmd)
 	}
 }
 
@@ -234,5 +330,54 @@ func TestTimeoutReapsProcessGroup(t *testing.T) {
 	}
 	if rep.Gates[0].Status != StatusFail || !strings.Contains(rep.Gates[0].Reason, "timed out") {
 		t.Fatalf("g1 = %+v, want timeout fail", rep.Gates[0])
+	}
+}
+
+// WithDir is what keeps `pika check --root` (and a check run from a
+// subdirectory) honest: without it a gate would verify whatever tree the
+// caller happened to stand in and report that as the repository's state.
+func TestWithDirRunsGatesInThePassedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell")
+	}
+	dir := t.TempDir()
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := CheckSet{{ID: "pwd", Cmd: []string{"sh", "-c", "pwd -P"}}}
+	rep, err := Run(context.Background(), cs, All, WithDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Gates[0].Status != StatusPass {
+		t.Fatalf("gate = %+v, want pass", rep.Gates[0])
+	}
+	if got := strings.TrimSpace(rep.Gates[0].OutputTail); got != want {
+		t.Fatalf("gate ran in %q, want %q", got, want)
+	}
+}
+
+// Unset, the option must not change anything: gates keep inheriting the
+// process working directory.
+func TestWithoutDirGatesInheritTheProcessDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell")
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := CheckSet{{ID: "pwd", Cmd: []string{"sh", "-c", "pwd -P"}}}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(rep.Gates[0].OutputTail); got != want {
+		t.Fatalf("gate ran in %q, want the process directory %q", got, want)
 	}
 }

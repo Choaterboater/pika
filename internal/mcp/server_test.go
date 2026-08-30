@@ -8,11 +8,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Choaterboater/pika/internal/authorize"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/repopath"
 )
 
 // session drives one stdio MCP server over real OS pipes, mirroring how an
@@ -211,6 +214,29 @@ func envelopeYAML(paths ...string) string {
 	return "schema: 1\nallow:\n  fs_write: [" + strings.Join(paths, ", ") + "]\n"
 }
 
+// writeGeneratedEnvelope writes the envelope `pika authorize --scope
+// <scope>` would generate for the repository at root, with any explicit
+// --exec grants. Using the real generator rather than a hand-written
+// document is the point: it proves what authorize grants and what this
+// package enforces are the same thing, and it fails the moment the two
+// drift.
+func writeGeneratedEnvelope(t *testing.T, root, scope string, execGrants ...string) {
+	t.Helper()
+	r, err := repopath.At(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, _, err := authorize.Build(authorize.Options{Root: r, Scope: scope, Exec: execGrants})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := authorize.Render(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, ".project/state/envelope.yaml", string(doc))
+}
+
 func evidenceArgs() map[string]any {
 	return map[string]any{
 		"receipt": map[string]any{
@@ -364,19 +390,18 @@ func TestFailOpenReadsFailClosedMutations(t *testing.T) {
 	s := startServer(t, root)
 	s.initialize()
 
-	// Fail-open reads.
+	// Fail-open reads: these touch nothing outside the repository.
 	if resp := s.callTool(1, "inspect_repo", nil); resp["result"] == nil {
 		t.Fatalf("inspect_repo must work without an envelope, got %v", resp)
 	}
 	if resp := s.callTool(2, "read_contract", nil); resp["result"] == nil {
 		t.Fatalf("read_contract must work without an envelope, got %v", resp)
 	}
-	if resp := s.callTool(3, "run_checks", nil); resp["result"] == nil {
-		t.Fatalf("run_checks must work without an envelope, got %v", resp)
-	}
 
-	// Fail-closed mutations.
-	for i, name := range []string{"preview_plan", "acquire_scope", "release_scope", "publish_evidence", "propose_decision", "record_sources"} {
+	// Fail-closed effects. run_checks belongs here, not above: it reads
+	// the repository but spawns the contract's commands, and this
+	// contract's test gate is a real argv.
+	for i, name := range []string{"preview_plan", "run_checks", "acquire_scope", "release_scope", "publish_evidence", "propose_decision", "record_sources"} {
 		resp := s.callTool(10+i, name, toolArgs(name))
 		wantToolError(t, resp, "envelope_denied")
 	}
@@ -448,9 +473,103 @@ func TestPreviewPlanProducesDrafts(t *testing.T) {
 	}
 }
 
+// discoverableCheckRepo is a repository whose only interesting property is
+// that discovery finds a check command in it: a root Makefile with a test
+// target becomes ExistingChecks{"test": "make test"}, which adopt.Preview
+// spawns to record its baseline.
+func discoverableCheckRepo(t *testing.T, envelopeDoc string) string {
+	t.Helper()
+	root := fixtureRepo(t, "", envelopeDoc)
+	writeFile(t, root, "Makefile", "test:\n\t@echo baseline\n")
+	return root
+}
+
+// preview_plan runs every discovered check command once to record a
+// baseline. Before this was authorized, an envelope granting writes under
+// .project and no exec at all still let an agent make pika spawn whatever
+// commands happened to be lying in the repository — the same inverted
+// gradient run_checks had.
+func TestPreviewPlanDeniedWithoutExecGrant(t *testing.T) {
+	root := discoverableCheckRepo(t, envelopeYAML(".project"))
+	s := startServer(t, root)
+	s.initialize()
+
+	resp := s.callTool(1, "preview_plan", nil)
+	errObj := wantToolError(t, resp, "envelope_denied")
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(msg, "make test") {
+		t.Errorf("denial message = %q, want it to name the denied command", msg)
+	}
+	// The remediation has to name the flag, not just the command: an
+	// agent told to "run pika authorize" with no way to express the
+	// grant is an agent in a loop.
+	if !strings.Contains(msg, `pika authorize --exec "make test"`) {
+		t.Errorf("denial message = %q, want the exact invocation that grants it", msg)
+	}
+	// A denial must cost the repository nothing: no draft, no baseline.
+	for _, draft := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(draft))); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("denied preview_plan wrote %s: %v", draft, err)
+		}
+	}
+}
+
+// The mirror image: granting exec for exactly the discovered command lets
+// the preview run it, so the grant an operator is told to make is the one
+// the tool asks for.
+func TestPreviewPlanAllowedWithExecGrant(t *testing.T) {
+	doc := "schema: 1\nallow:\n  fs_write: [.project]\n  exec: [\"make test\"]\n"
+	root := discoverableCheckRepo(t, doc)
+	s := startServer(t, root)
+	s.initialize()
+
+	res := wantResult(t, s.callTool(1, "preview_plan", nil))
+	data := res["data"].(map[string]any)
+	baseline, ok := data["baselineChecks"].([]any)
+	if !ok || len(baseline) != 1 {
+		t.Fatalf("baselineChecks = %v, want the one discovered command", data["baselineChecks"])
+	}
+	if got := baseline[0].(map[string]any)["command"]; got != "make test" {
+		t.Errorf("baseline command = %v, want %q", got, "make test")
+	}
+	for _, draft := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(draft))); err != nil {
+			t.Errorf("preview_plan did not write %s: %v", draft, err)
+		}
+	}
+}
+
+// The whole loop, through the real generator: an unadopted repository
+// with a discovered check command, an envelope produced by
+// `pika authorize --scope project --exec "make test"`, and a preview_plan
+// that runs. This is the assertion that authorize can express the grant
+// preview_plan demands — the gap that made the canonical
+// envelope_denied remediation unusable before a contract exists.
+func TestPreviewPlanAllowedWithGeneratedExecGrant(t *testing.T) {
+	root := discoverableCheckRepo(t, "")
+	writeGeneratedEnvelope(t, root, authorize.ScopeProject, "make test")
+	s := startServer(t, root)
+	s.initialize()
+
+	res := wantResult(t, s.callTool(1, "preview_plan", nil))
+	data := res["data"].(map[string]any)
+	baseline, ok := data["baselineChecks"].([]any)
+	if !ok || len(baseline) != 1 {
+		t.Fatalf("baselineChecks = %v, want the one discovered command", data["baselineChecks"])
+	}
+	// Without the explicit grant the same generated envelope must still
+	// deny: the scope alone never authorizes a discovered command.
+	other := discoverableCheckRepo(t, "")
+	writeGeneratedEnvelope(t, other, authorize.ScopeProject)
+	s2 := startServer(t, other)
+	s2.initialize()
+	wantToolError(t, s2.callTool(1, "preview_plan", nil), "envelope_denied")
+}
+
 func TestRunChecksReport(t *testing.T) {
 	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\ncommands:\n  test: go version\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\n"
 	root := fixtureRepo(t, contract, "")
+	writeGeneratedEnvelope(t, root, authorize.ScopeProject)
 	s := startServer(t, root)
 	s.initialize()
 
@@ -472,6 +591,145 @@ func TestRunChecksReport(t *testing.T) {
 	data := errObj["data"].(map[string]any)
 	if data["error"].(map[string]any)["code"] != "invalid_params" {
 		t.Fatalf("bad scope code = %v, want invalid_params", data)
+	}
+}
+
+// run_checks spawns the same command gates `pika check` does, and must
+// spawn them in the server's repoRoot. Before --root was threaded into
+// `pika mcp`, repoRoot was always the server process's own working
+// directory, so an unbound cmd.Dir was harmless by construction; once
+// repoRoot can differ, an unbound cmd.Dir silently verifies the wrong
+// tree and reports it as the checked repository's result.
+func TestRunChecksRunsGatesInRepoRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses the POSIX /bin/pwd")
+	}
+	// /bin/pwd is the physical-path binary, not a shell builtin: it
+	// reports the process's real working directory rather than an
+	// inherited $PWD. Contract commands are split on whitespace and
+	// exec'd with no shell, so a bare argv is what fits here.
+	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\ncommands:\n  test: /bin/pwd\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\n"
+	root := fixtureRepo(t, contract, "")
+	writeGeneratedEnvelope(t, root, authorize.ScopeProject)
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	processDir, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want == processDir {
+		t.Fatalf("fixture root %q equals the test process directory; the test proves nothing", want)
+	}
+
+	s := startServer(t, root)
+	s.initialize()
+	res := wantResult(t, s.callTool(1, "run_checks", map[string]any{"scope": "all"}))
+	rep, ok := res["data"].(map[string]any)["report"].(map[string]any)
+	if !ok {
+		t.Fatalf("run_checks data = %v, want a report", res["data"])
+	}
+	gates, ok := rep["gates"].([]any)
+	if !ok {
+		t.Fatalf("report gates = %v, want a list", rep["gates"])
+	}
+	var got string
+	var found bool
+	for _, raw := range gates {
+		g, ok := raw.(map[string]any)
+		if !ok || g["id"] != "test" {
+			continue
+		}
+		found = true
+		if g["status"] != "pass" {
+			t.Fatalf("test gate = %v, want pass", g)
+		}
+		got = strings.TrimSpace(fmt.Sprint(g["outputTail"]))
+	}
+	if !found {
+		t.Fatalf("no test gate in report %v", rep)
+	}
+	// The gate reports its directory as the kernel names it; resolve
+	// both sides so a symlinked temp dir is not mistaken for a miss.
+	resolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatalf("gate reported directory %q: %v", got, err)
+	}
+	if resolved != want {
+		t.Fatalf("gate ran in %q, want the server repoRoot %q (process dir is %q)", resolved, want, processDir)
+	}
+}
+
+// run_checks spawns contract-declared subprocesses. Before M1.5 it did so
+// with no exec authorization at all, while propose_decision needed
+// permission to append a log line — the security gradient was inverted.
+func TestRunChecksDeniedWithoutExecGrant(t *testing.T) {
+	// minContract's test gate is a real argv ("go version"), so a gate
+	// really is spawned here; the envelope grants writes and nothing else.
+	root := fixtureRepo(t, minContract, envelopeYAML(".project"))
+	s := startServer(t, root)
+	s.initialize()
+
+	resp := s.callTool(1, "run_checks", map[string]any{"scope": "all"})
+	wantToolError(t, resp, "envelope_denied")
+}
+
+// The generated envelope must authorize exactly the gates the same
+// contract will run: if authorize and enforcement disagree on the shape of
+// an exec target, `pika authorize` produces a file that denies its own
+// repository's checks.
+func TestRunChecksAllowedWithGeneratedEnvelope(t *testing.T) {
+	root := fixtureRepo(t, minContract, "")
+	writeGeneratedEnvelope(t, root, authorize.ScopeProject)
+	s := startServer(t, root)
+	s.initialize()
+
+	res := wantResult(t, s.callTool(1, "run_checks", map[string]any{"scope": "all"}))
+	rep, ok := res["data"].(map[string]any)["report"].(map[string]any)
+	if !ok {
+		t.Fatalf("run_checks data = %v, want a report", res["data"])
+	}
+	if rep["pass"] != true {
+		t.Fatalf("report = %v, want pass", rep)
+	}
+}
+
+// The read scope authorizing no checks is a product decision, not an
+// accident of the fixture: it grants no exec entries at all, so the real
+// generated artifact — not a hand-written stand-in — must deny a
+// run_checks that spawns a gate.
+func TestRunChecksDeniedWithGeneratedReadScopeEnvelope(t *testing.T) {
+	// minContract's test gate is a real argv, so a gate really is
+	// spawned and the exec question really is asked.
+	root := fixtureRepo(t, minContract, "")
+	writeGeneratedEnvelope(t, root, authorize.ScopeRead)
+	s := startServer(t, root)
+	s.initialize()
+
+	resp := s.callTool(1, "run_checks", map[string]any{"scope": "all"})
+	wantToolError(t, resp, "envelope_denied")
+}
+
+// A gate with no argv is the in-process contract gate or a recorded
+// discovery skip: it spawns nothing, so it must not need an exec grant.
+// Otherwise a repository whose profile is discovery-only could never run
+// its own checks over MCP.
+func TestRunChecksNeedsNoExecGrantForInProcessGates(t *testing.T) {
+	// No commands block at all: only the in-process contract gate and
+	// the profile's discovery sentinels survive into the gate list.
+	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\nextensions: {}\n"
+	root := fixtureRepo(t, contract, envelopeYAML(".project"))
+	s := startServer(t, root)
+	s.initialize()
+
+	res := wantResult(t, s.callTool(1, "run_checks", map[string]any{"scope": "all"}))
+	if res["data"].(map[string]any)["report"] == nil {
+		t.Fatalf("run_checks without any spawning gate must not need an exec grant: %v", res)
 	}
 }
 
@@ -560,9 +818,12 @@ func TestStableProtocolErrorCodes(t *testing.T) {
 		t.Fatalf("session must survive a malformed line, got %v", resp)
 	}
 
-	// tools/call apply_plan is listed but unavailable in M1.
+	// tools/call apply_plan is listed but unavailable in M1. The code is
+	// "unavailable", never "internal": an agent must be able to tell a
+	// permanent absence from a transient kernel failure without reading
+	// the message.
 	resp = s.callTool(5, "apply_plan", nil)
-	wantToolError(t, resp, "internal")
+	wantToolError(t, resp, "unavailable")
 }
 
 func TestApplyPlanNotExposedAsExecutable(t *testing.T) {
@@ -582,9 +843,12 @@ func TestApplyPlanNotExposedAsExecutable(t *testing.T) {
 		}
 	}
 	resp = s.callTool(2, "apply_plan", nil)
-	errObj := wantToolError(t, resp, "internal")
+	errObj := wantToolError(t, resp, "unavailable")
 	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "apply_plan") {
 		t.Fatalf("apply_plan error should name the tool: %v", errObj["message"])
+	}
+	if code, _ := errObj["code"].(string); code == "internal" {
+		t.Errorf("apply_plan reports internal, indistinguishable from a real kernel failure: %v", errObj)
 	}
 }
 

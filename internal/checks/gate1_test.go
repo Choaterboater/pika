@@ -11,6 +11,12 @@ import (
 	"github.com/Choaterboater/pika/internal/profiles"
 )
 
+// lockRelPath is the location gate 1 must look for the lock under the
+// root it is given. Production code derives it from repopath; the test
+// spells it out independently so a silent change to that path table
+// fails here rather than passing by construction.
+const lockRelPath = ".project/profiles.lock"
+
 func lockFixture(t *testing.T, refs []string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -124,5 +130,26 @@ func TestGate1DigestMismatchFails(t *testing.T) {
 	}
 	if !strings.Contains(output, "digest") {
 		t.Errorf("output %q must name the digest mismatch", output)
+	}
+}
+
+// The lock's top-level digest pins the whole embedded pack registry. It
+// is written by profiles.WriteLock, so a value that disagrees with this
+// binary's registry means the lock came from elsewhere — a gate failure
+// naming both digests, never a silent pass.
+func TestGate1TopLevelDigestMismatchFails(t *testing.T) {
+	root := lockFixture(t, []string{"core@1"})
+	tamperLock(t, root, func(m map[string]any) {
+		m["digest"] = "0000000000000000000000000000000000000000000000000000000000000000"
+	})
+	exit, output := gate1Exit(root)
+	if exit != 1 {
+		t.Fatalf("Gate1 exit = %d, want 1", exit)
+	}
+	if !strings.Contains(output, "0000000000000000000000000000000000000000000000000000000000000000") {
+		t.Errorf("output %q must name the stored digest", output)
+	}
+	if !strings.Contains(output, profiles.PackDigest()) {
+		t.Errorf("output %q must name the embedded registry digest", output)
 	}
 }

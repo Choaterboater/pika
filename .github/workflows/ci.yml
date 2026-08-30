@@ -1,0 +1,52 @@
+name: check
+
+# No path filter. pika governs itself with the binary built from the
+# commit under test, so any change to the kernel changes the verifier;
+# a filter that skipped internal/** would skip the verifier's own diff.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # pika check --changed resolves a merge base; a shallow clone
+          # has none and degrades to running everything. Full history
+          # keeps the narrowing path honest when a job opts into it.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      # The shipped binary must link without cgo on every platform, so
+      # that is the build the workflow verifies.
+      - name: Build (CGO_ENABLED=0)
+        run: CGO_ENABLED=0 go build ./...
+
+      # Build the kernel from THIS commit. `go install ...@latest` would
+      # verify a published release instead of the change under review.
+      - name: Build pika from this commit
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/pika" ./cmd/pika
+
+      # pika runs its own verification ladder on itself: contract and
+      # lock validation, naming rules, exceptions record, then the gates
+      # declared in .project/contract.yaml.
+      - name: pika check --ci
+        run: |
+          "$RUNNER_TEMP/pika" check --ci
+
+      # The contract's format gate is `gofmt -l -w .`, which rewrites
+      # rather than failing. This step is what turns formatting drift
+      # into a red build.
+      - name: gofmt drift
+        run: git diff --exit-code
+
+      - name: Unit tests
+        run: go test ./... -count=1

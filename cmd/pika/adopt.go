@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -10,35 +9,40 @@ import (
 	"github.com/Choaterboater/pika/internal/adopt"
 )
 
-// runAdopt implements `pika adopt [--json]` (spec §8.1, §13): a
-// thin CLI over the read-only adoption inventory. Preview walks the
-// current repository (M1's repo root is the process working directory),
-// classifies every discovered convention against core@1, runs the
-// discovered check commands once each to record a baseline, and writes
-// exactly the two .draft proposal files — no tracked file is touched.
+// runAdopt implements `pika adopt [--json] [--root <dir>]` (spec §8.1,
+// §13): a thin CLI over the read-only adoption inventory. Preview walks
+// the resolved repository root, classifies every discovered convention
+// against core@1, runs the discovered check commands once each to record
+// a baseline, and writes exactly the two .draft proposal files — no
+// tracked file is touched.
 //
 // Exit codes: 0 preview produced, 1 failure, 2 usage error.
-func runAdopt(args []string, stdout, stderr io.Writer) int {
+func runAdopt(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("adopt", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "emit the adoption report as JSON on stdout")
+	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "pika adopt: unexpected argument %q\n", fs.Arg(0))
-		return 2
+		return fail(*jsonOut, stdout, stderr, "adopt", codeUsage,
+			fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
-	rep, err := adopt.Preview(".")
+	root, err := resolveRoot(*rootFlag)
 	if err != nil {
+		return fail(*jsonOut, stdout, stderr, "adopt", codeConfig, err.Error())
+	}
+	rep, err := adopt.Preview(root.Dir())
+	if err != nil {
+		if *jsonOut && emitFailure(stdout, stderr, "adopt", err, nil) {
+			return 1
+		}
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if *jsonOut {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(rep); err != nil {
-			fmt.Fprintln(stderr, err)
+		if !emitJSON(stdout, stderr, "adopt", true, rep) {
 			return 1
 		}
 		return 0

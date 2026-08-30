@@ -27,6 +27,23 @@ verification:
   # TypeScript checks live in package.json scripts: every slot stays a
   # discovery sentinel and the hint is the suggested command for when the
   # script is absent.
+  #
+  # Not one hint is autofillable, and that is the whole point of the
+  # flag. `npm` and `npx` are on nearly every developer machine, so a
+  # PATH probe says yes to all four — but every one of them delegates
+  # somewhere the scaffold does not reach. Measured on a fresh `pika init
+  # --profile typescript` (npm 11, node 24, no node_modules):
+  #   npm run format  -> exit 1, Missing script: "format"
+  #   npm run lint    -> exit 1, Missing script: "lint"
+  #   npm test        -> exit 1, no test script
+  #   npx tsc --noEmit-> exit 1, fetches the decoy `tsc` package from the
+  #                     registry ("This is not the tsc command you are
+  #                     looking for"); it needs the network and never
+  #                     typechecks, pass or fail.
+  # Adopting any of them would ship a repository that fails its own
+  # checks the moment it is created. They stay hints: doctor renders them
+  # as remediation once the user installs a toolchain and writes the
+  # scripts.
   checks:
     - id: format
       discovery: true

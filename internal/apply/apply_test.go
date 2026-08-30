@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -113,14 +114,14 @@ func readBytes(t *testing.T, root, rel string) []byte {
 	return data
 }
 
-// TestApplyHappyPath runs the full loop on a messy fixture: drafts
-// promoted byte-for-byte, exceptions record written from the draft
-// contract's recorded exceptions, the four missing core files rendered
-// exactly as init would, the user's README kept, the recovery journal
-// retired, and gate 1 green.
+// TestApplyHappyPath runs the full loop on a messy fixture: the drafts
+// promoted unchanged apart from the command slots apply fills from pack
+// hints, exceptions record written from the draft contract's recorded
+// exceptions, the four missing core files rendered exactly as init
+// would, the user's README kept, the recovery journal retired, and gate
+// 1 green.
 func TestApplyHappyPath(t *testing.T) {
 	root := adoptionFixture(t)
-	draftYAML := readBytes(t, root, ".project/contract.yaml.draft")
 	lockYAML := readBytes(t, root, ".project/profiles.lock.draft")
 
 	rep, err := Run(RunOptions{Dir: root})
@@ -131,15 +132,38 @@ func TestApplyHappyPath(t *testing.T) {
 		t.Error("report.Rollback = true, want false")
 	}
 
-	// Drafts promoted byte-for-byte.
-	if got := readBytes(t, root, ".project/contract.yaml"); !bytes.Equal(got, draftYAML) {
-		t.Error("committed contract is not the draft bytes")
-	}
+	// The lock promotes byte-for-byte. The contract promotes unchanged
+	// except for command slots the draft left empty, which apply fills
+	// from the packs' hints when the tool is present — without that a
+	// repository can be applied with gates that silently skip. Every
+	// command adoption discovered survives untouched.
 	if got := readBytes(t, root, ".project/profiles.lock"); !bytes.Equal(got, lockYAML) {
 		t.Error("committed lock is not the draft lock bytes")
 	}
-	if _, err := contract.Load(filepath.Join(root, ".project", "contract.yaml")); err != nil {
+	appliedContract, err := contract.Load(filepath.Join(root, ".project", "contract.yaml"))
+	if err != nil {
 		t.Fatalf("applied contract is invalid: %v", err)
+	}
+	draftContract, err := contract.Load(filepath.Join(root, ".project", "contract.yaml.draft"))
+	if err != nil {
+		t.Fatalf("draft contract is invalid: %v", err)
+	}
+	for id, want := range draftContract.Commands {
+		if got := appliedContract.Commands[id]; got != want {
+			t.Errorf("applied commands[%s] = %q, want the draft's %q", id, got, want)
+		}
+	}
+	// The fixture's Makefile gives adopt format, lint, and test; go@1
+	// leaves typecheck a discovery sentinel whose autofillable hint is
+	// `go build -o /dev/null ./...` (plain `go build ./...` would drop a
+	// linked binary in the repository root every time the gate ran).
+	if got := appliedContract.Commands["typecheck"]; got != "go build -o /dev/null ./..." {
+		t.Errorf("applied commands[typecheck] = %q, want the go@1 hint %q", got, "go build -o /dev/null ./...")
+	}
+	// Nothing outside commands is rewritten at promotion time.
+	appliedContract.Commands = draftContract.Commands
+	if !reflect.DeepEqual(appliedContract, draftContract) {
+		t.Errorf("promoted contract differs from the draft outside commands:\napplied = %+v\ndraft   = %+v", appliedContract, draftContract)
 	}
 
 	// Exceptions record written from the draft's recorded exceptions.

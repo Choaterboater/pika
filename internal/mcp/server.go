@@ -7,10 +7,12 @@
 // Tool results use the {ok, data?, error?{code,message}} envelope with
 // stable error codes. tools/call failures keep the protocol layer healthy:
 // the stable envelope rides in error.data, never as a process exit. Every
-// mutating tool checks the capability envelope
-// (.project/state/envelope.yaml) before executing — a missing or invalid
-// envelope denies (fail-closed); read-only tools stay fail-open for reads
-// inside the repository.
+// tool that mutates the filesystem or spawns a process checks the
+// capability envelope (.project/state/envelope.yaml) first — a missing or
+// invalid envelope denies (fail-closed). Tools that only read the
+// repository stay fail-open. The asymmetry with `pika check`, which a
+// human runs in their own shell and which therefore needs no envelope, is
+// deliberate: an agent is authorized, an operator authorizes.
 package mcp
 
 import (
@@ -22,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +60,7 @@ const (
 	errEnvelopeDenied  = "envelope_denied"
 	errContractInvalid = "contract_invalid"
 	errAlreadyAdopted  = "already_adopted"
+	errUnavailable     = "unavailable"
 	errInternal        = "internal"
 )
 
@@ -86,6 +90,12 @@ type toolError struct {
 func toolErrf(code, format string, args ...any) *toolError {
 	return &toolError{Code: code, Message: fmt.Sprintf(format, args...)}
 }
+
+// Error lets a *toolError travel through an ordinary error return and be
+// recovered with errors.As. adopt.Preview's exec authorizer is the first
+// caller that needs it: the callback contract is error, but the agent is
+// owed the stable code, not a flattened string.
+func (e *toolError) Error() string { return e.Code + ": " + e.Message }
 
 // toolResult is the MCP tool result envelope: {ok, data?, error?}.
 type toolResult struct {
@@ -149,7 +159,7 @@ var tools = []tool{
 	},
 	{
 		name:        "preview_plan",
-		description: "Run the read-only adoption preview and write the two .draft proposal files (.project/contract.yaml.draft, .project/profiles.lock.draft). Never touches tracked files.",
+		description: "Run the adoption preview: write the two .draft proposal files (.project/contract.yaml.draft, .project/profiles.lock.draft) and run each discovered check command once to record a baseline. Never touches tracked files; needs fs_write for the drafts and exec for every discovered command.",
 		inputSchema: schemaObj(nil),
 		handler:     (*server).toolPreviewPlan,
 	},
@@ -422,19 +432,38 @@ func summarizeProfiles(r *profiles.Resolved) resolvedProfiles {
 	return out
 }
 
-// toolPreviewPlan implements preview_plan: adopt.Preview writes exactly the
-// two draft files and nothing else, and only after the envelope grants them.
+// toolPreviewPlan implements preview_plan: the adoption inventory, which
+// writes exactly the two draft files and — because a baseline is the point
+// of an adoption preview — runs every check command discovery finds in the
+// repository, once each. Both effects are authorized before either
+// happens: fs_write for the drafts, exec for every command the preview
+// would spawn. An envelope granting writes and no exec cannot make this
+// server spawn a process it found lying in the repository.
 func (s *server) toolPreviewPlan(_ json.RawMessage) (map[string]any, *toolError) {
 	for _, target := range []string{contractDraft, lockDraft} {
-		if terr := s.authorizeWrite(target); terr != nil {
+		if terr := s.authorize(envelope.KindFSWrite, target); terr != nil {
 			return nil, terr
 		}
 	}
 	if _, err := os.Stat(filepath.Join(s.repoRoot, filepath.FromSlash(contractPath))); err == nil {
 		return nil, toolErrf(errAlreadyAdopted, "%s already exists: repository already adopted; run_checks verifies it", contractPath)
 	}
-	report, err := adopt.Preview(s.repoRoot)
+	// adopt.Preview decides which commands it will spawn and asks here
+	// before running any of them; a denial aborts the preview whole, the
+	// same all-or-nothing rule run_checks applies to its gates.
+	report, err := adopt.Preview(s.repoRoot, adopt.WithExecAuthorizer(func(commands [][]string) error {
+		for _, argv := range commands {
+			if terr := s.authorize(envelope.KindExec, strings.Join(argv, " ")); terr != nil {
+				return terr
+			}
+		}
+		return nil
+	}))
 	if err != nil {
+		var denied *toolError
+		if errors.As(err, &denied) {
+			return nil, denied
+		}
 		return nil, toolErrf(errInternal, "preview: %v", err)
 	}
 	return map[string]any{
@@ -449,7 +478,9 @@ func (s *server) toolPreviewPlan(_ json.RawMessage) (map[string]any, *toolError)
 
 // toolRunChecks implements run_checks: the same ladder as `pika
 // check` (contract gate plus profile and discovered commands), scoped by
-// args. Read-only with respect to the repository.
+// args. Read-only with respect to the repository, but not with respect to
+// the machine: every gate with an argv spawns a process, so each one is
+// authorized as exec before anything runs.
 func (s *server) toolRunChecks(args json.RawMessage) (map[string]any, *toolError) {
 	var params struct {
 		Scope string `json:"scope"`
@@ -492,7 +523,23 @@ func (s *server) toolRunChecks(args json.RawMessage) (map[string]any, *toolError
 		return nil, toolErrf(errContractInvalid, "%v", err)
 	}
 	gates = append(gates, ordered...)
-	report, err := verify.Run(context.Background(), gates, scope)
+	// Every gate that carries an argv spawns a real process, so the
+	// envelope must authorize it before a single one runs — one denial
+	// fails the whole call rather than half-executing the ladder. Gates
+	// with an empty Cmd are the in-process contract gate or recorded
+	// discovery skips; they spawn nothing and need no exec grant.
+	for _, g := range gates {
+		if len(g.Cmd) == 0 {
+			continue
+		}
+		if terr := s.authorize(envelope.KindExec, strings.Join(g.Cmd, " ")); terr != nil {
+			return nil, terr
+		}
+	}
+	// The gates must run in the repository the server was pointed at
+	// (--root, or the discovered root), never the server process's own
+	// working directory — mirroring check.go.
+	report, err := verify.Run(context.Background(), gates, scope, verify.WithDir(s.repoRoot))
 	if err != nil {
 		return nil, toolErrf(errInternal, "verify: %v", err)
 	}
@@ -515,7 +562,7 @@ func (s *server) toolAcquireScope(args json.RawMessage) (map[string]any, *toolEr
 	if err != nil {
 		return nil, toolErrf(errInvalidParams, "acquire_scope path: %v", err)
 	}
-	if terr := s.authorizeWrite(rel); terr != nil {
+	if terr := s.authorize(envelope.KindFSWrite, rel); terr != nil {
 		return nil, terr
 	}
 	if err := s.appendBoard(map[string]any{"type": "scope_lease", "action": "acquire", "path": rel}); err != nil {
@@ -536,7 +583,7 @@ func (s *server) toolReleaseScope(args json.RawMessage) (map[string]any, *toolEr
 	if err != nil {
 		return nil, toolErrf(errInvalidParams, "release_scope path: %v", err)
 	}
-	if terr := s.authorizeWrite(rel); terr != nil {
+	if terr := s.authorize(envelope.KindFSWrite, rel); terr != nil {
 		return nil, terr
 	}
 	if err := s.appendBoard(map[string]any{"type": "scope_lease", "action": "release", "path": rel}); err != nil {
@@ -677,7 +724,7 @@ func (s *server) toolPublishEvidence(args json.RawMessage) (map[string]any, *too
 	if err != nil {
 		return nil, toolErrf(errInvalidParams, "publish_evidence path: %v", err)
 	}
-	if terr := s.authorizeWrite(rel); terr != nil {
+	if terr := s.authorize(envelope.KindFSWrite, rel); terr != nil {
 		return nil, terr
 	}
 	if err := evidence.Write(filepath.Join(s.repoRoot, filepath.FromSlash(rel)), receipt); err != nil {
@@ -696,7 +743,7 @@ func (s *server) toolProposeDecision(args json.RawMessage) (map[string]any, *too
 	if err := json.Unmarshal(args, &params); err != nil || strings.TrimSpace(params.Title) == "" {
 		return nil, toolErrf(errInvalidParams, "propose_decision requires a non-empty title")
 	}
-	if terr := s.authorizeWrite(boardPath); terr != nil {
+	if terr := s.authorize(envelope.KindFSWrite, boardPath); terr != nil {
 		return nil, terr
 	}
 	if err := s.appendBoard(map[string]any{"type": "decision", "title": params.Title, "rationale": params.Rationale}); err != nil {
@@ -713,7 +760,7 @@ func (s *server) toolRecordSources(args json.RawMessage) (map[string]any, *toolE
 	if err := json.Unmarshal(args, &params); err != nil || len(params.Sources) == 0 {
 		return nil, toolErrf(errInvalidParams, "record_sources requires a non-empty sources array")
 	}
-	if terr := s.authorizeWrite(boardPath); terr != nil {
+	if terr := s.authorize(envelope.KindFSWrite, boardPath); terr != nil {
 		return nil, terr
 	}
 	if err := s.appendBoard(map[string]any{"type": "sources", "sources": params.Sources}); err != nil {
@@ -723,20 +770,35 @@ func (s *server) toolRecordSources(args json.RawMessage) (map[string]any, *toolE
 }
 
 // toolApplyPlan is listed for discoverability but never executable in M1.
+// The refusal is errUnavailable, not errInternal: "this build will never
+// do it" and "the kernel just failed" call for different agent behavior,
+// and an agent should not have to match on a message to tell them apart.
 func (s *server) toolApplyPlan(_ json.RawMessage) (map[string]any, *toolError) {
-	return nil, toolErrf(errInternal, "%s", applyPlanNote)
+	return nil, toolErrf(errUnavailable, "%s", applyPlanNote)
 }
 
-// authorizeWrite is the single gate every mutating tool passes before any
-// filesystem mutation. The envelope at .project/state/envelope.yaml is the
-// authority; a missing or invalid envelope denies (fail-closed).
-func (s *server) authorizeWrite(target string) *toolError {
-	env, err := envelope.Load(filepath.Join(s.repoRoot, filepath.FromSlash(envelopePath)))
+// authorize is the single authorization choke point. Every tool that
+// mutates the filesystem or spawns a process passes through it before the
+// effect happens, so denial is always fail-closed. The envelope at
+// .project/state/envelope.yaml is the authority; a missing or invalid
+// envelope denies. The server's own repoRoot is what the envelope is
+// bound to, so moving the envelope file cannot widen or narrow the
+// authorized scope.
+func (s *server) authorize(kind, target string) *toolError {
+	env, err := envelope.Load(s.repoRoot, filepath.Join(s.repoRoot, filepath.FromSlash(envelopePath)))
 	if err != nil {
-		return toolErrf(errEnvelopeDenied, "no valid envelope (%v): fs_write of %s denied", err, target)
+		return toolErrf(errEnvelopeDenied, "no usable capability envelope (%v): %s of %s denied", err, kind, target)
 	}
-	if !env.Allows(envelope.Operation{Kind: envelope.KindFSWrite, Target: target}) {
-		return toolErrf(errEnvelopeDenied, "envelope denies fs_write of %s", target)
+	if !env.Allows(envelope.Operation{Kind: kind, Target: target}) {
+		// The remediation names the exact invocation, flag included: a
+		// message that names the denied thing but not the command that
+		// grants it is how an agent ends up looping on envelope_denied.
+		// Unquoted after "run:" so the line is copy-pasteable — nesting
+		// the argv's own quotes inside another pair is not.
+		if kind == envelope.KindExec {
+			return toolErrf(errEnvelopeDenied, "exec not authorized for %q; run: pika authorize --exec %s", target, strconv.Quote(target))
+		}
+		return toolErrf(errEnvelopeDenied, "%s not authorized for %q; run \"pika authorize\"", kind, target)
 	}
 	return nil
 }

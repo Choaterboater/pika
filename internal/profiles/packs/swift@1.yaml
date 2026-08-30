@@ -23,10 +23,21 @@ naming:
   rules: []
 
 verification:
+  # No hint here autofills. `swift` is on PATH for anyone with a
+  # toolchain, but swift-format only ships inside the toolchain from
+  # Swift 6.0 onward while this pack's Package.swift targets
+  # swift-tools-version 5.10, so a PATH probe cannot tell a machine that
+  # can run the format hint from one that cannot.
   checks:
     - id: format
       discovery: true
-      hint: [swift, format]
+      # Bare `swift format` takes no paths, so it reads stdin, formats
+      # nothing, exits 0, and prints a deprecation notice saying the
+      # path-less form will be removed. As a verification gate it is a
+      # guaranteed vacuous pass. `swift format lint` reports without
+      # rewriting, which is what a check gate is for; add --strict to
+      # turn its warnings into failures.
+      hint: [swift, format, lint, --recursive, Sources, Tests]
     - id: lint
       discovery: true
     - id: typecheck

@@ -11,9 +11,7 @@ packages:
     profiles:
     - core@1
     - swift@1
-commands:
-  test: swift test
-  typecheck: swift build
+commands: {}
 agents: {}
 github:
   merge: squash

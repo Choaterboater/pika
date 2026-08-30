@@ -1,0 +1,101 @@
+schema: 1
+project:
+  name: pika
+  topology: single
+profiles:
+- core@1
+- go@1
+packages:
+  pika:
+    root: .
+    profiles:
+    - core@1
+    - go@1
+commands:
+  format: gofmt -l -w .
+  lint: go vet ./...
+  typecheck: go build -o /dev/null ./...
+  test: go test ./... -count=1
+  smoke: go run ./cmd/pika version
+agents: {}
+github:
+  merge: squash
+evidence:
+  publish: sanitized
+exceptions:
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/discover/testdata/swift-xcode/MyApp.xcodeproj/project.pbxproj
+  reason: 'Xcode fixture: internal/discover detects a Swift project by the exact "*.xcodeproj/project.pbxproj" layout Xcode writes, so the fixture must reproduce those names verbatim. Renaming it would make the test stop exercising the detector it exists to cover.'
+  review-condition: 'reopen if Xcode stops writing .xcodeproj/project.pbxproj, or if the Swift detector stops keying on that path.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/initcmd/templates/Cargo.toml.tmpl
+  reason: 'template names mirror the file they emit, and Cargo requires the manifest to be named exactly "Cargo.toml". The rule already exempts the "Cargo" stem for the emitted file; the ".tmpl" suffix is what defeats the single-extension stem strip, not the name.'
+  review-condition: 'reopen if the templates stop being named for the file they emit, or if the emitted file''s name stops being fixed by convention.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/initcmd/templates/Package.swift.tmpl
+  reason: 'template names mirror the file they emit, and SwiftPM requires the manifest to be named exactly "Package.swift". The rule already exempts the "Package" stem for the emitted file; the ".tmpl" suffix is what defeats the single-extension stem strip, not the name.'
+  review-condition: 'reopen if the templates stop being named for the file they emit, or if the emitted file''s name stops being fixed by convention.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/core@1.yaml
+  reason: 'the file name is the pack identifier: "<profile>@<version>" is the exact ref a contract writes under profiles: and the key the embedded registry resolves, so the offending "@" carries meaning. Renaming the file would insert a translation table between a contract ref and the pack it names.'
+  review-condition: 'reopen if pack refs stop using "@" as the version separator, or if the registry stops resolving a ref to a file of the same name.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/core@1/templates/AGENTS.md.tmpl
+  reason: 'the offending segments are the "core@1" pack directory (the pack identifier) and the stem "AGENTS.md", which mirrors the file this template emits. core@1 itself requires the emitted file be named AGENTS.md. The rule already exempts the "AGENTS" stem for the emitted file; the ".tmpl" suffix is what defeats the single-extension stem strip, not the name.'
+  review-condition: 'reopen if the templates stop being named for the file they emit, or if the emitted file''s name stops being fixed by convention.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/core@1/templates/CONTRIBUTING.md.tmpl
+  reason: 'the offending segments are the "core@1" pack directory (the pack identifier) and the stem "CONTRIBUTING.md", which mirrors the file this template emits. core@1 itself requires the emitted file be named CONTRIBUTING.md. The rule already exempts the "CONTRIBUTING" stem for the emitted file; the ".tmpl" suffix is what defeats the single-extension stem strip, not the name.'
+  review-condition: 'reopen if the templates stop being named for the file they emit, or if the emitted file''s name stops being fixed by convention.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/core@1/templates/README.md.tmpl
+  reason: 'the offending segments are the "core@1" pack directory (the pack identifier) and the stem "README.md", which mirrors the file this template emits. core@1 itself requires the emitted file be named README.md. The rule already exempts the "README" stem for the emitted file; the ".tmpl" suffix is what defeats the single-extension stem strip, not the name.'
+  review-condition: 'reopen if the templates stop being named for the file they emit, or if the emitted file''s name stops being fixed by convention.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/core@1/templates/ci.yml.tmpl
+  reason: 'the offending segment is the "core@1" pack directory, whose name is the pack identifier (see internal/profiles/packs/core@1.yaml); the template file itself conforms.'
+  review-condition: 'reopen if pack refs stop using "@" as the version separator, or if the registry stops resolving a ref to a file of the same name.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/core@1/templates/pull_request_template.md.tmpl
+  reason: 'the offending segment is the "core@1" pack directory, whose name is the pack identifier (see internal/profiles/packs/core@1.yaml); the template file itself conforms.'
+  review-condition: 'reopen if pack refs stop using "@" as the version separator, or if the registry stops resolving a ref to a file of the same name.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/go@1.yaml
+  reason: 'the file name is the pack identifier: "<profile>@<version>" is the exact ref a contract writes under profiles: and the key the embedded registry resolves, so the offending "@" carries meaning. Renaming the file would insert a translation table between a contract ref and the pack it names.'
+  review-condition: 'reopen if pack refs stop using "@" as the version separator, or if the registry stops resolving a ref to a file of the same name.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/python@1.yaml
+  reason: 'the file name is the pack identifier: "<profile>@<version>" is the exact ref a contract writes under profiles: and the key the embedded registry resolves, so the offending "@" carries meaning. Renaming the file would insert a translation table between a contract ref and the pack it names.'
+  review-condition: 'reopen if pack refs stop using "@" as the version separator, or if the registry stops resolving a ref to a file of the same name.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/rust@1.yaml
+  reason: 'the file name is the pack identifier: "<profile>@<version>" is the exact ref a contract writes under profiles: and the key the embedded registry resolves, so the offending "@" carries meaning. Renaming the file would insert a translation table between a contract ref and the pack it names.'
+  review-condition: 'reopen if pack refs stop using "@" as the version separator, or if the registry stops resolving a ref to a file of the same name.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/swift@1.yaml
+  reason: 'the file name is the pack identifier: "<profile>@<version>" is the exact ref a contract writes under profiles: and the key the embedded registry resolves, so the offending "@" carries meaning. Renaming the file would insert a translation table between a contract ref and the pack it names.'
+  review-condition: 'reopen if pack refs stop using "@" as the version separator, or if the registry stops resolving a ref to a file of the same name.'
+  rule-id: naming-kebab-case
+- owner: '@Choaterboater (pika kernel maintainer)'
+  path: internal/profiles/packs/typescript@1.yaml
+  reason: 'the file name is the pack identifier: "<profile>@<version>" is the exact ref a contract writes under profiles: and the key the embedded registry resolves, so the offending "@" carries meaning. Renaming the file would insert a translation table between a contract ref and the pack it names.'
+  review-condition: 'reopen if pack refs stop using "@" as the version separator, or if the registry stops resolving a ref to a file of the same name.'
+  rule-id: naming-kebab-case
+extensions:
+  conventions:
+  - detail: all repository paths conform
+    name: naming/naming-catch-all
+  - detail: present
+    name: file/README.md

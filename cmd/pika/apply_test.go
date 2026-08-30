@@ -49,7 +49,7 @@ func TestRunApplyPostCommitFailureMessage(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if code := runApply(nil, &stdout, &stderr); code != 1 {
+	if code := runApply(nil, strings.NewReader(""), &stdout, &stderr); code != 1 {
 		t.Fatalf("runApply exit = %d, want 1\nstderr: %s", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "the contract WAS applied") {
@@ -67,7 +67,7 @@ func TestRunApplyPostCommitFailureMessage(t *testing.T) {
 func TestRunApplyUsage(t *testing.T) {
 	t.Chdir(t.TempDir())
 	var stdout, stderr bytes.Buffer
-	if code := runApply([]string{"junk"}, &stdout, &stderr); code != 2 {
+	if code := runApply([]string{"junk"}, strings.NewReader(""), &stdout, &stderr); code != 2 {
 		t.Fatalf("runApply junk exit = %d, want 2", code)
 	}
 }

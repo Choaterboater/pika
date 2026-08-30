@@ -21,6 +21,12 @@ type langCase struct {
 	// discovered one is absent. Every slot not listed here is smoke.
 	cmds  map[string][]string
 	hints map[string][]string
+	// autofill lists the hinted slots the pack marks safe for authoring
+	// to adopt unattended. Every other hinted slot must not be marked:
+	// the flag exists to separate a suggestion a human acts on from a
+	// command a fresh scaffold can actually run, so both directions are
+	// asserted.
+	autofill []string
 	// layoutTerm must appear in the language pack's §6.1 layout
 	// expectations.
 	layoutTerm string
@@ -33,10 +39,13 @@ var langCases = map[string]langCase{
 		ref:      "go@1",
 		cmds:     map[string][]string{"test": {"go", "test", "./..."}},
 		hints: map[string][]string{
-			"format":    {"gofmt", "-l", "-w", "."},
-			"lint":      {"go", "vet", "./..."},
-			"typecheck": {"go", "build", "./..."},
+			"format": {"gofmt", "-l", "-w", "."},
+			"lint":   {"go", "vet", "./..."},
+			// -o /dev/null keeps the gate from linking a binary into the
+			// repository root on every run.
+			"typecheck": {"go", "build", "-o", "/dev/null", "./..."},
 		},
+		autofill:   []string{"format", "lint", "typecheck"},
 		layoutTerm: "cmd/",
 	},
 	"typescript": {
@@ -49,6 +58,10 @@ var langCases = map[string]langCase{
 			"typecheck": {"npx", "tsc", "--noEmit"},
 			"test":      {"npm", "test"},
 		},
+		// npm and npx resolve on any node machine and then delegate to a
+		// package.json script or a registry download a fresh scaffold
+		// does not provide, so none of these may be adopted.
+		autofill:   nil,
 		layoutTerm: "src/",
 	},
 	"python": {
@@ -61,6 +74,7 @@ var langCases = map[string]langCase{
 			"lint":      {"ruff", "check", "."},
 			"typecheck": {"mypy", "."},
 		},
+		autofill:   []string{"format", "lint", "typecheck"},
 		layoutTerm: "tests/",
 	},
 	"swift": {
@@ -71,7 +85,11 @@ var langCases = map[string]langCase{
 			"typecheck": {"swift", "build"},
 			"test":      {"swift", "test"},
 		},
-		hints:      map[string][]string{"format": {"swift", "format"}},
+		hints: map[string][]string{"format": {"swift", "format", "lint", "--recursive", "Sources", "Tests"}},
+		// swift-format ships inside the toolchain only from Swift 6, but
+		// `swift` is on PATH from far older ones, so the PATH probe
+		// cannot tell the two apart.
+		autofill:   nil,
 		layoutTerm: "Swift Package Manager",
 	},
 	"rust": {
@@ -86,6 +104,7 @@ var langCases = map[string]langCase{
 			"format": {"cargo", "fmt", "--", "--check"},
 			"lint":   {"cargo", "clippy", "--", "-D", "warnings"},
 		},
+		autofill:   []string{"format", "lint"},
 		layoutTerm: "Cargo",
 	},
 }
@@ -187,6 +206,12 @@ func TestLanguageProfileResolve(t *testing.T) {
 				}
 				if !slices.Equal(c.Hint, want) {
 					t.Errorf("check %s hint = %v, want %v", id, c.Hint, want)
+				}
+			}
+			for id, c := range checks {
+				want := slices.Contains(tc.autofill, id)
+				if c.Autofill != want {
+					t.Errorf("check %s autofill = %v, want %v; only a hint measured to run in a fresh scaffold may be adopted unattended", id, c.Autofill, want)
 				}
 			}
 			smoke := checks["smoke"]

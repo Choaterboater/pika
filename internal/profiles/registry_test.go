@@ -259,3 +259,55 @@ func TestResolveRejectsUnknownProfiles(t *testing.T) {
 		}
 	}
 }
+
+// autofill is a promise about a hint, so a pack that sets it without one
+// — or on a slot that already carries a real command — is stating
+// something incoherent and must be rejected loudly rather than silently
+// ignored: a swallowed autofill is a check gate that quietly stops being
+// populated.
+func TestAutofillRequiresAHintedSentinel(t *testing.T) {
+	full := func(extra ...checkSpec) *Pack {
+		p := &Pack{}
+		for _, id := range []string{"format", "lint", "typecheck", "test", "smoke"} {
+			p.Verification.Checks = append(p.Verification.Checks, checkSpec{ID: id, Discovery: true})
+		}
+		for _, e := range extra {
+			for i := range p.Verification.Checks {
+				if p.Verification.Checks[i].ID == e.ID {
+					p.Verification.Checks[i] = e
+				}
+			}
+		}
+		return p
+	}
+	for name, tc := range map[string]struct {
+		spec    checkSpec
+		wantErr string
+	}{
+		"autofill without hint": {
+			spec:    checkSpec{ID: "lint", Discovery: true, Autofill: true},
+			wantErr: "autofill needs a hint",
+		},
+		"autofill on a real command": {
+			spec:    checkSpec{ID: "lint", Cmd: []string{"go", "vet", "./..."}, Autofill: true},
+			wantErr: "autofill belongs to a discovery sentinel",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := full(tc.spec).checkSet()
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("checkSet() error = %v, want one containing %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	// The valid shape still resolves, so the guard rejects incoherence
+	// rather than autofill itself.
+	cs, err := full(checkSpec{ID: "lint", Discovery: true, Autofill: true, Hint: []string{"go", "vet", "./..."}}).checkSet()
+	if err != nil {
+		t.Fatalf("hinted autofill sentinel rejected: %v", err)
+	}
+	if !cs.Lint.Autofill {
+		t.Error("resolved lint slot lost its autofill flag")
+	}
+}

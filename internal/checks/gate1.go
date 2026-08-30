@@ -10,12 +10,9 @@ import (
 
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/version"
 )
-
-// lockRelPath is the profiles lock location relative to the repository
-// root (spec §5.3).
-const lockRelPath = ".project/profiles.lock"
 
 // Gate1 runs verification-ladder rung 1 (spec §12.6): the contract
 // schema-version ceiling, the exceptions record load, and the
@@ -40,7 +37,7 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 	// Spec §16: CI validates the contract and profile locks; §5.3 pins
 	// the profile versions in profiles.lock. An unpinned, stale, or
 	// drifted lock is a gate failure, never a silent pass.
-	if err := checkLock(repoRoot, c); err != nil {
+	if err := CheckLock(repoRoot, c); err != nil {
 		return 1, err.Error(), nil
 	}
 	var findings []string
@@ -58,16 +55,25 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 	return 0, "", warnings
 }
 
-// checkLock verifies .project/profiles.lock against the contract's
+// CheckLock verifies .project/profiles.lock against the contract's
 // profile selection (spec §16, §5.3): the lock must exist, must pin
-// every contract profile ref at the contract's version, and every
-// pinned digest must match the embedded registry's current digest for
-// that pack.
-func checkLock(repoRoot string, c *contract.Contract) error {
-	lock, err := profiles.ReadLock(filepath.Join(repoRoot, filepath.FromSlash(lockRelPath)))
+// every contract profile ref at the contract's version, every pinned
+// digest must match the embedded registry's current digest for that
+// pack, and the lock's top-level digest must match this binary's whole
+// embedded pack registry. It is exported so `pika doctor` diagnoses lock
+// health with gate 1's own implementation instead of a second one that
+// could disagree.
+func CheckLock(repoRoot string, c *contract.Contract) error {
+	// The lock's location is owned by repopath, never spelled out here:
+	// gate 1 must look under exactly the root its caller resolved.
+	root, err := repopath.At(repoRoot)
+	if err != nil {
+		return fmt.Errorf("profiles.lock: %w", err)
+	}
+	lock, err := profiles.ReadLock(root.Lock())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%s missing; run `pika init` (or `pika adopt`) to write the profile lock (spec §5.3)", lockRelPath)
+			return fmt.Errorf("%s missing; run `pika init` (or `pika adopt`) to write the profile lock (spec §5.3)", filepath.ToSlash(root.Lock()))
 		}
 		return fmt.Errorf("profiles.lock: %w", err)
 	}
@@ -95,6 +101,14 @@ func checkLock(repoRoot string, c *contract.Contract) error {
 		if pinned.Digest != digest {
 			problems = append(problems, fmt.Sprintf("pack %s digest %s in profiles.lock does not match the embedded pack %s; regenerate the lock with `pika init --force`", name, pinned.Digest, ref))
 		}
+	}
+	// The top-level digest covers the entire embedded registry, not just
+	// the selected packs, so it is the field that catches a lock carried
+	// in from another checkout or written by a pika built from different
+	// pack bytes. profiles.WriteLock is the only writer, so a mismatch
+	// is drift or a hand edit — never a state the kernel produced.
+	if want := profiles.PackDigest(); lock.Digest != want {
+		problems = append(problems, fmt.Sprintf("registry digest %q in profiles.lock does not match this pika's embedded pack registry digest %s; regenerate the lock with `pika init --force`", lock.Digest, want))
 	}
 	if len(problems) > 0 {
 		return errors.New("profiles.lock: " + strings.Join(problems, "; "))

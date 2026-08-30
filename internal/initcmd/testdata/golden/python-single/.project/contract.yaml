@@ -12,7 +12,9 @@ packages:
     - core@1
     - python@1
 commands:
-  test: python -m pytest
+  format: ruff format .
+  lint: ruff check .
+  typecheck: mypy .
 agents: {}
 github:
   merge: squash

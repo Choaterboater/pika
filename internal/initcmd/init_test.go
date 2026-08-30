@@ -2,7 +2,7 @@ package initcmd
 
 import (
 	"bytes"
-	"encoding/json"
+	"errors"
 	"io/fs"
 	"maps"
 	"os"
@@ -13,7 +13,20 @@ import (
 	"testing"
 
 	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/profiles"
 )
+
+// TestMain pins PATH resolution for the whole package. The contract's
+// commands block is populated from pack hints whose tool is present on
+// PATH, and the golden trees embed .project/contract.yaml byte for
+// byte. Without a fixed lookPath the golden bytes would depend on what
+// the machine running the tests happens to have installed. The stub
+// reports every tool present, so the goldens record the full
+// hint-populated contract.
+func TestMain(m *testing.M) {
+	lookPath = func(string) (string, error) { return "/usr/bin/stub", nil }
+	os.Exit(m.Run())
+}
 
 // languages lists the V1 language profiles in spec §5.4 order. Each gets a
 // parametrized golden-dir test.
@@ -51,7 +64,7 @@ func TestGoldenPerLanguage(t *testing.T) {
 			// dir-name-derived content (project name, module path, package
 			// name) matches the committed tree byte for byte.
 			dir := filepath.Join(t.TempDir(), lang+"-single")
-			if err := Run(InitOptions{Dir: dir, Profiles: []string{lang}}); err != nil {
+			if _, err := Run(InitOptions{Dir: dir, Profiles: []string{lang}}); err != nil {
 				t.Fatalf("init %s: %v", lang, err)
 			}
 			generated, err := treeFiles(dir)
@@ -122,7 +135,7 @@ func TestGoldenPerLanguage(t *testing.T) {
 
 func TestCoreOnlyScaffold(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bare")
-	if err := Run(InitOptions{Dir: dir}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	c, err := contract.Load(filepath.Join(dir, ".project", "contract.yaml"))
@@ -152,10 +165,10 @@ func TestCoreOnlyScaffold(t *testing.T) {
 func TestIdempotencyErrorsWithoutForce(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "go-single")
 	opts := InitOptions{Dir: dir, Profiles: []string{"go"}}
-	if err := Run(opts); err != nil {
+	if _, err := Run(opts); err != nil {
 		t.Fatalf("first init: %v", err)
 	}
-	err := Run(opts)
+	_, err := Run(opts)
 	if err == nil {
 		t.Fatal("second init without --force: got nil error, want refusal")
 	}
@@ -166,7 +179,7 @@ func TestIdempotencyErrorsWithoutForce(t *testing.T) {
 
 func TestForceRewritesAndPreservesUserFiles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "go-single")
-	if err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}}); err != nil {
 		t.Fatalf("first init: %v", err)
 	}
 	// User files live outside .project; force must never delete them.
@@ -184,7 +197,7 @@ func TestForceRewritesAndPreservesUserFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Force: true}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Force: true}); err != nil {
 		t.Fatalf("force init: %v", err)
 	}
 	for rel, content := range userFiles {
@@ -201,17 +214,15 @@ func TestForceRewritesAndPreservesUserFiles(t *testing.T) {
 	}
 }
 
-func TestJSONManifestIsSorted(t *testing.T) {
+// The manifest is init's answer to "what did you just create". It is
+// returned as data — the JSON encoding lives in the command layer — and
+// it must be sorted, complete, and true: every entry exists on disk and
+// every created file is listed.
+func TestManifestIsSortedAndComplete(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "go-single")
-	var buf bytes.Buffer
-	if err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, JSON: true, Out: &buf}); err != nil {
+	manifest, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}})
+	if err != nil {
 		t.Fatalf("init: %v", err)
-	}
-	var manifest struct {
-		Files []string `json:"files"`
-	}
-	if err := json.Unmarshal(buf.Bytes(), &manifest); err != nil {
-		t.Fatalf("manifest is not JSON: %v\n%s", err, buf.String())
 	}
 	if !slices.IsSorted(manifest.Files) {
 		t.Errorf("manifest not sorted: %v", manifest.Files)
@@ -220,6 +231,11 @@ func TestJSONManifestIsSorted(t *testing.T) {
 		if !slices.Contains(manifest.Files, want) {
 			t.Errorf("manifest missing %s: %v", want, manifest.Files)
 		}
+	}
+	// The commands block init populated travels with the manifest: it is
+	// how a caller learns which gates will actually run.
+	if len(manifest.Commands) == 0 {
+		t.Error("manifest reports no contract commands")
 	}
 	// Every manifest entry exists; every created file is listed.
 	for _, rel := range manifest.Files {
@@ -240,7 +256,7 @@ func TestJSONManifestIsSorted(t *testing.T) {
 
 func TestNameOverridesDirName(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "untidy Dir.Name")
-	if err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Name: "custom-name"}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Name: "custom-name"}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	c, err := contract.Load(filepath.Join(dir, ".project", "contract.yaml"))
@@ -261,7 +277,7 @@ func TestNameOverridesDirName(t *testing.T) {
 
 func TestModuleNameDerivedAndOverridable(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "go-single")
-	if err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	goMod, err := os.ReadFile(filepath.Join(dir, "go.mod"))
@@ -273,7 +289,7 @@ func TestModuleNameDerivedAndOverridable(t *testing.T) {
 	}
 
 	dir2 := filepath.Join(t.TempDir(), "go-single")
-	if err := Run(InitOptions{Dir: dir2, Profiles: []string{"go"}, Module: "example.com/foo/bar"}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir2, Profiles: []string{"go"}, Module: "example.com/foo/bar"}); err != nil {
 		t.Fatalf("init with --module: %v", err)
 	}
 	goMod2, err := os.ReadFile(filepath.Join(dir2, "go.mod"))
@@ -287,7 +303,7 @@ func TestModuleNameDerivedAndOverridable(t *testing.T) {
 
 func TestUnknownProfileRejected(t *testing.T) {
 	dir := t.TempDir()
-	err := Run(InitOptions{Dir: dir, Profiles: []string{"cobol"}})
+	_, err := Run(InitOptions{Dir: dir, Profiles: []string{"cobol"}})
 	if err == nil {
 		t.Fatal("unknown profile accepted")
 	}
@@ -301,25 +317,32 @@ func TestUnknownProfileRejected(t *testing.T) {
 // preinstalled on GitHub runners) regressed silently once already.
 func TestCISetupCoversContractCommands(t *testing.T) {
 	required := map[string][]string{
-		// contract test command `go test ./...`: setup-go installs Go.
+		// contract commands `gofmt -l -w .`, `go vet ./...`,
+		// `go build -o /dev/null ./...`, `go test ./...`: setup-go
+		// installs the whole toolchain.
 		"go": []string{"actions/setup-go@v5"},
-		// typescript commands are discovery sentinels; node 24 setup
-		// keeps the suggested commands runnable.
+		// no typescript hint is autofillable, so the contract names no
+		// command; node 24 setup keeps the hinted commands runnable once
+		// the user adds the scripts and installs dependencies.
 		"typescript": []string{"actions/setup-node@v4", "node-version: \"24\""},
-		// contract test command `python -m pytest`: runners ship Python
-		// without pytest.
-		"python": []string{"actions/setup-python@v5", "python -m pip install pytest"},
-		// contract commands `cargo build` / `cargo test`: cargo ships on
-		// runners; the workflow still pins stable.
+		// contract commands `python -m pytest`, `ruff format .`,
+		// `ruff check .`, `mypy .`: runners ship a bare interpreter, so
+		// all three packages are installed explicitly.
+		"python": []string{"actions/setup-python@v5", "python -m pip install pytest ruff mypy"},
+		// contract commands `cargo build` / `cargo test` /
+		// `cargo fmt -- --check` / `cargo clippy -- -D warnings`: cargo
+		// ships on runners and rustup's stable profile carries rustfmt
+		// and clippy; the workflow still pins stable.
 		"rust": []string{"rustup default stable"},
 		// contract commands `swift build` / `swift test`: swift ships on
-		// runners.
+		// runners. The format hint does not autofill, so no
+		// swift-format-capable toolchain is required.
 		"swift": []string{},
 	}
 	for _, lang := range languages {
 		t.Run(lang, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), lang+"-single")
-			if err := Run(InitOptions{Dir: dir, Profiles: []string{lang}}); err != nil {
+			if _, err := Run(InitOptions{Dir: dir, Profiles: []string{lang}}); err != nil {
 				t.Fatalf("init %s: %v", lang, err)
 			}
 			ci, err := os.ReadFile(filepath.Join(dir, ".github", "workflows", "ci.yml"))
@@ -389,7 +412,7 @@ func TestDigitLeadingNamesProduceValidStackIdentifiers(t *testing.T) {
 	} {
 		t.Run(tc.lang, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "1-check")
-			if err := Run(InitOptions{Dir: dir, Profiles: []string{tc.lang}}); err != nil {
+			if _, err := Run(InitOptions{Dir: dir, Profiles: []string{tc.lang}}); err != nil {
 				t.Fatalf("init %s: %v", tc.lang, err)
 			}
 			data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(tc.file)))
@@ -408,5 +431,76 @@ func TestDigitLeadingNamesProduceValidStackIdentifiers(t *testing.T) {
 				t.Errorf("contract project name = %q, want 1-check", c.Project.Name)
 			}
 		})
+	}
+}
+
+// A fresh TypeScript repo used to pass `pika check` with all five gates
+// skipped: typescript@1 declares every slot discovery-only, so the report
+// was green while nothing was verified. Populating from a bare PATH probe
+// swapped that for a worse failure — every npm hint was adopted and the
+// scaffold then failed its own checks — so a hint is adopted only when
+// its pack marks it autofillable.
+func TestCommandsPopulatedFromAutofillableHints(t *testing.T) {
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "go@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := func(string) (string, error) { return "/usr/bin/stub", nil }
+
+	got := commandsFromChecks(resolved.Checks, present)
+	want := map[string]string{
+		"format":    "gofmt -l -w .",
+		"lint":      "go vet ./...",
+		"typecheck": "go build -o /dev/null ./...",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("commands = %v, want %v", got, want)
+	}
+}
+
+// Every typescript@1 hint runs through npm or npx, which resolve on any
+// machine with node installed and then delegate to a package.json script
+// or a registry download the scaffold does not provide. The PATH probe
+// says yes to all four; autofill says no to all four, and the slots stay
+// honest discovery skips.
+func TestDelegatingHintsAreNotAdoptedEvenWhenTheirToolIsPresent(t *testing.T) {
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "typescript@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := func(string) (string, error) { return "/usr/bin/stub", nil }
+
+	if got := commandsFromChecks(resolved.Checks, present); len(got) != 0 {
+		t.Fatalf("commands = %v; npm/npx hints delegate to scripts a fresh scaffold does not define and must never be adopted", got)
+	}
+	// The hints themselves survive: doctor renders them as remediation.
+	if got := strings.Join(resolved.Checks.Lint.Hint, " "); got != "npm run lint" {
+		t.Errorf("lint hint = %q, want it kept for doctor's remediation", got)
+	}
+}
+
+func TestCommandsOmittedWhenToolAbsent(t *testing.T) {
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "go@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	absent := func(string) (string, error) { return "", errors.New("not found") }
+
+	if got := commandsFromChecks(resolved.Checks, absent); len(got) != 0 {
+		t.Fatalf("commands = %v, want empty when no tool is on PATH", got)
+	}
+}
+
+// A slot with a real cmd (not a hint) is the pack's own command and must
+// not be duplicated into the contract.
+func TestExplicitPackCommandsAreNotCopied(t *testing.T) {
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "go@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := func(string) (string, error) { return "/usr/bin/stub", nil }
+
+	if got := commandsFromChecks(resolved.Checks, present)["test"]; got != "" {
+		t.Errorf("commands[test] = %q; go@1 already declares cmd, the contract must not duplicate it", got)
 	}
 }

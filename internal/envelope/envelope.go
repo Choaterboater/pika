@@ -225,10 +225,12 @@ func NewEnvelope(env *Env, repoRoot string) *Envelope {
 	return &Envelope{Env: env, repoRoot: filepath.Clean(repoRoot)}
 }
 
-// Load reads and validates the envelope file at path, expected at
-// .project/state/envelope.yaml under a repository root, which is derived
-// by stripping that layout from path.
-func Load(path string) (*Envelope, error) {
+// Load reads and validates the envelope file at path, binding it to an
+// explicit repository root. The root is supplied by the caller rather
+// than inferred from path, so relocating the envelope — or loading one
+// from anywhere but .project/state — cannot silently change what fs_read
+// authorizes.
+func Load(repoRoot, path string) (*Envelope, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("envelope: read %s: %w", path, err)
@@ -237,7 +239,7 @@ func Load(path string) (*Envelope, error) {
 	if err != nil {
 		return nil, fmt.Errorf("envelope: %s: %w", path, err)
 	}
-	return NewEnvelope(env, filepath.Dir(filepath.Dir(filepath.Dir(path)))), nil
+	return NewEnvelope(env, repoRoot), nil
 }
 
 // Allows reports whether op is authorized. Every class is deny-by-default,
@@ -249,6 +251,10 @@ func (e *Envelope) Allows(op Operation) bool {
 	if e == nil || e.Env == nil {
 		return false
 	}
+	// Enforcement coverage as of M1: only fs_write and exec have a
+	// caller that asks before acting. fs_read, network, credential,
+	// github and budget are answered correctly here and validated by
+	// the schema, but no kernel code path consults them yet.
 	switch op.Kind {
 	case KindFSRead:
 		return e.allowsRead(op.Target)
@@ -291,14 +297,21 @@ func (e *Envelope) allowsRead(target string) bool {
 // matchesPath matches target against the fs_write entries: an entry allows
 // itself and everything beneath it (directory-prefix semantics), compared
 // on normalized repo-relative paths so entry ".project/state" permits
-// ".project/state/x.json" but not ".project/staterun/x".
+// ".project/state/x.json" but not ".project/staterun/x". The entry "."
+// names the repository root and therefore the whole tree: it is the
+// canonical root path contract.NormalizeRepoPath emits, and since that
+// function never produces a "./" prefix, the prefix comparison alone
+// would match the literal path "." and nothing under it — turning the
+// repo scope into a grant that authorizes nothing.
 func (e *Envelope) matchesPath(target string) bool {
 	norm, err := contract.NormalizeRepoPath(target)
 	if err != nil {
 		return false
 	}
+	// norm is repo-relative and non-escaping by construction here, so
+	// any successfully normalized target lies inside the root subtree.
 	for _, entry := range e.Env.Allow.FSWrite {
-		if norm == entry || strings.HasPrefix(norm, entry+"/") {
+		if entry == "." || norm == entry || strings.HasPrefix(norm, entry+"/") {
 			return true
 		}
 	}

@@ -53,13 +53,15 @@ func TestMain(m *testing.M) {
 var languages = []string{"go", "typescript", "python", "swift", "rust"}
 
 // toolchainAbsent reports why the language's real check gates cannot run
-// on this machine, or "" when every contract command is runnable. The
-// typescript scaffold keeps all five slots as discovery sentinels, so it
-// never needs a toolchain; go is always present because the tests run
-// under `go test`.
+// on this machine, or "" when every contract command is runnable. go is
+// always present because the tests run under `go test`.
 func toolchainAbsent(lang string) string {
 	switch lang {
 	case "typescript":
+		// No typescript@1 hint is autofillable: every one delegates to a
+		// package.json script or an npx download the scaffold does not
+		// provide, so the contract names no command and all five slots
+		// skip. Nothing to install, and nothing that can fail.
 		return ""
 	case "go":
 		if _, err := exec.LookPath("go"); err != nil {
@@ -83,8 +85,41 @@ func toolchainAbsent(lang string) string {
 	return ""
 }
 
-// checkReport mirrors the JSON check report (verify.Report) that the
-// binary prints for `check --json`.
+// envelope mirrors the cliout envelope every --json payload carries. It
+// is declared here rather than imported so these tests assert the wire
+// shape an outside consumer actually sees, not the producer's own type.
+type envelope struct {
+	Schema  int             `json:"schema"`
+	Command string          `json:"command"`
+	OK      bool            `json:"ok"`
+	Result  json.RawMessage `json:"result"`
+	Error   *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// unwrap asserts the discriminators every --json payload shares and
+// returns the command's own result. A consumer that cannot read schema,
+// command, and ok before knowing the shape is exactly what cliout
+// exists to prevent.
+func unwrap(t *testing.T, out, command string) envelope {
+	t.Helper()
+	var env envelope
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("%s --json did not print a cliout envelope: %v\n%s", command, err, out)
+	}
+	if env.Schema != 1 {
+		t.Errorf("schema = %d, want 1:\n%s", env.Schema, out)
+	}
+	if env.Command != command {
+		t.Errorf("command = %q, want %q:\n%s", env.Command, command, out)
+	}
+	return env
+}
+
+// checkReport mirrors the JSON check report (verify.Report) the binary
+// nests under the envelope's result for `check --json`.
 type checkReport struct {
 	Gates []struct {
 		ID     string   `json:"id"`
@@ -138,12 +173,20 @@ func scaffoldRepo(t *testing.T, lang string) string {
 	return dir
 }
 
-// parseCheckReport unmarshals the JSON report printed by `check --json`.
+// parseCheckReport unwraps the envelope printed by `check --json` and
+// returns the report nested under its result. The envelope's ok must
+// agree with the report's own pass: ok is the boolean the exit code is
+// derived from, so a payload where the two disagree would send an agent
+// down the wrong branch.
 func parseCheckReport(t *testing.T, out string) *checkReport {
 	t.Helper()
+	env := unwrap(t, out, "check")
 	var rep checkReport
-	if err := json.Unmarshal([]byte(out), &rep); err != nil {
-		t.Fatalf("parse check JSON: %v\noutput: %s", err, out)
+	if err := json.Unmarshal(env.Result, &rep); err != nil {
+		t.Fatalf("parse check result: %v\noutput: %s", err, out)
+	}
+	if env.OK != rep.Pass {
+		t.Fatalf("envelope ok = %v but report pass = %v:\n%s", env.OK, rep.Pass, out)
 	}
 	return &rep
 }
@@ -427,9 +470,11 @@ func evidenceReceipt() map[string]any {
 // TestE2EMCPSession runs one full agent session against the real binary
 // over real stdio pipes on an initialized go repository: initialize,
 // tools/list, the read-only kernel tools, the envelope-denied matrix for
-// every mutating tool (fail-closed without an envelope), run_checks, and
-// a clean EOF shutdown with exit 0. A second session on a fresh
-// non-adopted repository proves preview_plan is denied there too.
+// every tool with a filesystem or process effect (fail-closed without an
+// envelope), the unavailable apply_plan, then `pika authorize` followed by
+// a green run_checks, and a clean EOF shutdown with exit 0. A second
+// session on a fresh non-adopted repository proves preview_plan is denied
+// there too.
 func TestE2EMCPSession(t *testing.T) {
 	if reason := toolchainAbsent("go"); reason != "" {
 		t.Skipf("toolchain absent: %s", reason) // run_checks executes the go test gate
@@ -524,17 +569,34 @@ func TestE2EMCPSession(t *testing.T) {
 	if code := toolErrorCode(t, errObj); code != "envelope_denied" {
 		t.Fatalf("acquire_scope error code = %q, want envelope_denied", code)
 	}
+	// run_checks is in this matrix, not among the fail-open reads: it
+	// spawns the contract's gate commands, so it needs an exec grant
+	// exactly as a write needs an fs_write grant.
+	_, errObj = s.call("run_checks", map[string]any{"scope": "all"})
+	if errObj == nil {
+		t.Fatal("run_checks without envelope: want envelope_denied error")
+	}
+	if code := toolErrorCode(t, errObj); code != "envelope_denied" {
+		t.Fatalf("run_checks error code = %q, want envelope_denied", code)
+	}
+	// apply_plan is listed but never executable in this build. Its code
+	// is "unavailable", never "internal": permanent absence and a
+	// transient kernel failure must be distinguishable without matching
+	// on the message.
+	_, errObj = s.call("apply_plan", map[string]any{})
+	if errObj == nil {
+		t.Fatal("apply_plan: want an unavailable error")
+	}
+	if code := toolErrorCode(t, errObj); code != "unavailable" {
+		t.Fatalf("apply_plan error code = %q, want unavailable", code)
+	}
 
-	// With an envelope granting .project, the adopted-repo check
-	// surfaces: preview_plan refuses with the stable already_adopted
-	// code and writes nothing.
-	if err := os.MkdirAll(filepath.Join(repo, ".project", "state"), 0o755); err != nil {
-		t.Fatalf("mkdir state: %v", err)
-	}
-	envelope := "schema: 1\nallow:\n  fs_write: [.project]\n"
-	if err := os.WriteFile(filepath.Join(repo, ".project", "state", "envelope.yaml"), []byte(envelope), 0o644); err != nil {
-		t.Fatalf("write envelope: %v", err)
-	}
+	// `pika authorize` generates the envelope an agent session runs
+	// under. Using the real command here is the end-to-end proof that
+	// what authorize grants is what the MCP server enforces: the
+	// already_adopted check below needs the fs_write grants, and the
+	// run_checks call after it needs the exec grants.
+	runCLI(t, repo, 0, "authorize", "--scope", "project")
 	_, errObj = s.call("preview_plan", map[string]any{})
 	if errObj == nil {
 		t.Fatal("preview_plan on adopted repo with envelope: want already_adopted error")
@@ -590,5 +652,57 @@ func TestE2EMCPSession(t *testing.T) {
 	s2.stdin.Close()
 	if err := s2.cmd.Wait(); err != nil {
 		t.Fatalf("second mcp server did not exit cleanly on EOF: %v\nstderr: %s", err, s2.stderr.String())
+	}
+}
+
+// TestE2EHumanCheckNeedsNoEnvelopeButMCPDoes pins the deliberate asymmetry
+// between the two front doors of the same verification ladder. A human
+// running `pika check` in their own shell has already authorized
+// themselves by typing the command, so the CLI must keep working with no
+// envelope on disk. An agent driving run_checks over MCP has not, so that
+// path is fail-closed. Both directions are asserted here because an
+// asymmetry nobody names is an asymmetry that rots into a bug: tighten the
+// CLI and the tool becomes unusable, loosen MCP and the envelope stops
+// being the boundary it exists to be.
+func TestE2EHumanCheckNeedsNoEnvelopeButMCPDoes(t *testing.T) {
+	if reason := toolchainAbsent("go"); reason != "" {
+		t.Skipf("toolchain absent: %s", reason) // the go gates really spawn
+	}
+	repo := scaffoldRepo(t, "go")
+	envelopeFile := filepath.Join(repo, ".project", "state", "envelope.yaml")
+	if _, err := os.Stat(envelopeFile); !os.IsNotExist(err) {
+		t.Fatalf("a scaffolded repository must have no envelope (stat err %v)", err)
+	}
+
+	// Direction 1: the human CLI runs the whole ladder, no envelope.
+	out := runCLI(t, repo, 0, "check", "--all", "--json")
+	rep := parseCheckReport(t, out)
+	if !rep.Pass {
+		t.Fatalf("check --all without an envelope did not pass: %s", out)
+	}
+	var ranGate bool
+	for _, g := range rep.Gates {
+		if g.ID == "test" && g.Status == "pass" {
+			ranGate = true
+		}
+	}
+	if !ranGate {
+		t.Fatalf("check --all did not actually run the test gate: %s", out)
+	}
+
+	// Direction 2: the same ladder over MCP, same repository, same
+	// missing envelope — denied.
+	s := startMCP(t, repo)
+	s.request("initialize", map[string]any{"protocolVersion": "2024-11-05"})
+	_, errObj := s.call("run_checks", map[string]any{"scope": "all"})
+	if errObj == nil {
+		t.Fatal("run_checks over MCP without an envelope: want envelope_denied")
+	}
+	if code := toolErrorCode(t, errObj); code != "envelope_denied" {
+		t.Fatalf("run_checks error code = %q, want envelope_denied", code)
+	}
+	s.stdin.Close()
+	if err := s.cmd.Wait(); err != nil {
+		t.Fatalf("mcp server did not exit cleanly on EOF: %v\nstderr: %s", err, s.stderr.String())
 	}
 }

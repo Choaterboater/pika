@@ -2,20 +2,17 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 
+	"github.com/Choaterboater/pika/internal/changed"
 	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/verify"
 )
-
-// defaultContractPath is the core profile's contract location relative to
-// the repository root.
-const defaultContractPath = ".project/contract.yaml"
 
 // runCheck implements `pika check [--all|--changed|--ci] [--json]`.
 // The verification ladder (spec §12.6): gate 1 runs the contract/profile
@@ -27,46 +24,56 @@ const defaultContractPath = ".project/contract.yaml"
 //
 // Exit codes: 0 all gates pass or skip, 1 any gate failed, 2 usage or
 // configuration error.
-func runCheck(args []string, stdout, stderr io.Writer) int {
+func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	all := fs.Bool("all", false, "run every gate")
-	changed := fs.Bool("changed", false, "changed-scope verification (reserved; M1 runs all gates)")
+	changedFlag := fs.Bool("changed", false, "run gates for packages touched since the merge base")
 	ci := fs.Bool("ci", false, "CI mode: implies --all; no interactive prompts")
 	jsonOut := fs.Bool("json", false, "emit the JSON report on stdout")
-	contractPath := fs.String("contract", "", "path to the contract file (default .project/contract.yaml)")
+	contractPath := fs.String("contract", "", "path to the contract file (default <root>/.project/contract.yaml)")
+	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "pika check: unexpected argument %q\n", fs.Arg(0))
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeUsage,
+			fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
 	scopes := 0
-	for _, b := range []*bool{all, changed, ci} {
+	for _, b := range []*bool{all, changedFlag, ci} {
 		if *b {
 			scopes++
 		}
 	}
 	if scopes > 1 {
-		fmt.Fprintln(stderr, "pika check: --all, --changed, and --ci are mutually exclusive")
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeUsage,
+			"--all, --changed, and --ci are mutually exclusive")
 	}
 	scope := verify.All
 	switch {
 	case *ci:
 		scope = verify.CI
-	case *changed:
+	case *changedFlag:
 		scope = verify.Changed
 	}
 
-	// M1's repo root is the process working directory; the contract and
-	// exceptions records are resolved beneath it (spec §5.2).
-	repoRoot := "."
+	root, err := resolveRoot(*rootFlag)
+	if err != nil {
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
+	}
 
-	path := *contractPath
-	if path == "" {
-		path = defaultContractPath
+	// The contract, the exceptions record, and the gate subprocesses are
+	// all bound to the resolved root (spec §5.2), so check reports on one
+	// repository no matter which directory it was invoked from. A
+	// relative --contract resolves against that root, not against the
+	// caller's working directory.
+	path := root.Contract()
+	if *contractPath != "" {
+		path = *contractPath
+		if !filepath.IsAbs(path) {
+			path = root.Join(filepath.FromSlash(path))
+		}
 	}
 
 	// Configuration errors surface before the ladder runs: without a
@@ -74,13 +81,11 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	// verify.
 	c, err := contract.Load(path)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika check:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
 	}
 	resolved, err := profiles.Resolve(c.Profiles)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika check:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
 	}
 
 	// Gate 1 (rung 1, spec §12.6): contract schema ceiling, exceptions
@@ -90,32 +95,51 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	gates := verify.CheckSet{{
 		ID: "contract",
 		Func: func(context.Context) (int, string) {
-			exit, output, warnings := checks.Gate1(repoRoot, c, resolved)
+			exit, output, warnings := checks.Gate1(root.Dir(), c, resolved)
 			gate1Warnings = warnings
 			return exit, output
 		},
 	}}
 	ordered, err := verify.FromProfiles(resolved.Checks, c.Commands)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika check:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
+	}
+
+	// Gate 1 always runs: it validates the contract itself, which no
+	// change set can put out of scope. Only the package gates narrow.
+	var scopeWarnings []string
+	if scope == verify.Changed {
+		set, err := changed.Files(root)
+		if err != nil {
+			return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
+		}
+		if set.Degraded {
+			scopeWarnings = append(scopeWarnings,
+				"--changed could not resolve a change set ("+set.Reason+"); running every gate")
+		} else if !scopeSelectsGates(set) {
+			for i := range ordered {
+				// A gate already skipped for a missing command keeps
+				// that reason: "no command discovered" and "nothing
+				// changed here" are different facts about the run.
+				if ordered[i].SkipReason == "" {
+					ordered[i].SkipReason = verify.ScopeSkipReason
+				}
+			}
+		}
 	}
 	gates = append(gates, ordered...)
 
-	rep, err := verify.Run(context.Background(), gates, scope)
+	rep, err := verify.Run(context.Background(), gates, scope, verify.WithDir(root.Dir()))
 	if err != nil {
-		fmt.Fprintln(stderr, "pika check:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
 	}
+	rep.Warnings = append(rep.Warnings, scopeWarnings...)
 	rep.Warnings = append(rep.Warnings, gate1Warnings...)
 
 	if *jsonOut {
-		data, err := json.Marshal(rep)
-		if err != nil {
-			fmt.Fprintln(stderr, "pika check:", err)
-			return 2
+		if !emitJSON(stdout, stderr, "check", rep.Pass, rep) {
+			return 1
 		}
-		fmt.Fprintln(stdout, string(data))
 	} else {
 		printReport(rep, stdout)
 	}
@@ -123,6 +147,25 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// scopeSelectsGates reports whether the change set puts the package gates
+// (rungs 2-4) in scope. The rule in one sentence: only a change set that
+// is known to be empty narrows the ladder; every other change set runs
+// every gate.
+//
+// The gates are repository-wide commands, and a changed file cannot
+// always be attributed to a declared package — a root-level go.mod, a CI
+// workflow, or the contract itself belongs to no package while being able
+// to break all of them. Attribution is therefore not a narrowing signal:
+// treating "outside every package root" as "out of scope" would silently
+// verify less exactly when the blast radius is widest. A degraded set is
+// unknown and so also runs everything.
+func scopeSelectsGates(set *changed.Set) bool {
+	if set.Degraded {
+		return true
+	}
+	return !set.Empty()
 }
 
 // printReport writes the human-readable check report.

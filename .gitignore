@@ -1,6 +1,10 @@
 # Local-only runtime state (spec §14.2) — never commit
 .project/state/
 
+# Adoption drafts are consumed by `pika apply`; a stale draft committed
+# next to a live contract is a trap, not a record.
+.project/*.draft
+
 # Build/test scratch
 *.test
 *.out

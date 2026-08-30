@@ -92,6 +92,48 @@ func TestFSWritePrefixSemantics(t *testing.T) {
 	}
 }
 
+// "." is what `pika authorize --scope repo` emits and what
+// contract.NormalizeRepoPath calls the repository root. Matching it by
+// the "entry+/" prefix rule alone authorized the literal path "." and
+// nothing beneath it, so the widest scope the tool can grant was a dead
+// grant. The root entry must name the whole tree.
+func TestFSWriteRepoRootEntryGrantsWholeTree(t *testing.T) {
+	env := mustParse(t, `{"schema":1,"allow":{"fs_write":["."]}}`)
+	allowed := []string{
+		".",
+		"main.go",
+		"internal/x/y.go",
+		"./internal/x/y.go",
+		".project/state/board.jsonl",
+	}
+	for _, p := range allowed {
+		if !env.Allows(Operation{Kind: "fs_write", Target: p}) {
+			t.Errorf("fs_write %q must be allowed by the repository-root entry", p)
+		}
+	}
+	// The root entry widens the subtree, never the repository boundary:
+	// a target that does not normalize to a repo-relative path is still
+	// denied.
+	for _, p := range []string{"../outside", "/etc/passwd", ""} {
+		if env.Allows(Operation{Kind: "fs_write", Target: p}) {
+			t.Errorf("fs_write %q must be denied even by the repository-root entry", p)
+		}
+	}
+}
+
+// Regression: widening "." must not have loosened ordinary entries into
+// string-prefix matching. A directory entry still stops at the path
+// boundary.
+func TestFSWriteEntryStillRespectsPathBoundary(t *testing.T) {
+	env := mustParse(t, `{"schema":1,"allow":{"fs_write":[".project/state"]}}`)
+	if !env.Allows(Operation{Kind: "fs_write", Target: ".project/state/x.json"}) {
+		t.Error(".project/state must still permit .project/state/x.json")
+	}
+	if env.Allows(Operation{Kind: "fs_write", Target: ".project/staterun/x"}) {
+		t.Error(".project/state must still refuse .project/staterun/x")
+	}
+}
+
 func TestFSReadInsideRepoAllowed(t *testing.T) {
 	env := mustParse(t, `{"schema":1,"allow":{"fs_write":[".project/state"]}}`)
 	allowed := []string{"main.go", "internal/envelope/envelope.go", "/repo/internal/envelope/envelope.go"}
@@ -250,6 +292,8 @@ rollback_boundary: git reset --hard HEAD
 }
 
 func TestLoad(t *testing.T) {
+	// Load binds the root the caller passes, never one inferred from the
+	// envelope's own location.
 	root := t.TempDir()
 	dir := filepath.Join(root, ".project", "state")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -260,7 +304,7 @@ func TestLoad(t *testing.T) {
 	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env, err := Load(path)
+	env, err := Load(root, path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -273,8 +317,22 @@ func TestLoad(t *testing.T) {
 	if env.Allows(Operation{Kind: "fs_write", Target: "docs/x.md"}) {
 		t.Error("loaded envelope must deny undeclared writes")
 	}
-	if _, err := Load(filepath.Join(dir, "missing.yaml")); err == nil {
+	if _, err := Load(root, filepath.Join(dir, "missing.yaml")); err == nil {
 		t.Error("Load of missing file must fail")
+	}
+	// A relocated envelope keeps authorizing the root it was loaded
+	// against; the old directory arithmetic would have re-rooted it at
+	// the temp directory's grandparent.
+	moved := filepath.Join(root, "envelope.yaml")
+	if err := os.Rename(path, moved); err != nil {
+		t.Fatal(err)
+	}
+	relocated, err := Load(root, moved)
+	if err != nil {
+		t.Fatalf("Load relocated: %v", err)
+	}
+	if relocated.repoRoot != filepath.Clean(root) {
+		t.Errorf("relocated repoRoot = %q, want %q", relocated.repoRoot, filepath.Clean(root))
 	}
 }
 

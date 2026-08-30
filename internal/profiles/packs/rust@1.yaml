@@ -25,12 +25,18 @@ verification:
   # Format and lint stay discovery sentinels so advisory-gate policy (the
   # --check and -D warnings hardenings live in the hints) is decided at
   # check time; typecheck and test are fixed Cargo commands.
+  # Both hints autofill: rustfmt and clippy are default rustup
+  # components, they need no crate-level configuration, and both exit 0
+  # on a fresh `pika init --profile rust` scaffold. Their artifacts land
+  # in target/, which the scaffold gitignores.
   checks:
     - id: format
       discovery: true
+      autofill: true
       hint: [cargo, fmt, --, --check]
     - id: lint
       discovery: true
+      autofill: true
       hint: [cargo, clippy, --, -D, warnings]
     - id: typecheck
       cmd: [cargo, build]

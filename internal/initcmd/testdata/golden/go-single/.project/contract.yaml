@@ -12,7 +12,9 @@ packages:
     - core@1
     - go@1
 commands:
-  test: go test ./...
+  format: gofmt -l -w .
+  lint: go vet ./...
+  typecheck: go build -o /dev/null ./...
 agents: {}
 github:
   merge: squash
