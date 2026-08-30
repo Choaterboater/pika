@@ -180,6 +180,10 @@ var jsonCases = map[string]jsonCase{
 			t.Fatalf("adopt fixture: %v", err)
 		}
 	}},
+	// recover defaults to a report, so the default invocation is the
+	// whole command with nothing to undo: it resolves the root, reads
+	// the recovery directory, and answers inside the envelope.
+	"recover":   {setup: writeMinimalProject},
 	"check":     {args: []string{"--all"}, setup: writeMinimalProject},
 	"status":    {},
 	"doctor":    {setup: writeMinimalProject},

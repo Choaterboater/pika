@@ -102,6 +102,12 @@ var commands = []command{
 		run:     runApply,
 	},
 	{
+		name:    "recover",
+		summary: "report, and on request undo, a transaction that never finished",
+		usage:   "pika recover [--apply] [--json] [--root <dir>]",
+		run:     runRecover,
+	},
+	{
 		name:    "check",
 		summary: "run the verification ladder",
 		usage:   "pika check [--all|--changed|--ci] [--json] [--contract <path>] [--root <dir>]",

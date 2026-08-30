@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -276,5 +277,88 @@ func TestMissingGateBinaryIsAnError(t *testing.T) {
 	}
 	if rep.OK {
 		t.Error("a gate that cannot run must flip Report.OK false, matching `pika check` exit 1")
+	}
+}
+
+// writeRecoveryLock stands a recovery lock up at dir held by pid.
+func writeRecoveryLock(t *testing.T, dir string, pid int) {
+	t.Helper()
+	rec := filepath.Join(dir, ".project", "state", "recovery")
+	if err := os.MkdirAll(rec, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"txId":"0000000000000001-c0ffee01","pid":` + strconv.Itoa(pid) + `,"startedAt":"2026-08-30T12:00:00Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(rec, "lock"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A stale recovery lock wedges every future transaction on the
+// repository — `pika apply` fails with scope-lease-required until it is
+// gone — and the lock is deliberately never stolen, so nothing clears it
+// on its own. That is a hard failure, not a review signal, and doctor is
+// where an operator goes to find out why a command will not run. The
+// remediation has to name the command that fixes it, or the diagnosis
+// leaves them exactly where they were.
+func TestDoctorReportsAStaleTransactionLock(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	writeRecoveryLock(t, dir, 99999999)
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep := Run(root)
+	f := findingByID(t, rep, "recovery")
+	if f.Severity != SeverityError {
+		t.Errorf("recovery severity = %q, want %q: the repository cannot transact", f.Severity, SeverityError)
+	}
+	if !strings.Contains(f.Detail, "99999999") {
+		t.Errorf("recovery detail = %q, want it to name the holder", f.Detail)
+	}
+	if !strings.Contains(f.Remediation, "pika recover") {
+		t.Errorf("recovery remediation = %q, want it to name \"pika recover\"", f.Remediation)
+	}
+	if rep.OK {
+		t.Error("OK = true with a stale lock: the next `pika apply` fails")
+	}
+}
+
+// A transaction that is actually running is not damage. Reporting it as
+// an error would make doctor fail during a normal `pika apply` and teach
+// an operator that its verdict means nothing.
+func TestDoctorReportsALiveTransactionWithoutFailing(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	writeRecoveryLock(t, dir, os.Getpid())
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep := Run(root)
+	f := findingByID(t, rep, "recovery")
+	if f.Severity != SeverityWarn {
+		t.Errorf("recovery severity = %q, want %q: a running transaction is not damage", f.Severity, SeverityWarn)
+	}
+	if rep.OK != true {
+		t.Error("OK = false while a transaction is merely in progress")
+	}
+}
+
+// The common case has to be quiet, and it has to be present: a finding
+// that only appears when something is wrong is one an operator cannot
+// tell apart from a check that was never run.
+func TestDoctorReportsNoInterruptedTransaction(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if f := findingByID(t, Run(root), "recovery"); f.Severity != SeverityOK {
+		t.Errorf("recovery = %+v, want an ok finding on a repository with nothing pending", f)
 	}
 }

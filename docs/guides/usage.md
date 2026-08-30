@@ -173,6 +173,7 @@ ok    lock           pinned digests match the embedded registry
 ok    exceptions     exceptions record loads
 warn  envelope       no capability envelope at /home/you/pika/.project/state/envelope.yaml
                      → run "pika authorize --scope project"; without it every mutating MCP tool is denied
+ok    recovery       no interrupted transaction
 ok    gate.format    gofmt -l .
 ok    gate.lint      go vet ./...
 ok    gate.typecheck go build -o /dev/null ./...
@@ -446,6 +447,70 @@ If Git proves the work already landed — the branch points at the commit the re
 
 ---
 
+## 15. Unwedge a crashed transaction (`pika recover`)
+
+### The situation this exists for
+
+`pika apply` runs under a crash-safe journal and an exclusive lock at `.project/state/recovery/lock`. If the process is killed part-way — a lost SSH session, an OOM kill, a CI runner that vanished — three things are true at once:
+
+1. The tree may be half-mutated: some planned operations ran, the rest did not.
+2. The journal and per-op backups needed to undo them are on disk.
+3. **The lock is still held, and it is never stolen — not even when the process that took it is gone.**
+
+That third point is deliberate: stealing a lock from a process that turns out to still be running is how two transactions come to apply plans to one tree. But it means every later transaction fails, forever, with:
+
+```
+txn: scope lease required: recovery lock at .../recovery/lock held by pid 41234 since ...
+```
+
+`pika recover` is the way out.
+
+### Look first
+
+```sh
+pika recover
+```
+
+The default changes nothing. It reports where recovery state lives, who holds the lock, **whether that process is still running**, and every journaled operation with what a rollback would do to it:
+
+```
+root      /home/you/my-service (contract)
+recovery  /home/you/my-service/.project/state/recovery
+
+lock      tx 17e4c1a09b3f0000-3f9c21ab held by pid 41234 since 2026-08-30T12:00:00Z
+          the holder process is not running, so the lock is stale
+
+transaction 17e4c1a09b3f0000-3f9c21ab
+  undo  write  .project/contract.yaml
+  undo  create .project/profiles.lock
+  skip  delete review/adoption-review.md  (the mutation never ran)
+
+nothing has been changed. Re-run with --apply to roll this back and release the lock.
+```
+
+`undo` and `skip` are not guesses. Each entry is classified against the file on disk and its preserved backup, by the same code the rollback itself uses — so the report is the plan, not a second opinion about it.
+
+### Then act
+
+```sh
+pika recover --apply
+```
+
+This rolls every journaled operation back in reverse order, restores each file byte-for-byte from its backup, retires the journal and the backups, and releases the lock. The repository is left exactly as it was before the transaction started, and new transactions can begin.
+
+### What it refuses
+
+| State | What `pika recover` does |
+|---|---|
+| the holder process is still running | **refuses**, exit 2, naming the pid — wait for it, do not roll its work out from under it |
+| the lock names no holder at all | **refuses**, exit 2 — an empty lock cannot be proved stale, so it says so and names the file to remove once you are certain |
+| a journal entry does not match the disk | stops that journal with an error naming the entry; something outside pika edited those files between the crash and now |
+| nothing pending | exits 0 saying so; a repository with no interrupted transaction is a normal state |
+
+`pika doctor` reports the same state as a `recovery` finding and points here, so the situation is discoverable without already knowing this command exists.
+
+---
+
 ## Typical loops
 
 **New project, end to end:**
@@ -494,8 +559,9 @@ git log -1 chore/pika-improve     # the verified commit, still local and unpubli
 **Something is off:**
 
 ```sh
-pika doctor                       # root, contract, lock, exceptions, envelope, gates, git
+pika doctor                       # root, contract, lock, exceptions, envelope, recovery, gates, git
 pika explain <rule-or-gate-or-code>
+pika recover                      # when doctor reports a transaction that never finished
 ```
 
 ---

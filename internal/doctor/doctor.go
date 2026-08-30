@@ -18,6 +18,7 @@ import (
 	"github.com/Choaterboater/pika/internal/envelope"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/repopath"
+	"github.com/Choaterboater/pika/internal/txn"
 	"github.com/Choaterboater/pika/internal/verify"
 	"github.com/Choaterboater/pika/internal/version"
 )
@@ -69,6 +70,7 @@ func Run(root *repopath.Root) *Report {
 	resolved := checkProfiles(rep, root, c)
 	checkExceptions(rep, root)
 	checkEnvelope(rep, root)
+	checkRecovery(rep, root)
 	checkGates(rep, c, resolved)
 	checkGit(rep)
 	return rep
@@ -155,6 +157,55 @@ func checkEnvelope(rep *Report, root *repopath.Root) {
 		return
 	}
 	rep.add("envelope", SeverityOK, "grants: "+grantedKinds(env), "")
+}
+
+// checkRecovery reports an unfinished transaction, which is the one
+// repository state that stops `pika apply` working and clears itself
+// under no circumstances.
+//
+// The lock is taken with O_EXCL and deliberately never stolen, so a
+// crashed apply leaves it behind and every later transaction fails with
+// scope-lease-required until it is removed. Before `pika recover` there
+// was no command that would remove it and nothing that named the file,
+// which made a diagnosis an operator could not act on — so the
+// remediation here names the command, not the symptom.
+//
+// Severity follows what the state actually costs. A stale lock or an
+// orphaned journal is an error: the repository cannot transact, and a
+// tree left half-mutated by an interrupted apply is worse than that. A
+// transaction that is genuinely running is only a warning — reporting a
+// normal `pika apply` as damage would teach an operator that doctor's
+// verdict means nothing.
+func checkRecovery(rep *Report, root *repopath.Root) {
+	pending, err := txn.Inspect(root.Dir())
+	if err != nil {
+		rep.add("recovery", SeverityError, err.Error(),
+			"inspect .project/state/recovery; \"pika recover\" reports what it finds there")
+		return
+	}
+	if pending.Clean() {
+		rep.add("recovery", SeverityOK, "no interrupted transaction", "")
+		return
+	}
+	const remediation = "run \"pika recover\" to see what would be rolled back, then \"pika recover --apply\""
+	switch l := pending.Lock; {
+	case l != nil && l.Alive:
+		rep.add("recovery", SeverityWarn,
+			fmt.Sprintf("transaction %s is in progress: lock held by running pid %d since %s", l.TxID, l.PID, l.StartedAt),
+			"wait for it to finish; \"pika recover\" refuses to touch a live transaction")
+	case l != nil && l.Unreadable != "":
+		rep.add("recovery", SeverityError,
+			fmt.Sprintf("the recovery lock at %s names no holder (%s); every transaction on this repository will fail until it is gone", l.Path, l.Unreadable),
+			"confirm no transaction is running, then remove "+l.Path)
+	case l != nil:
+		rep.add("recovery", SeverityError,
+			fmt.Sprintf("stale recovery lock: transaction %s was held by pid %d since %s and that process is gone; every transaction on this repository will fail until it is released", l.TxID, l.PID, l.StartedAt),
+			remediation)
+	default:
+		rep.add("recovery", SeverityError,
+			fmt.Sprintf("%d uncommitted transaction journal(s) under %s with no lock; an interrupted apply may have left this tree half-mutated", len(pending.Txs), pending.Dir),
+			remediation)
+	}
 }
 
 func grantedKinds(env *envelope.Envelope) string {
