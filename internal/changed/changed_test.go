@@ -93,20 +93,6 @@ func TestWorkingTreeChangesAreDetected(t *testing.T) {
 	}
 }
 
-func TestSelectsPackageByPrefix(t *testing.T) {
-	set := &Set{Paths: []string{"apps/api/main.go"}}
-	if !set.SelectsPackage("apps/api") {
-		t.Error("SelectsPackage(apps/api) = false")
-	}
-	if set.SelectsPackage("apps/web") {
-		t.Error("SelectsPackage(apps/web) = true, want false")
-	}
-	// Prefix matching must be path-segment aware, not string-prefix.
-	if set.SelectsPackage("apps/ap") {
-		t.Error("SelectsPackage(apps/ap) matched a partial segment")
-	}
-}
-
 func TestEmptySetIsNotDegraded(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
@@ -126,54 +112,16 @@ func TestEmptySetIsNotDegraded(t *testing.T) {
 	}
 }
 
-// A degraded set must widen, never narrow: it selects every package and is
-// never reported as empty, so no caller can mistake "unknown" for "nothing
-// changed" and skip the gates.
-func TestDegradedSetSelectsEverything(t *testing.T) {
+// A degraded set must widen, never narrow: it is never reported as empty,
+// so no caller can mistake "unknown" for "nothing changed" and skip the
+// gates.
+func TestDegradedSetIsNeverEmpty(t *testing.T) {
 	set := degraded("git is not on PATH")
-	if !set.SelectsPackage("apps/api") {
-		t.Error("degraded set did not select apps/api")
-	}
-	if !set.SelectsPackage(".") {
-		t.Error("degraded set did not select the repository root package")
-	}
 	if set.Empty() {
 		t.Error("Empty() = true for a degraded set; callers would skip gates")
 	}
-}
-
-// The repository root as a package root is selected by any change at all,
-// and by nothing when the tree is clean.
-func TestSelectsRootPackage(t *testing.T) {
-	set := &Set{Paths: []string{"main.go"}}
-	for _, root := range []string{".", "", "./"} {
-		if !set.SelectsPackage(root) {
-			t.Errorf("SelectsPackage(%q) = false, want true", root)
-		}
-	}
-	clean := &Set{}
-	if clean.SelectsPackage(".") {
-		t.Error("clean tree selected the root package")
-	}
-}
-
-// Windows-style package roots come out of contracts edited on Windows;
-// they must match the slash-separated paths git reports.
-func TestSelectsPackageNormalizesSeparators(t *testing.T) {
-	set := &Set{Paths: []string{"apps/api/main.go"}}
-	if !set.SelectsPackage(`apps\api`) {
-		t.Error(`SelectsPackage("apps\\api") = false`)
-	}
-	if !set.SelectsPackage("apps/api/") {
-		t.Error(`SelectsPackage("apps/api/") = false`)
-	}
-}
-
-// A file that IS the package root (a single-file package) selects it.
-func TestSelectsPackageOnExactPath(t *testing.T) {
-	set := &Set{Paths: []string{"tools/gen.go"}}
-	if !set.SelectsPackage("tools/gen.go") {
-		t.Error("exact path did not select its own package root")
+	if set.Reason == "" {
+		t.Error("a degraded set carries no reason; the caller cannot warn")
 	}
 }
 
@@ -208,10 +156,10 @@ func TestCommittedChangesSinceMergeBaseAreDetected(t *testing.T) {
 	if set.Degraded {
 		t.Fatalf("unexpected degradation: %s", set.Reason)
 	}
-	if !set.SelectsPackage("apps/web") {
+	if !contains(set.Paths, "apps/web/app.js") {
 		t.Fatalf("Paths = %v, want the committed apps/web change", set.Paths)
 	}
-	if set.SelectsPackage("apps/api") {
+	if contains(set.Paths, "apps/api/main.go") {
 		t.Errorf("Paths = %v, want apps/api untouched since the merge base", set.Paths)
 	}
 }
@@ -296,4 +244,13 @@ func trimNL(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
+}
+
+func contains(paths []string, want string) bool {
+	for _, p := range paths {
+		if p == want {
+			return true
+		}
+	}
+	return false
 }

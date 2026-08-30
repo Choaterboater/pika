@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"path"
 	"sort"
 	"strings"
 
@@ -29,28 +28,6 @@ type Set struct {
 // package gates on it. A degraded set is never empty in this sense — the
 // caller must run everything instead.
 func (s *Set) Empty() bool { return !s.Degraded && len(s.Paths) == 0 }
-
-// SelectsPackage reports whether any changed path lies within pkgRoot.
-// Matching is path-segment aware: "apps/ap" never matches "apps/api".
-// A degraded set selects every package, because the honest answer to
-// "did this package change?" is "unknown", and unknown must verify.
-func (s *Set) SelectsPackage(pkgRoot string) bool {
-	if s.Degraded {
-		return true
-	}
-	clean := path.Clean(strings.ReplaceAll(pkgRoot, "\\", "/"))
-	if clean == "." || clean == "" {
-		// The repository root is a package: anything at all selects it.
-		return len(s.Paths) > 0
-	}
-	prefix := clean + "/"
-	for _, p := range s.Paths {
-		if p == clean || strings.HasPrefix(p, prefix) {
-			return true
-		}
-	}
-	return false
-}
 
 // mergeBaseRefs are probed in order for something to diff against: the
 // branch's own upstream first, then origin's default branch, then the
