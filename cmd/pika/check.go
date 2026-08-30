@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 
+	"github.com/Choaterboater/pika/internal/changed"
 	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
@@ -28,7 +29,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	all := fs.Bool("all", false, "run every gate")
-	changed := fs.Bool("changed", false, "changed-scope verification (reserved; M1 runs all gates)")
+	changedFlag := fs.Bool("changed", false, "run gates for packages touched since the merge base")
 	ci := fs.Bool("ci", false, "CI mode: implies --all; no interactive prompts")
 	jsonOut := fs.Bool("json", false, "emit the JSON report on stdout")
 	contractPath := fs.String("contract", "", "path to the contract file (default <root>/.project/contract.yaml)")
@@ -41,7 +42,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	scopes := 0
-	for _, b := range []*bool{all, changed, ci} {
+	for _, b := range []*bool{all, changedFlag, ci} {
 		if *b {
 			scopes++
 		}
@@ -54,7 +55,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	switch {
 	case *ci:
 		scope = verify.CI
-	case *changed:
+	case *changedFlag:
 		scope = verify.Changed
 	}
 
@@ -108,6 +109,30 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "pika check:", err)
 		return 2
 	}
+
+	// Gate 1 always runs: it validates the contract itself, which no
+	// change set can put out of scope. Only the package gates narrow.
+	var scopeWarnings []string
+	if scope == verify.Changed {
+		set, err := changed.Files(root)
+		if err != nil {
+			fmt.Fprintln(stderr, "pika check:", err)
+			return 2
+		}
+		if set.Degraded {
+			scopeWarnings = append(scopeWarnings,
+				"--changed could not resolve a change set ("+set.Reason+"); running every gate")
+		} else if !scopeSelectsGates(set, c.Packages) {
+			for i := range ordered {
+				// A gate already skipped for a missing command keeps
+				// that reason: "no command discovered" and "nothing
+				// changed here" are different facts about the run.
+				if ordered[i].SkipReason == "" {
+					ordered[i].SkipReason = verify.ScopeSkipReason
+				}
+			}
+		}
+	}
 	gates = append(gates, ordered...)
 
 	rep, err := verify.Run(context.Background(), gates, scope, verify.WithDir(root.Dir()))
@@ -115,6 +140,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "pika check:", err)
 		return 2
 	}
+	rep.Warnings = append(rep.Warnings, scopeWarnings...)
 	rep.Warnings = append(rep.Warnings, gate1Warnings...)
 
 	if *jsonOut {
@@ -131,6 +157,35 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// scopeSelectsGates reports whether the change set puts the package gates
+// (rungs 2-4) in scope. The gates themselves are repository-wide commands,
+// so the question is coarse by construction: does anything the contract
+// calls a package have a changed file in it?
+//
+// Every uncertain answer is "yes". A degraded set selects everything
+// because its answer is unknown, and a contract that declares no packages
+// selects everything on any change at all, because there is no package map
+// to attribute the change to. Only two cases narrow: a genuinely clean
+// tree, and a change set that lands entirely outside every declared
+// package root.
+func scopeSelectsGates(set *changed.Set, pkgs map[string]contract.Package) bool {
+	if set.Degraded {
+		return true
+	}
+	if set.Empty() {
+		return false
+	}
+	if len(pkgs) == 0 {
+		return true
+	}
+	for _, p := range pkgs {
+		if set.SelectsPackage(p.Root) {
+			return true
+		}
+	}
+	return false
 }
 
 // printReport writes the human-readable check report.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,9 +73,9 @@ func writeFixture(t *testing.T, commands string, lintScript string) string {
 	return dir
 }
 
-// golden JSON contract: {gates:[{id,cmd,exit,durationMs,outputTail,status}],
-// summary:{pass,fail,skip},pass:boolean} plus baseline/regressions and
-// warnings for reserved scopes.
+// golden JSON contract: {gates:[{id,cmd,exit,durationMs,outputTail,status,
+// reason}],summary:{pass,fail,skip},pass:boolean} plus baseline,
+// regressions, and warnings.
 
 func TestCheckPassingFixtureGoldenJSON(t *testing.T) {
 	writeFixture(t, `  format: "true"
@@ -196,19 +197,187 @@ func TestCheckUsageAndConfigErrorsExit2(t *testing.T) {
 	}
 }
 
-func TestCheckChangedScopeWarnsInJSON(t *testing.T) {
-	writeFixture(t, `  test: "true"
-`, "")
-	var stdout, stderr bytes.Buffer
-	if code := runCheck([]string{"--json", "--changed"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr.String())
-	}
-	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
+// writeChangedFixture lays down a contract that declares one package at
+// apps/api, plus the profile lock, in a fresh temp directory, and changes
+// into it. The commands block is fixed: five trivially passing gates, so
+// every gate outcome in these tests is about scope, not about the gate.
+func writeChangedFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".project"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Warnings) == 0 {
-		t.Fatal("--changed must record a warning in the JSON report")
+	doc := `schema: 1
+project:
+  name: fixture
+  topology: single
+profiles: [core@1]
+packages:
+  api:
+    root: apps/api
+    profiles: [core@1]
+github:
+  merge: squash
+evidence:
+  publish: sanitized
+commands:
+  test: "true"
+`
+	if err := os.WriteFile(filepath.Join(dir, ".project", "contract.yaml"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := profiles.WriteLock(filepath.Join(dir, ".project", "profiles.lock"), []string{"core@1"}); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func gitFixtureRepo(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not on PATH")
+	}
+	gitRun(t, dir, "init", "-q")
+	gitRun(t, dir, "config", "user.email", "test@example.com")
+	gitRun(t, dir, "config", "user.name", "test")
+	gitRun(t, dir, "config", "commit.gpgsign", "false")
+}
+
+func runCheckJSON(t *testing.T, args ...string) (verify.Report, int, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := runCheck(args, strings.NewReader(""), &stdout, &stderr)
+	var rep verify.Report
+	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
+		t.Fatalf("stdout not a JSON report: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	return rep, code, stderr.String()
+}
+
+// Degradation must widen, never narrow. Outside a git work tree the change
+// set is unknowable, so every gate still runs and the report says why.
+func TestCheckChangedDegradesLoudlyAndRunsEveryGate(t *testing.T) {
+	writeChangedFixture(t)
+	rep, code, stderrOut := runCheckJSON(t, "--json", "--changed")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderrOut)
+	}
+	warned := false
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "--changed could not resolve a change set") {
+			warned = true
+		}
+		if strings.Contains(w, "reserved") {
+			t.Errorf("stale reserved warning: %q", w)
+		}
+	}
+	if !warned {
+		t.Fatalf("warnings = %v, want one naming the degradation", rep.Warnings)
+	}
+	for _, g := range rep.Gates {
+		if g.Reason == verify.ScopeSkipReason {
+			t.Fatalf("gate %s was narrowed away on a degraded change set", g.ID)
+		}
+	}
+}
+
+// A clean tree is a trustworthy "nothing changed": the package gates skip
+// with the scope reason while gate 1 — which validates the contract, not
+// the code — still runs.
+func TestCheckChangedCleanTreeSkipsPackageGatesButNotGateOne(t *testing.T) {
+	dir := writeChangedFixture(t)
+	gitFixtureRepo(t, dir)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-q", "-m", "init")
+
+	rep, code, stderrOut := runCheckJSON(t, "--json", "--changed")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderrOut)
+	}
+	if rep.Gates[0].ID != "contract" || rep.Gates[0].Status != verify.StatusPass {
+		t.Fatalf("gate 1 = %+v, want the contract gate to run", rep.Gates[0])
+	}
+	for _, g := range rep.Gates[1:] {
+		if g.Status != verify.StatusSkip {
+			t.Errorf("gate %s status = %q, want skip on a clean tree", g.ID, g.Status)
+		}
+	}
+	scoped := 0
+	for _, g := range rep.Gates[1:] {
+		if g.Reason == verify.ScopeSkipReason {
+			scoped++
+		}
+	}
+	if scoped == 0 {
+		t.Fatalf("no gate carried %q; gates = %+v", verify.ScopeSkipReason, rep.Gates)
+	}
+}
+
+// A change inside a declared package root puts the package gates back in
+// scope.
+func TestCheckChangedInsideDeclaredPackageRunsGates(t *testing.T) {
+	dir := writeChangedFixture(t)
+	gitFixtureRepo(t, dir)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-q", "-m", "init")
+	if err := os.MkdirAll(filepath.Join(dir, "apps", "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "apps", "api", "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, code, stderrOut := runCheckJSON(t, "--json", "--changed")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderrOut)
+	}
+	for _, g := range rep.Gates {
+		if g.Reason == verify.ScopeSkipReason {
+			t.Fatalf("gate %s skipped for scope though apps/api changed", g.ID)
+		}
+	}
+	if rep.Summary.Pass < 2 {
+		t.Fatalf("summary = %+v, want the contract and test gates to run", rep.Summary)
+	}
+}
+
+// A change that lands outside every declared package root narrows the
+// ladder — and says so with its own reason, never by reusing the discovery
+// or cascade reason.
+func TestCheckChangedOutsideDeclaredPackagesNarrowsWithItsOwnReason(t *testing.T) {
+	dir := writeChangedFixture(t)
+	gitFixtureRepo(t, dir)
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-q", "-m", "init")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("docs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, code, stderrOut := runCheckJSON(t, "--json", "--changed")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderrOut)
+	}
+	found := false
+	for _, g := range rep.Gates[1:] {
+		switch g.Reason {
+		case verify.ScopeSkipReason:
+			found = true
+		case "skipped: gate contract failed":
+			t.Errorf("gate %s reused the cascade reason for a scope skip", g.ID)
+		}
+	}
+	if !found {
+		t.Fatalf("gates = %+v, want a scope skip for a docs-only change", rep.Gates)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -27,6 +28,10 @@ const (
 	// outputTailBytes keeps the last 8 KiB of combined gate output
 	// (spec §14.1 bounded output summaries).
 	outputTailBytes = 8 * 1024
+
+	// unixDevNull is the null-device path as it appears in contract and
+	// pack commands, which are written Unix-first. See portableArgv.
+	unixDevNull = "/dev/null"
 )
 
 // runConfig carries the tunables injected through Run options; tests use
@@ -70,6 +75,15 @@ const (
 	StatusSkip = "skip"
 )
 
+// ScopeSkipReason records a gate skipped because no changed file lies in
+// any package that gate covers. It is deliberately distinct from the
+// discovery reason ("no command discovered for <id>") and the cascade
+// reason ("skipped: gate <id> failed"): a reader of the report must be
+// able to tell "this gate had nothing to check" from "this gate had no
+// command" and from "an earlier gate failed". Narrowed verification is
+// only trustworthy when it says so in its own words.
+const ScopeSkipReason = "no changed files in scope"
+
 // Gate is one verification rung: an external command (argv, run via exec
 // with no shell and no environment expansion) or an in-process Func.
 type Gate struct {
@@ -90,9 +104,11 @@ type Gate struct {
 // CheckSet is the ordered gate list for one Run.
 type CheckSet []Gate
 
-// Scope selects which gates a Run covers. M1 treats Changed as All with a
-// warning (the change-diff machinery lands in a later task); CI implies All
-// and forbids interactive prompts — check runs nothing interactive by
+// Scope selects which gates a Run covers. Changed narrows the ladder to
+// the packages a caller resolved as touched — the caller decides that and
+// hands Run the narrowed CheckSet, marking out-of-scope gates with
+// ScopeSkipReason; Run itself executes whatever it is given. CI implies
+// All and forbids interactive prompts — check runs nothing interactive by
 // construction (gates get no stdin).
 type Scope int
 
@@ -149,10 +165,6 @@ func Run(ctx context.Context, cs CheckSet, scope Scope, opts ...Option) (*Report
 	}
 
 	rep := &Report{Gates: make([]GateResult, 0, len(cs))}
-	if scope == Changed {
-		rep.Warnings = append(rep.Warnings,
-			"--changed is reserved; M1 runs all gates")
-	}
 	if scope == CI {
 		rep.Warnings = append(rep.Warnings,
 			"--ci implies --all; no interactive prompts are possible in check")
@@ -214,11 +226,13 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 		return GateResult{}, fmt.Errorf("verify: gate %q has neither cmd nor func", g.ID)
 	}
 
+	argv := portableArgv(g.Cmd)
+
 	ctx, cancel := context.WithTimeout(ctx, rc.gateTimeout)
 	defer cancel()
 
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, g.Cmd[0], g.Cmd[1:]...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// An unset dir leaves cmd.Dir empty, which is exec's own "inherit the
 	// process working directory" default.
 	cmd.Dir = rc.dir
@@ -236,7 +250,7 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 	output, err := cmd.CombinedOutput()
 	res := GateResult{
 		ID:         g.ID,
-		Cmd:        g.Cmd,
+		Cmd:        argv,
 		DurationMs: time.Since(start).Milliseconds(),
 		OutputTail: tail(string(output)),
 	}
@@ -260,6 +274,49 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// portableArgv rewrites an argument that is exactly "/dev/null" to
+// os.DevNull, so a gate command written against Unix still names the null
+// device on Windows ("NUL"). On Unix the two strings are equal and this is
+// the identity, allocating nothing.
+//
+// It exists for one concrete gate. The go@1 pack's typecheck command is
+// `go build -o /dev/null ./...`; the `-o /dev/null` keeps the gate from
+// linking a binary into the repository it is verifying. cmd/go decides
+// whether -o names the null sink with base.IsNull
+// (GOROOT/src/cmd/go/internal/base/path.go), which compares the value
+// against os.DevNull — "NUL" on Windows — so a literal "/dev/null" there
+// is an ordinary output path, and cmd/go then rejects it:
+// "go: cannot write multiple packages to non-directory /dev/null"
+// (GOROOT/src/cmd/go/internal/work/build.go). The gate would hard-fail on
+// every Windows checkout.
+//
+// Deliberately exact-match only. This is not general path translation:
+// gate argv goes to exec verbatim (spec §16), and rewriting anything
+// broader would make a gate command mean something different from what
+// the contract says.
+func portableArgv(cmd []string) []string { return substituteNullDevice(cmd, os.DevNull) }
+
+// substituteNullDevice is portableArgv with the platform's null device
+// injected, so the Windows rewrite is testable from any host.
+func substituteNullDevice(cmd []string, devNull string) []string {
+	if devNull == unixDevNull {
+		return cmd
+	}
+	// Copy on first hit only: the overwhelmingly common gate has no
+	// "/dev/null" argument at all and must not allocate.
+	argv := cmd
+	for i, arg := range cmd {
+		if arg != unixDevNull {
+			continue
+		}
+		if len(argv) == 0 || &argv[0] == &cmd[0] {
+			argv = append([]string(nil), cmd...)
+		}
+		argv[i] = devNull
+	}
+	return argv
 }
 
 func status(exit int) string {
