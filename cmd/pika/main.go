@@ -86,7 +86,7 @@ var commands = []command{
 	{
 		name:    "init",
 		summary: "create a contract and scaffold for a new repository",
-		usage:   "pika init [--profile <lang>]... [--name <name>] [--module <path>] [--force] [--json] [--root <dir>]",
+		usage:   "pika init [--profile <lang>]... [--name <name>] [--module <path>] [--force] [--reset-docs] [--json] [--root <dir>]",
 		run:     runInit,
 	},
 	{

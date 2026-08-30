@@ -5,15 +5,21 @@
 // record), the documentation spine, the core repository files (README,
 // AGENTS, CONTRIBUTING, GitHub CI and PR template), and — only for the
 // selected language — the stack-owned layout (spec §6.1). It never
-// deletes user files: --force rewrites the managed files in place, and
-// that is all. What it regenerates them from is the repository rather
-// than the command line — profiles, project name and Go module path are
-// read back from the existing contract and go.mod whenever the matching
-// flag is absent — and the exceptions record, whose entries carry
-// rationales a human wrote and a reviewer accepted, is seeded once and
-// never rewritten. The core pack's docs templates are served by
-// internal/profiles from the pack itself; the language stack templates
-// are embedded at build time under templates/.
+// deletes user files, and under --force it does not rewrite them either.
+// The scaffold is split by ownership: the contract, the profiles lock,
+// the GitHub PR template and the CI workflow are the kernel's, and a
+// regeneration restores them; the README, AGENTS.md, CONTRIBUTING.md,
+// the language scaffold and the rest are the operator's the moment they
+// exist, and are seeded once. --reset-docs puts the scaffold's own text
+// back on request. What --force regenerates from is the repository
+// rather than the command line — profiles, project name and Go module
+// path are read back from the existing contract and go.mod whenever the
+// matching flag is absent — and the exceptions record, whose entries
+// carry rationales a human wrote and a reviewer accepted, is seeded once
+// and never rewritten, not even by --reset-docs.
+// The core pack's docs templates are served by internal/profiles from
+// the pack itself; the language stack templates are embedded at build
+// time under templates/.
 package initcmd
 
 import (
@@ -63,10 +69,21 @@ type InitOptions struct {
 	// profiles.Resolve. Under --force an empty list is read back from the
 	// existing contract's selection.
 	Profiles []string
-	// Force rewrites the contract, lock, and managed files even when a
-	// contract already exists. User files outside .project are never
-	// deleted, and the exceptions record inside it is never reset.
+	// Force regenerates the kernel-owned files — the contract, the
+	// profiles lock, the GitHub PR template and the CI workflow — even
+	// when a contract already exists. Operator-owned files (README,
+	// AGENTS.md, CONTRIBUTING.md, the language scaffold) are written
+	// only where they are missing, so a repository that has been lived
+	// in keeps its own prose and its own entry point. User files
+	// outside .project are never deleted.
 	Force bool
+	// ResetDocs restores the scaffold's own text over the operator-owned
+	// files, which is what --force used to do unasked. It is reachable
+	// on request and never by default. It does not reach the exceptions
+	// record: an exception carries a rationale, an owner and a review
+	// condition a human wrote and a reviewer accepted, and regenerating
+	// docs is not a reason to discard evidence.
+	ResetDocs bool
 }
 
 // Manifest is what init created: every file it wrote, sorted by path,
@@ -80,9 +97,16 @@ type Manifest struct {
 
 // genFile is one file init writes, with its slash-separated path relative
 // to the scaffold root.
+//
+// kernel marks the files whose content the kernel alone determines — the
+// contract, the profiles lock, the GitHub PR template and the CI workflow
+// — and which a regeneration therefore rewrites unconditionally. Every
+// other scaffolded file is the operator's the moment it exists: it is
+// seeded once and, absent --reset-docs, never overwritten.
 type genFile struct {
-	path string
-	data []byte
+	path   string
+	data   []byte
+	kernel bool
 }
 
 // tmplData is the data every scaffold template renders with. PyName,
@@ -123,6 +147,10 @@ const lockRel = ".project/profiles.lock"
 // already declare a selection, a name and a module; taking those from
 // the command line alone turned a bare --force into a core-only contract
 // with no gates and a go.mod renamed after its directory.
+//
+// The returned manifest lists the files Run actually wrote, so a
+// regeneration that preserved an operator's README does not claim to
+// have created it.
 func Run(opts InitOptions) (*Manifest, error) {
 	dir := opts.Dir
 	if dir == "" {
@@ -177,24 +205,36 @@ func Run(opts InitOptions) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	files, err := buildFiles(lang, name, module, contractYAML, !hasExceptions(dir))
+	files, err := buildFiles(lang, name, module, contractYAML, !present(dir, checks.ExceptionsFile))
 	if err != nil {
 		return nil, err
 	}
 
+	written := make([]genFile, 0, len(files)+1)
 	for _, f := range files {
+		// Operator-owned files are scaffolding, not managed state: the
+		// moment one exists, the repository's copy is the authority.
+		// --force regenerates what the kernel owns and writes the rest
+		// only where it is missing, so a first-time init still lays down
+		// the whole tree while a regeneration leaves an operator's prose
+		// and entry point alone. --reset-docs asks for the scaffold's
+		// text back, and is the only way to get it.
+		if !f.kernel && !opts.ResetDocs && present(dir, f.path) {
+			continue
+		}
 		if err := writeFile(dir, f.path, f.data); err != nil {
 			return nil, err
 		}
+		written = append(written, f)
 	}
 	// The lock is written through profiles.WriteLock so lock and contract
 	// pin the same packs and digests.
 	if err := profiles.WriteLock(filepath.Join(dir, filepath.FromSlash(lockRel)), selection); err != nil {
 		return nil, fmt.Errorf("pika init: %w", err)
 	}
-	files = append(files, genFile{path: lockRel})
+	written = append(written, genFile{path: lockRel, kernel: true})
 
-	return &Manifest{Files: filePaths(files), Commands: commands}, nil
+	return &Manifest{Files: filePaths(written), Commands: commands}, nil
 }
 
 // existingContract returns the contract already in place at path, or nil
@@ -242,14 +282,17 @@ func goModulePath(dir string) string {
 	return ""
 }
 
-// hasExceptions reports whether the repository already carries an
-// exceptions record. One that exists is never rewritten: its entries are
+// present reports whether the scaffold-relative path rel already exists
+// under dir. It is what decides whether a file init would seed is already
+// the repository's own: the exceptions record, whose entries are
 // rationales, owners and review conditions a human wrote and a reviewer
-// accepted, so resetting the file to "{}" destroys evidence rather than
-// refreshing a managed artifact. A stat that fails for any other reason
-// counts as present — the safe answer is to leave the file alone.
-func hasExceptions(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, filepath.FromSlash(checks.ExceptionsFile)))
+// accepted, and every operator-owned scaffold file.
+//
+// A stat that fails for any reason other than absence counts as present.
+// The safe answer is always to leave the file alone: an unreadable file
+// is still somebody's.
+func present(dir, rel string) bool {
+	_, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
 	return !errors.Is(err, fs.ErrNotExist)
 }
 
@@ -466,7 +509,7 @@ func buildFiles(lang, name, module string, contractYAML []byte, seedExceptions b
 	}
 
 	files := []genFile{
-		{path: contractRel, data: contractYAML},
+		{path: contractRel, data: contractYAML, kernel: true},
 		{path: ".gitignore", data: []byte(gitignore(lang))},
 	}
 	if seedExceptions {
@@ -480,7 +523,7 @@ func buildFiles(lang, name, module string, contractYAML []byte, seedExceptions b
 		return nil, err
 	}
 	for _, target := range coreTemplateTargets {
-		files = append(files, genFile{path: target.path, data: core[target.path]})
+		files = append(files, genFile{path: target.path, data: core[target.path], kernel: target.kernel})
 	}
 	files = append(files, stackFiles(lang, data)...)
 
@@ -553,17 +596,24 @@ func stackFiles(lang string, data tmplData) []genFile {
 // init` (which renders everything) and `pika apply` (which renders only
 // the files a repository is missing), so both commands produce
 // byte-identical core files from one rendering implementation.
+//
+// kernel splits the table by ownership. The PR template and the CI
+// workflow encode how the kernel wants to be run, so a regeneration
+// restores them; README, AGENTS.md and CONTRIBUTING.md are a starting
+// point the repository is expected to outgrow, and overwriting them is
+// how `pika init --force` used to destroy an operator's own words.
 type coreTarget struct {
-	tmpl string
-	path string
+	tmpl   string
+	path   string
+	kernel bool
 }
 
 var coreTemplateTargets = []coreTarget{
-	{"README.md.tmpl", "README.md"},
-	{"AGENTS.md.tmpl", "AGENTS.md"},
-	{"CONTRIBUTING.md.tmpl", "CONTRIBUTING.md"},
-	{"pull_request_template.md.tmpl", ".github/pull_request_template.md"},
-	{"ci.yml.tmpl", ".github/workflows/ci.yml"},
+	{tmpl: "README.md.tmpl", path: "README.md"},
+	{tmpl: "AGENTS.md.tmpl", path: "AGENTS.md"},
+	{tmpl: "CONTRIBUTING.md.tmpl", path: "CONTRIBUTING.md"},
+	{tmpl: "pull_request_template.md.tmpl", path: ".github/pull_request_template.md", kernel: true},
+	{tmpl: "ci.yml.tmpl", path: ".github/workflows/ci.yml", kernel: true},
 }
 
 // CoreFiles renders the core pack's repository files — README, AGENTS,

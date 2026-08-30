@@ -218,6 +218,130 @@ func TestForceRewritesAndPreservesUserFiles(t *testing.T) {
 	}
 }
 
+// operatorOwnedEdits are the managed files an operator is expected to
+// rewrite once the scaffold has served its purpose: the docs spine's
+// prose and the language scaffold's entry point. Each is seeded with
+// content no template could produce, so a survivor is unambiguous.
+var operatorOwnedEdits = map[string]string{
+	"README.md":             "# go-single\n\nOPERATOR PROSE: this README was rewritten by a human.\n",
+	"AGENTS.md":             "# Agents\n\nOPERATOR PROSE: house rules for agents.\n",
+	"CONTRIBUTING.md":       "# Contributing\n\nOPERATOR PROSE: how we actually work.\n",
+	"cmd/go-single/main.go": "package main\n\n// OPERATOR CODE: the real entry point.\nfunc main() {}\n",
+}
+
+// scaffoldGo inits a go scaffold into a fresh directory named
+// "go-single" (dir-name-derived content matters) and returns its path.
+func scaffoldGo(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "go-single")
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}}); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	return dir
+}
+
+// overwrite replaces the file at rel under dir with content.
+func overwrite(t *testing.T, dir, rel, content string) {
+	t.Helper()
+	p := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// readRel reads the file at rel under dir, failing the test if it is gone.
+func readRel(t *testing.T, dir, rel string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	return string(data)
+}
+
+// --force is the documented remedy for a rotated pack digest, so it runs
+// against repositories that have been lived in. What it regenerates must
+// therefore be what the kernel owns: a README, AGENTS.md, CONTRIBUTING.md
+// or entry point the operator has written is theirs, and restoring the
+// scaffold's placeholder text over it destroys work that no other copy of
+// the file can be recovered from.
+func TestForcePreservesOperatorOwnedFiles(t *testing.T) {
+	dir := scaffoldGo(t)
+	for rel, content := range operatorOwnedEdits {
+		overwrite(t, dir, rel, content)
+	}
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Force: true}); err != nil {
+		t.Fatalf("force init: %v", err)
+	}
+	for rel, want := range operatorOwnedEdits {
+		if got := readRel(t, dir, rel); got != want {
+			t.Errorf("--force rewrote operator-owned %s:\n got: %q\nwant: %q", rel, got, want)
+		}
+	}
+}
+
+// Nothing becomes impossible, only non-default: --reset-docs asks for the
+// scaffold's own text back and gets it byte for byte.
+func TestResetDocsRestoresTemplates(t *testing.T) {
+	dir := scaffoldGo(t)
+	pristine := map[string]string{}
+	for rel, edited := range operatorOwnedEdits {
+		pristine[rel] = readRel(t, dir, rel)
+		overwrite(t, dir, rel, edited)
+	}
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Force: true, ResetDocs: true}); err != nil {
+		t.Fatalf("force init with --reset-docs: %v", err)
+	}
+	for rel, want := range pristine {
+		if got := readRel(t, dir, rel); got != want {
+			t.Errorf("--reset-docs did not restore %s:\n got: %q\nwant: %q", rel, got, want)
+		}
+	}
+	// An exception carries a rationale, an owner and a review condition a
+	// human wrote and a reviewer accepted. Regenerating docs is not a
+	// reason to discard evidence, so --reset-docs does not reach it.
+	const recorded = "naming/kebab-case:\n  reason: vendored\n"
+	overwrite(t, dir, checks.ExceptionsFile, recorded)
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Force: true, ResetDocs: true}); err != nil {
+		t.Fatalf("second force init with --reset-docs: %v", err)
+	}
+	if got := readRel(t, dir, checks.ExceptionsFile); got != recorded {
+		t.Errorf("--reset-docs reset %s: got %q, want %q", checks.ExceptionsFile, got, recorded)
+	}
+}
+
+// The other half of the split: --force still exists to repair what the
+// kernel owns. A stale CI workflow, a stale PR template and a stale lock
+// are exactly what an operator runs it for.
+func TestForceStillRegeneratesKernelOwnedFiles(t *testing.T) {
+	dir := scaffoldGo(t)
+	kernelOwned := []string{
+		".project/profiles.lock",
+		".github/pull_request_template.md",
+		".github/workflows/ci.yml",
+	}
+	pristine := map[string]string{}
+	for _, rel := range kernelOwned {
+		pristine[rel] = readRel(t, dir, rel)
+		overwrite(t, dir, rel, "stale\n")
+	}
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Force: true}); err != nil {
+		t.Fatalf("force init: %v", err)
+	}
+	for _, rel := range kernelOwned {
+		if got := readRel(t, dir, rel); got != pristine[rel] {
+			t.Errorf("--force did not regenerate kernel-owned %s: got %q", rel, got)
+		}
+	}
+	// The contract is kernel-owned too, and it must still load.
+	if _, err := contract.Load(filepath.Join(dir, ".project", "contract.yaml")); err != nil {
+		t.Fatalf("contract after force does not load: %v", err)
+	}
+}
+
 // The manifest is init's answer to "what did you just create". It is
 // returned as data — the JSON encoding lives in the command layer — and
 // it must be sorted, complete, and true: every entry exists on disk and
@@ -727,7 +851,11 @@ func TestExplicitFlagsWinOverReadBack(t *testing.T) {
 		t.Errorf("profiles = %v, want the rust pack from --profile and no go pack", c.Profiles)
 	}
 	// --module wins over the module recovered from the go.mod the seed
-	// scaffold left behind.
+	// scaffold left behind. go.mod is part of the language scaffold and
+	// therefore operator-owned — a repository's go.mod carries its whole
+	// dependency graph, and regenerating it from a two-line template
+	// would delete every require directive — so bare --force preserves
+	// it and --reset-docs is what asks for the scaffolded one back.
 	goMod, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		t.Fatal(err)
@@ -737,6 +865,15 @@ func TestExplicitFlagsWinOverReadBack(t *testing.T) {
 	}
 	if _, err := Run(InitOptions{Dir: dir, Force: true, Profiles: []string{"go"}, Module: "example.com/renamed"}); err != nil {
 		t.Fatalf("force init with --module: %v", err)
+	}
+	if goMod, err = os.ReadFile(filepath.Join(dir, "go.mod")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(goMod), "module go-single") {
+		t.Errorf("--force rewrote the operator's go.mod: %q", goMod)
+	}
+	if _, err := Run(InitOptions{Dir: dir, Force: true, ResetDocs: true, Profiles: []string{"go"}, Module: "example.com/renamed"}); err != nil {
+		t.Fatalf("force init with --module --reset-docs: %v", err)
 	}
 	goMod, err = os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
