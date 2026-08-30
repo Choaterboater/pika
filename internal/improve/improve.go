@@ -59,6 +59,13 @@ var (
 // when an agent force-adds them.
 const privateStateDir = ".project/state"
 
+// deliverMessage is the subject every commit a run delivers carries. The
+// lifecycle writes it and the resume reconciliation reads it back, so
+// naming it once is what keeps the two from drifting into a
+// reconciliation that has quietly stopped recognising the commits this
+// package actually makes.
+const deliverMessage = "chore: improve verified findings"
+
 // CheckFunc runs Pika's deterministic ladder and returns its full report.
 // The command layer supplies the same in-process check engine used by
 // `pika check`; tests provide real, controlled reports.
@@ -211,10 +218,12 @@ const resumedNote = "resumed"
 // distinguish those two worlds, so Resume never decides from them alone.
 //
 // Git is the ground truth and the record only narrows the search. The
-// decisive case is the deliver phase: if the run's branch points at the
-// commit the record names, Git has already proved the work landed and the
-// only thing missing is the terminal write, so Resume writes it and
-// stops. Re-running the lifecycle there would branch again and redo work
+// decisive question is whether the run's work is already committed, and
+// deliveredCommit puts it to Git rather than to the phase stamp — which
+// is written after the commit has already moved the branch, and so is
+// exactly the thing a crash can lose. Where Git proves the work landed,
+// the only thing missing is the record's own catching up, so Resume
+// writes that and stops. Re-running the lifecycle there would redo work
 // the repository already contains.
 //
 // Everything else that is not a clean continuation is a refusal with a
@@ -271,14 +280,30 @@ func Resume(ctx context.Context, root, workID string, cfg Config) (Result, error
 				ErrBranchGone, workID, rec.Branch)
 		}
 		// The deliver reconciliation, and the reason Resume asks Git
-		// anything at all. A recorded deliver phase whose branch holds
-		// the recorded commit is proof the work landed: the only thing
-		// that failed was the terminal write, so it is the only thing
-		// redone. This runs before the base-commit guard below because a
-		// delivered run has by definition moved past its base commit —
-		// refusing it there would refuse the one case Git has settled.
-		if rec.Phase == workrec.PhaseDeliver && rec.Commit != "" && branchHead == rec.Commit {
-			return settle(ctx, repo, handle, recordResult(rec), nil, true)
+		// anything at all. Git decides whether this run's work already
+		// landed; the record only says where to look. This runs before
+		// the base-commit guard below because a delivered run has by
+		// definition moved past its base commit — refusing it there
+		// would refuse the one case Git has settled.
+		delivered, err := deliveredCommit(ctx, root, rec, branchHead)
+		if err != nil {
+			return Result{}, err
+		}
+		if delivered != "" {
+			// The record catches up to what Git proved. A run
+			// reconciled at the deliver phase already names this commit
+			// and its history is complete; a run reconciled inside the
+			// deliver window never wrote either, so the stamp it lost is
+			// written now — marked resumed, like every stamp a resumed
+			// run makes.
+			if rec.Phase != workrec.PhaseDeliver {
+				if err := savePhase(handle, workrec.PhaseDeliver, resumedNote, func(rec *workrec.Record) {
+					rec.Commit = delivered
+				}); err != nil {
+					return Result{}, err
+				}
+			}
+			return settle(ctx, repo, handle, recordResult(handle.Record()), nil, true)
 		}
 	}
 
@@ -469,7 +494,7 @@ func lifecycle(ctx context.Context, cfg Config, kind string, handle *workrec.Han
 	if _, err := runGit(ctx, cfg.Root, addArgs...); err != nil {
 		return result, err
 	}
-	if _, err := runGit(ctx, cfg.Root, "commit", "-m", "chore: improve verified findings"); err != nil {
+	if _, err := runGit(ctx, cfg.Root, "commit", "-m", deliverMessage); err != nil {
 		return result, err
 	}
 	commit, err := runGit(ctx, cfg.Root, "rev-parse", "HEAD")
@@ -571,6 +596,70 @@ func recordResult(rec workrec.Record) Result {
 		ChecksBefore: rec.Baseline,
 		ChecksAfter:  rec.Recheck,
 	}
+}
+
+// deliveredCommit asks Git whether this run's work is already in the
+// repository, and answers with the commit that carries it. An empty
+// commit means Git proves nothing, and the caller falls through to the
+// base-commit guard — where an operator who really did move the tree
+// must still land.
+//
+// The record cannot answer this, and not only at the deliver phase. The
+// deliver stamp is written *after* `git commit` has already moved the
+// branch, so a crash in between leaves a durable record still reading
+// `recheck` while the run's work is permanently in the repository. That
+// is the likeliest interruption there is: nothing switches away from the
+// run's branch between the handoff and the deliver, so the operator who
+// re-runs `pika resume` is standing on the run's own completed commit.
+// Both `deliver` and `recheck` are therefore worlds where the work may
+// already have landed, and only Git can say which one this is.
+//
+// Each phase offers a different proof:
+//
+//   - At `deliver` the record names the commit, so the branch holding
+//     that commit is the whole proof.
+//   - At `recheck` the record names nothing: `Commit` is written by the
+//     very save that stamps the deliver phase, so inside this window it
+//     is necessarily empty, and `branchHead == rec.Commit` cannot be the
+//     test. What identifies the commit instead is its shape, which the
+//     lifecycle fixes completely: a run commits exactly once, onto a
+//     branch it created at its own base commit, under one fixed subject.
+//     A branch head whose single parent is the record's base commit and
+//     whose subject is that message is a commit this run's own lifecycle
+//     produced — an operator's own commit is on neither that parent nor
+//     that subject, and a branch still sitting at the base commit has no
+//     commit to recognise at all.
+func deliveredCommit(ctx context.Context, root string, rec workrec.Record, branchHead string) (string, error) {
+	switch rec.Phase {
+	case workrec.PhaseDeliver:
+		if rec.Commit != "" && branchHead == rec.Commit {
+			return rec.Commit, nil
+		}
+	case workrec.PhaseRecheck:
+		if rec.BaseCommit == "" || branchHead == "" || branchHead == rec.BaseCommit {
+			return "", nil
+		}
+		parents, subject, err := commitShape(ctx, root, branchHead)
+		if err != nil {
+			return "", err
+		}
+		if len(parents) == 1 && parents[0] == rec.BaseCommit && subject == deliverMessage {
+			return branchHead, nil
+		}
+	}
+	return "", nil
+}
+
+// commitShape reads the two facts that identify a run's own delivery: the
+// commit's parents and its subject. Both come from one Git call so they
+// describe the same object even if the repository moves underneath.
+func commitShape(ctx context.Context, root, commit string) ([]string, string, error) {
+	shown, err := runGit(ctx, root, "show", "--no-patch", "--format=%P%n%s", commit)
+	if err != nil {
+		return nil, "", err
+	}
+	parents, subject, _ := strings.Cut(strings.TrimRight(shown, "\n"), "\n")
+	return strings.Fields(parents), subject, nil
 }
 
 // enterBranch puts a resumed run on its branch: it switches to the branch

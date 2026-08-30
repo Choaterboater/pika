@@ -714,6 +714,147 @@ func TestResumeTreatsADeliverGitDisprovesAsACrash(t *testing.T) {
 	}
 }
 
+// The window no phase stamp can cover. `git commit` moves the branch
+// first and the deliver phase is saved second, so a crash in between
+// leaves a durable record still reading `recheck` while the run's work is
+// already permanently in the repository. It is also the likeliest
+// interruption there is: nothing switches away from the run's branch
+// between the handoff and the deliver, so the operator who sees the crash
+// and immediately re-runs `pika resume` is standing on the run's own
+// completed commit.
+//
+// The record cannot name that commit — `Commit` is written by the very
+// save that stamps the deliver phase, so here it is empty, and
+// `branch == Record.Commit` is not a test that can fire. Git can still
+// identify it: one commit, sole parent the run's base, carrying the
+// lifecycle's own subject. Going by the stamp instead sends the run into
+// the base-commit guard, which reports the run's own verified work as a
+// repository that moved underneath it.
+//
+// Git here is not staged: a real run makes the real commit, and only the
+// record is rewound to the bytes on disk one instant before the deliver
+// save.
+func TestResumeReconcilesACommitTheDeliverStampNeverRecorded(t *testing.T) {
+	const branch = "chore/pika-improve"
+	root := fixtureRepository(t)
+	base := gitOutput(t, root, "rev-parse", "HEAD")
+	checks := []*verify.Report{failingBaseline(), passingLadder()}
+	first, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: branch,
+		Check: func() (*verify.Report, error) {
+			report := checks[0]
+			checks = checks[1:]
+			return report, nil
+		},
+		Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitOutput(t, root, "rev-parse", first.Commit+"^"); got != base {
+		t.Fatalf("the run's commit sits on %s, want it one commit ahead of the base %s", got, base)
+	}
+
+	// Rewind the record to the instant before the deliver save and leave
+	// Git exactly as the lifecycle left it. The deliver stamp, the
+	// commit, the outcome and the receipt are all written after
+	// `git commit` returned, so a crash in this window has none of them.
+	handle, err := workrec.Open(repoRoot(t, root), first.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashed := handle.Record()
+	crashed.Phase = workrec.PhaseRecheck
+	crashed.Phases = phaseHistory(workrec.PhaseRecheck)
+	crashed.Commit = ""
+	crashed.Outcome = ""
+	if err := handle.Save(crashed); err != nil {
+		t.Fatal(err)
+	}
+	receipt := filepath.Join(root, ".project", "evidence", first.WorkID+".json")
+	if err := os.Remove(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Resume(context.Background(), root, first.WorkID, Config{
+		Branch: branch,
+		Check:  refusingCheck(t, "Git already proves this run's work landed"),
+		Runner: refusingRunner{t: t, why: "Git already proves this run's work landed"},
+	})
+	if err != nil {
+		t.Fatalf("Resume = %v, want the run's own commit recognised as delivered", err)
+	}
+	if result.WorkID != first.WorkID || result.Branch != branch || result.Commit != first.Commit {
+		t.Fatalf("result = %+v, want the delivered commit %s", result, first.Commit)
+	}
+	if got := gitOutput(t, root, "rev-parse", branch); got != first.Commit {
+		t.Fatalf("%s = %s, want the run's commit %s untouched", branch, got, first.Commit)
+	}
+	if got := gitOutput(t, root, "rev-list", "--count", branch); got != "2" {
+		t.Fatalf("%s holds %s commits, want 2: resume must not commit again", branch, got)
+	}
+	if got := gitOutput(t, root, "branch", "--format=%(refname:short)"); got != branch+"\nmain" {
+		t.Fatalf("branches = %q, want no second branch", got)
+	}
+	saved := runRecord(t, root, first.WorkID)
+	if saved.Outcome != workrec.OutcomeComplete || saved.Commit != first.Commit {
+		t.Fatalf("record = %+v, want a complete run at %s", saved, first.Commit)
+	}
+	if got := strings.Join(phaseNames(saved), ","); got != "baseline,handoff,recheck,deliver" {
+		t.Fatalf("phases = %q, want the deliver stamp the crash lost written now", got)
+	}
+	if last := saved.Phases[len(saved.Phases)-1]; last.Note != "resumed" {
+		t.Fatalf("last phase = %+v, want the recovered deliver marked resumed", last)
+	}
+	if _, err := os.Stat(receipt); err != nil {
+		t.Fatalf("os.Stat(%q) = %v, want the receipt this resume issued", receipt, err)
+	}
+}
+
+// The other half of that reconciliation: it recognises the run's own
+// commit and nothing else. Here the branch has moved for a reason the run
+// had nothing to do with — same phase, same branch, same parent, a
+// different commit — so Git proves nothing and the base-commit guard is
+// still the answer. Widening the guard instead of recognising the run's
+// own work would have swallowed this case with it.
+func TestResumeStillRefusesACommitTheRunDidNotMake(t *testing.T) {
+	const branch = "chore/pika-improve"
+	root := fixtureRepository(t)
+	base := gitOutput(t, root, "rev-parse", "HEAD")
+	gitRun(t, root, "switch", "-c", branch)
+	if err := os.WriteFile(filepath.Join(root, "elsewhere.txt"), []byte("someone else's work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, root, "add", "elsewhere.txt")
+	gitRun(t, root, "commit", "-qm", "unrelated work")
+	head := gitOutput(t, root, "rev-parse", "HEAD")
+	workID := seedRun(t, root, workrec.Record{
+		Kind:       workrec.KindRepair,
+		Phase:      workrec.PhaseRecheck,
+		Branch:     branch,
+		BaseCommit: base,
+		Baseline:   failingBaseline(),
+		Recheck:    passingLadder(),
+	})
+
+	result, err := Resume(context.Background(), root, workID, Config{
+		Branch: branch,
+		Check:  refusingCheck(t, "a moved repository must not be re-verified"),
+		Runner: refusingRunner{t: t, why: "a moved repository must not spawn an agent"},
+	})
+	assertRefusal(t, err, ErrTreeDiverged)
+	if !strings.Contains(err.Error(), base) || !strings.Contains(err.Error(), head) {
+		t.Fatalf("error = %v, want both the run's base %s and the current HEAD %s", err, base, head)
+	}
+	if result.WorkID != "" {
+		t.Fatalf("result = %+v, want nothing: the run was refused", result)
+	}
+	if saved := runRecord(t, root, workID); saved.Outcome != "" || saved.Commit != "" {
+		t.Fatalf("record = %+v, want it untouched: nothing was delivered", saved)
+	}
+}
+
 // A run that recorded a terminal outcome is finished. Resume says so
 // rather than starting it over.
 func TestResumeRefusesTerminalOutcome(t *testing.T) {
