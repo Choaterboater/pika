@@ -49,7 +49,21 @@ verification:
       autofill: true
       hint: [mypy, .]
     - id: test
-      cmd: [python, -m, pytest]
+      # `pytest`, not `python -m pytest`. Debian, Ubuntu and every
+      # distribution that followed PEP 394's later advice ship the
+      # interpreter as `python3` only, so `python -m pytest` makes
+      # `pika init --profile python` produce a repository that fails its
+      # own test gate on the most common Linux host — and doctor scores
+      # that an error. `python3 -m pytest` would only move the hole:
+      # the python.org installer for Windows creates `python.exe` and no
+      # `python3.exe`. pytest's console script is installed by pytest
+      # itself on every platform and inside every virtualenv, so it is
+      # the one spelling that follows the interpreter instead of naming
+      # it. The scaffold uses a src/ layout, where the package must be
+      # installed to be importable anyway, so nothing here depends on
+      # `python -m`'s habit of putting the working directory on
+      # sys.path.
+      cmd: [pytest]
     - id: smoke
       discovery: true
 

@@ -76,7 +76,10 @@ var langCases = map[string]langCase{
 		fixture:  "py-single",
 		language: "python",
 		ref:      "python@1",
-		cmds:     map[string][]string{"test": {"python", "-m", "pytest"}},
+		// `pytest`, not `python -m pytest`: the slot is an unconditional
+		// cmd, so whatever it names is what every scaffolded repository
+		// runs, and Debian and Ubuntu ship `python3` only.
+		cmds: map[string][]string{"test": {"pytest"}},
 		hints: map[string][]string{
 			"format":    {"ruff", "format", "--check", "."},
 			"lint":      {"ruff", "check", "."},

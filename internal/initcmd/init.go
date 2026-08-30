@@ -27,6 +27,7 @@ import (
 
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/version"
 
 	"github.com/goccy/go-yaml"
 )
@@ -77,13 +78,14 @@ type genFile struct {
 // the project name; each is guarded to start with a letter because cargo
 // package names, Python module names, and Swift identifiers cannot begin
 // with a digit even though the contract name pattern allows one.
+// PikaRef is the kernel pin the scaffolded CI workflow installs.
 type tmplData struct {
 	Name      string
 	Module    string
 	RustName  string
 	PyName    string
 	SwiftName string
-	CIPaths   string
+	PikaRef   string
 	CISteps   string
 }
 
@@ -364,7 +366,7 @@ func buildFiles(lang, name, module string, contractYAML []byte) ([]genFile, erro
 		RustName:  digitSafe(name, "p"),
 		PyName:    digitSafe(strings.ReplaceAll(name, "-", "_"), "p"),
 		SwiftName: digitSafe(camel(name), "P"),
-		CIPaths:   ciPaths(lang),
+		PikaRef:   pikaRef(),
 		CISteps:   ciSteps(lang),
 	}
 
@@ -473,7 +475,7 @@ var coreTemplateTargets = []coreTarget{
 // path. A template missing from the pack is a hard error, so callers
 // fail before writing anything.
 func CoreFiles(lang, name string) (map[string][]byte, error) {
-	data := tmplData{Name: name, CIPaths: ciPaths(lang), CISteps: ciSteps(lang)}
+	data := tmplData{Name: name, PikaRef: pikaRef(), CISteps: ciSteps(lang)}
 	out := make(map[string][]byte, len(coreTemplateTargets))
 	for _, target := range coreTemplateTargets {
 		rendered, err := renderCore(target.tmpl, data)
@@ -527,34 +529,17 @@ func render1(name string, data tmplData) []byte {
 	return out
 }
 
-// ciPaths renders the CI trigger path list: the core-managed paths plus
-// the selected stack's source paths.
-func ciPaths(lang string) string {
-	paths := []string{
-		"'.project/**'",
-		"'docs/**'",
-		"'AGENTS.md'",
-		"'README.md'",
-		"'CONTRIBUTING.md'",
-		"'.github/workflows/ci.yml'",
+// pikaRef is the git ref the scaffolded CI workflow pins its kernel to:
+// the version of the binary doing the scaffolding, as a semver tag. The
+// pin has to mean "the kernel that adopted this repository", and it can
+// only mean that if it is derived from the version the binary reports
+// rather than transcribed into the template, where it would go stale at
+// the next release with nothing to catch it.
+func pikaRef() string {
+	if strings.HasPrefix(version.Version, "v") {
+		return version.Version
 	}
-	switch lang {
-	case "go":
-		paths = append(paths, "'cmd/**'", "'go.mod'")
-	case "typescript":
-		paths = append(paths, "'src/**'", "'package.json'")
-	case "python":
-		paths = append(paths, "'src/**'", "'tests/**'", "'pyproject.toml'")
-	case "swift":
-		paths = append(paths, "'Sources/**'", "'Package.swift'")
-	case "rust":
-		paths = append(paths, "'src/**'", "'Cargo.toml'")
-	}
-	var lines []string
-	for _, p := range paths {
-		lines = append(lines, "      - "+p)
-	}
-	return strings.Join(lines, "\n")
+	return "v" + version.Version
 }
 
 // ciSteps renders the toolchain setup steps preceding the pika

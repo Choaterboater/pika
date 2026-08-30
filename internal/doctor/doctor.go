@@ -69,9 +69,9 @@ func Run(root *repopath.Root) *Report {
 	c := checkContract(rep, root)
 	resolved := checkProfiles(rep, root, c)
 	checkExceptions(rep, root)
-	checkEnvelope(rep, root)
+	env := checkEnvelope(rep, root)
 	checkRecovery(rep, root)
-	checkGates(rep, c, resolved)
+	checkGates(rep, root, c, resolved, env)
 	checkGit(rep)
 	return rep
 }
@@ -141,22 +141,27 @@ func checkExceptions(rep *Report, root *repopath.Root) {
 	rep.add("exceptions", SeverityOK, "exceptions record loads", "")
 }
 
-func checkEnvelope(rep *Report, root *repopath.Root) {
+// checkEnvelope reports the capability envelope and returns it so the
+// gate check can cross-examine it. A nil result means there is nothing
+// to cross-examine: either no envelope exists, or the one that does is
+// unreadable and already carries its own error.
+func checkEnvelope(rep *Report, root *repopath.Root) *envelope.Envelope {
 	path := root.Envelope()
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		// A warning, not an error: `pika check` never needs an envelope.
 		// Only the mutating MCP tools do.
 		rep.add("envelope", SeverityWarn, "no capability envelope at "+path,
 			"run \"pika authorize --scope project\"; without it every mutating MCP tool is denied")
-		return
+		return nil
 	}
 	env, err := envelope.Load(root.Dir(), path)
 	if err != nil {
 		rep.add("envelope", SeverityError, err.Error(),
 			"fix or regenerate the envelope with \"pika authorize --force\"")
-		return
+		return nil
 	}
 	rep.add("envelope", SeverityOK, "grants: "+grantedKinds(env), "")
+	return env
 }
 
 // checkRecovery reports an unfinished transaction, which is the one
@@ -230,7 +235,7 @@ func grantedKinds(env *envelope.Envelope) string {
 // builds a real gate for it either way, exec.CommandContext fails with
 // something that is not an *exec.ExitError, and runGate's default branch
 // scores it StatusFail — exit 1.
-func checkGates(rep *Report, c *contract.Contract, resolved *profiles.Resolved) {
+func checkGates(rep *Report, root *repopath.Root, c *contract.Contract, resolved *profiles.Resolved, env *envelope.Envelope) {
 	if c == nil || resolved == nil {
 		return
 	}
@@ -261,10 +266,49 @@ func checkGates(rep *Report, c *contract.Contract, resolved *profiles.Resolved) 
 			rep.add(id, SeverityError,
 				fmt.Sprintf("%s: %s is not on PATH", strings.Join(g.Cmd, " "), g.Cmd[0]),
 				"install the toolchain; \"pika check\" runs this gate here and fails when the binary is absent")
-			continue
+		} else {
+			rep.add(id, SeverityOK, strings.Join(g.Cmd, " "), "")
 		}
-		rep.add(id, SeverityOK, strings.Join(g.Cmd, " "), "")
+		checkGateAuthorized(rep, root, env, g)
 	}
+}
+
+// checkGateAuthorized reports a resolved gate the present envelope would
+// refuse to run. doctor already loaded the envelope and already resolved
+// the gate argv; until now neither knew about the other, so the first
+// notice an agent got that its envelope did not cover a gate was an
+// envelope_denied from MCP run_checks, mid-task. This is the one finding
+// that predicts that denial beforehand.
+//
+// Only an envelope that EXISTS is cross-examined. An absent envelope is
+// already a warning of its own and must stay exactly that: `pika check`
+// consults no envelope, so a human running the ladder by hand is blocked
+// by nothing, and a per-gate denial on every repository without an
+// envelope would bury the one finding that means something.
+//
+// The comparison is the whole argv line, because that is what
+// envelope.matchesExec compares: entries match element-wise with an
+// optional trailing "*", so a grant of "go" authorizes the bare command
+// `go` and not `go test ./...`. Asking about g.Cmd[0] alone would agree
+// with the envelope only by accident, and would call an uncovered gate
+// covered — the exact failure this finding exists to prevent.
+//
+// Warn, not error. The repository is not broken: every human path
+// through it works. Flipping Report.OK false would make `pika doctor`
+// exit non-zero on a repository whose only fault is that nobody widened
+// an envelope for a tool they may never use.
+func checkGateAuthorized(rep *Report, root *repopath.Root, env *envelope.Envelope, g verify.Gate) {
+	if env == nil {
+		return
+	}
+	line := strings.Join(g.Cmd, " ")
+	if env.Allows(envelope.Operation{Kind: envelope.KindExec, Target: line}) {
+		return
+	}
+	rep.add("envelope.gate."+g.ID, SeverityWarn,
+		fmt.Sprintf("the capability envelope does not authorize %q; MCP run_checks will answer envelope_denied for the %s gate", line, g.ID),
+		fmt.Sprintf("add %q to allow.exec in %s; exec grants match the whole argv line, so an entry naming only %q does not cover it",
+			line, root.Envelope(), g.Cmd[0]))
 }
 
 func checkGit(rep *Report) {

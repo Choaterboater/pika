@@ -1,5 +1,5 @@
 {
-  "digest": "b977253fc0ec0d6ebcbe2f212ab607177d4728e342460fd5a49753b2dfd0c7e3",
+  "digest": "e892fb2a12938e299c7ce695af2c298879aa8ea100b83d0472db68cd0f8d0bc6",
   "packs": {
     "core": {
       "version": "1",
@@ -9,7 +9,7 @@
     "python": {
       "version": "1",
       "source": "embedded",
-      "digest": "ab9bd5c1fc23f315a4b8ae74bd0e17cc5e927efa3442e368b04e997302db4f85"
+      "digest": "9babacd65c9caa81231d7250d7c8d6107e845564aa3b7720972b9e0ea453e8e6"
     }
   }
 }
