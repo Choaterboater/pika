@@ -158,19 +158,22 @@ func TestNewWorkID(t *testing.T) {
 	if got, want := id[:8], "20260828"; got != want {
 		t.Errorf("date prefix = %q, want %q", got, want)
 	}
-	if !strings.HasPrefix(id, "20260828-auth-timeout-") || len(id) != len("20260828-auth-timeout-")+4 {
-		t.Errorf("id = %q, want 20260828-auth-timeout-<4hex>", id)
+	if !strings.HasPrefix(id, "20260828-auth-timeout-") || len(id) != len("20260828-auth-timeout-")+8 {
+		t.Errorf("id = %q, want 20260828-auth-timeout-<8hex>", id)
 	}
 	if err := ValidateWorkID(id); err != nil {
 		t.Errorf("ValidateWorkID(%q): %v", id, err)
 	}
-	// The spec §14.1 example shape validates.
+	// The spec §14.1 example shape validates, and so does a 4-hex id from
+	// before the suffix widened — see TestWorkIDSuffixWidthCompatibility.
 	if err := ValidateWorkID("20260828-auth-timeout-7f3a"); err != nil {
 		t.Errorf("ValidateWorkID rejected spec example: %v", err)
 	}
 	for _, bad := range []string{
 		"", "20260828", "20260828-auth-timeout", "20260828-auth-timeout-7f3",
-		"20260828--auth-7f3a", "20260828-Auth-7f3a", "20260828-auth-7f3a-", "20260828-auth-timeout-7f3a-x",
+		"20260828--auth-7f3a", "20260828-Auth-7f3a", "20260828-auth-7f3a-",
+		"20260828-auth-timeout-7f3a-x", "20260828-auth-timeout-7f3a94c1d",
+		"20260828-auth-timeout-7f3g94c1",
 	} {
 		if err := ValidateWorkID(bad); err == nil {
 			t.Errorf("ValidateWorkID accepted %q", bad)
@@ -183,23 +186,61 @@ func TestNewWorkID(t *testing.T) {
 	}
 }
 
+// TestWorkIDSuffixWidthCompatibility pins the claim that widening the
+// suffix from 4 to 8 hex characters was not a flag day: ids written by
+// the earlier 16-bit implementation must still validate, at BOTH
+// enforcement points — workIDPattern via ValidateWorkID, and the work_id
+// pattern in evidence-receipt.schema.json via the schema validator. The
+// two patterns are duplicated strings in two files; this is what catches
+// them drifting apart.
+func TestWorkIDSuffixWidthCompatibility(t *testing.T) {
+	for _, id := range []string{
+		"20260828-auth-timeout-7f3a",     // 4 hex: pre-widening
+		"20260828-auth-timeout-7f3a94",   // 6 hex
+		"20260828-auth-timeout-7f3a94c1", // 8 hex: what NewWorkID mints
+	} {
+		if err := ValidateWorkID(id); err != nil {
+			t.Errorf("ValidateWorkID(%q): %v", id, err)
+		}
+		in := fixture()
+		in.WorkID = id
+		r, err := Build(in)
+		if err != nil {
+			t.Errorf("Build with work_id %q: %v", id, err)
+			continue
+		}
+		// Build already validates against the embedded schema; re-running
+		// Validate states plainly that the schema's own work_id pattern
+		// accepts this width too.
+		if err := Validate(r); err != nil {
+			t.Errorf("schema rejected work_id %q: %v", id, err)
+		}
+	}
+}
+
 // TestWorkIDsDoNotCollideWithinOneSecond pins the property the suffix
-// exists for: the same slug in the same second must not keep producing
-// the same id, which silently overwrote one evidence file.
+// exists for: the same slug must not keep producing the same id, which
+// silently overwrote one evidence file.
 //
-// The suffix is 16 bits by spec, so strict uniqueness over many draws is
-// not a property random ids have — the birthday bound guarantees repeats.
-// What is asserted instead is the distinct-id rate: drawing n ids from a
-// 65536-value space yields 65536*(1-e^(-n/65536)) distinct values on
-// average, about 3971 for n=4096, with a standard deviation near 8. A
-// floor of 3800 is twenty standard deviations below that, so a random
-// suffix effectively never trips it, while any non-random suffix does:
-// the old sha256(slug‖second) collapses all 4096 draws onto 1 value.
+// Bound: 2048 draws, at most one duplicate. Random ids are not strictly
+// unique — the birthday bound forbids promising that — so the assertion
+// is a duplicate budget, chosen to sit in the wide gap between the two
+// suffix widths. Expected duplicates are about n^2/2^(bits+1):
+//
+//	16 bits: 32 expected. P(at most 1) = e^-32 * 33 ~= 4e-13, so a
+//	         16-bit suffix — or the old constant one, which collapses all
+//	         2048 draws onto a single id — fails every time.
+//	32 bits: 0.00049 expected. P(2 or more) ~= 1.2e-7, so this passes
+//	         comfortably; roughly one spurious failure per eight million
+//	         runs.
+//
+// Raising n would widen neither margin: it makes the 32-bit flake rate
+// grow as n^2 while the 16-bit side is already certain.
 func TestWorkIDsDoNotCollideWithinOneSecond(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	const (
-		n           = 4096
-		minDistinct = 3800
+		n       = 2048
+		maxDups = 1
 	)
 	seen := make(map[string]struct{}, n)
 	firstDup, dupID := -1, ""
@@ -216,9 +257,9 @@ func TestWorkIDsDoNotCollideWithinOneSecond(t *testing.T) {
 		}
 		seen[id] = struct{}{}
 	}
-	if len(seen) < minDistinct {
-		t.Fatalf("only %d distinct ids from %d draws for one slug in one second (want >= %d); first duplicate at draw %d: %q",
-			len(seen), n, minDistinct, firstDup, dupID)
+	if dups := n - len(seen); dups > maxDups {
+		t.Fatalf("%d duplicate ids in %d draws for one slug in one second (want at most %d); first duplicate at draw %d: %q",
+			dups, n, maxDups, firstDup, dupID)
 	}
 }
 
