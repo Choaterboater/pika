@@ -176,9 +176,10 @@ func WithExecAuthorizer(fn func(commands [][]string) error) Option {
 
 // Preview inventories repoRoot and produces the adoption report plus the two
 // draft files. It returns an error when the repository is already adopted
-// (a committed contract exists — direct the caller to check/upgrade) or when
-// discovery, draft generation, or validation fails. Baseline command
-// failures are data in the report, not errors.
+// (a committed contract exists — direct the caller to check, or to `pika
+// init --force` for the kernel-owned scaffold) or when discovery, draft
+// generation, or validation fails. Baseline command failures are data in
+// the report, not errors.
 //
 // A preview is read-only with respect to tracked files but not with
 // respect to the machine: it runs every discovered check command once to
@@ -193,7 +194,7 @@ func Preview(repoRoot string, opts ...Option) (*Report, error) {
 		repoRoot = "."
 	}
 	if _, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(committedContractPath))); err == nil {
-		return nil, fmt.Errorf("adopt: %s already exists: repository already adopted; use `pika check` or `pika upgrade` instead", committedContractPath)
+		return nil, fmt.Errorf("adopt: %s already exists: repository already adopted; use `pika check` to verify it, or `pika init --force` to regenerate the kernel-owned scaffold", committedContractPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("adopt: stat %s: %w", committedContractPath, err)
 	}

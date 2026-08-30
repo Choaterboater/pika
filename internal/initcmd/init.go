@@ -616,6 +616,23 @@ var coreTemplateTargets = []coreTarget{
 	{tmpl: "ci.yml.tmpl", path: ".github/workflows/ci.yml", kernel: true},
 }
 
+// KernelOwnsCore reports whether the core-pack file at rel — a
+// repository-relative slash path — is one the kernel alone determines,
+// and therefore one a regeneration rewrites rather than keeps. It is the
+// single reading of the boundary: `pika apply` asks this table the same
+// question `pika init --force` does, instead of carrying its own copy of
+// the answer. Two copies is how one command comes to refresh a file the
+// other silently treats as the operator's, with nothing to say which is
+// right. A path the core pack does not render is not kernel-owned.
+func KernelOwnsCore(rel string) bool {
+	for _, target := range coreTemplateTargets {
+		if target.path == rel {
+			return target.kernel
+		}
+	}
+	return false
+}
+
 // CoreFiles renders the core pack's repository files — README, AGENTS,
 // CONTRIBUTING, the GitHub PR template, and the CI workflow — for a
 // project name and language id, keyed by repository-relative slash
