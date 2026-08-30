@@ -92,6 +92,48 @@ func TestFSWritePrefixSemantics(t *testing.T) {
 	}
 }
 
+// "." is what `pika authorize --scope repo` emits and what
+// contract.NormalizeRepoPath calls the repository root. Matching it by
+// the "entry+/" prefix rule alone authorized the literal path "." and
+// nothing beneath it, so the widest scope the tool can grant was a dead
+// grant. The root entry must name the whole tree.
+func TestFSWriteRepoRootEntryGrantsWholeTree(t *testing.T) {
+	env := mustParse(t, `{"schema":1,"allow":{"fs_write":["."]}}`)
+	allowed := []string{
+		".",
+		"main.go",
+		"internal/x/y.go",
+		"./internal/x/y.go",
+		".project/state/board.jsonl",
+	}
+	for _, p := range allowed {
+		if !env.Allows(Operation{Kind: "fs_write", Target: p}) {
+			t.Errorf("fs_write %q must be allowed by the repository-root entry", p)
+		}
+	}
+	// The root entry widens the subtree, never the repository boundary:
+	// a target that does not normalize to a repo-relative path is still
+	// denied.
+	for _, p := range []string{"../outside", "/etc/passwd", ""} {
+		if env.Allows(Operation{Kind: "fs_write", Target: p}) {
+			t.Errorf("fs_write %q must be denied even by the repository-root entry", p)
+		}
+	}
+}
+
+// Regression: widening "." must not have loosened ordinary entries into
+// string-prefix matching. A directory entry still stops at the path
+// boundary.
+func TestFSWriteEntryStillRespectsPathBoundary(t *testing.T) {
+	env := mustParse(t, `{"schema":1,"allow":{"fs_write":[".project/state"]}}`)
+	if !env.Allows(Operation{Kind: "fs_write", Target: ".project/state/x.json"}) {
+		t.Error(".project/state must still permit .project/state/x.json")
+	}
+	if env.Allows(Operation{Kind: "fs_write", Target: ".project/staterun/x"}) {
+		t.Error(".project/state must still refuse .project/staterun/x")
+	}
+}
+
 func TestFSReadInsideRepoAllowed(t *testing.T) {
 	env := mustParse(t, `{"schema":1,"allow":{"fs_write":[".project/state"]}}`)
 	allowed := []string{"main.go", "internal/envelope/envelope.go", "/repo/internal/envelope/envelope.go"}

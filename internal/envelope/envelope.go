@@ -293,14 +293,21 @@ func (e *Envelope) allowsRead(target string) bool {
 // matchesPath matches target against the fs_write entries: an entry allows
 // itself and everything beneath it (directory-prefix semantics), compared
 // on normalized repo-relative paths so entry ".project/state" permits
-// ".project/state/x.json" but not ".project/staterun/x".
+// ".project/state/x.json" but not ".project/staterun/x". The entry "."
+// names the repository root and therefore the whole tree: it is the
+// canonical root path contract.NormalizeRepoPath emits, and since that
+// function never produces a "./" prefix, the prefix comparison alone
+// would match the literal path "." and nothing under it — turning the
+// repo scope into a grant that authorizes nothing.
 func (e *Envelope) matchesPath(target string) bool {
 	norm, err := contract.NormalizeRepoPath(target)
 	if err != nil {
 		return false
 	}
+	// norm is repo-relative and non-escaping by construction here, so
+	// any successfully normalized target lies inside the root subtree.
 	for _, entry := range e.Env.Allow.FSWrite {
-		if norm == entry || strings.HasPrefix(norm, entry+"/") {
+		if entry == "." || norm == entry || strings.HasPrefix(norm, entry+"/") {
 			return true
 		}
 	}
