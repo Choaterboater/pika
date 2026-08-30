@@ -31,6 +31,12 @@ func main() {
 	if len(args) > 0 && args[0] == "mcp" {
 		os.Exit(runMCP(args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}
-	fmt.Fprintln(os.Stderr, "usage: pika [--version] | init [--profile <lang>] [--name <name>] [--module <path>] [--force] [--json] | check [--all|--changed|--ci] [--json] [--contract <path>] | adopt [--json] | apply [--json] | mcp")
+	if len(args) > 0 && args[0] == "handoff" {
+		os.Exit(runHandoff(args[1:], os.Stdout, os.Stderr))
+	}
+	if len(args) > 0 && args[0] == "improve" {
+		os.Exit(runImprove(args[1:], os.Stdout, os.Stderr))
+	}
+	fmt.Fprintln(os.Stderr, "usage: pika [--version] | init [--profile <lang>] [--name <name>] [--module <path>] [--force] [--json] | check [--all|--changed|--ci] [--json] [--contract <path>] | adopt [--json] | apply [--json] | handoff [--agent <name>] [--json] | improve [--branch <name>] [--agent <name>] [--json] | mcp")
 	os.Exit(2)
 }
