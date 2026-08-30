@@ -510,6 +510,8 @@ A run showing `in-flight?` has no terminal outcome. That is genuinely ambiguous 
 
 The split is deliberate. The record is operational state — it exists so a run can be resumed and diagnosed on the machine that ran it, and it holds unredacted agent transcripts. The receipt is the public attestation: schema-validated, redacted, and issued by the kernel rather than written by the agent whose work it describes.
 
+The gitignore is the first guard, not the only one. Before it commits anything, a run drops every path under `.project/state` from the change set, and it **refuses outright** if the agent moved private state out of that directory — `git mv .project/state/work/<id>/record.json notes.md` would otherwise carry an unredacted transcript into the commit under a name the path filter has no reason to reject. The refusal names the path that moved, exits 1, and commits nothing.
+
 Two details about the receipt that are easier to read here than to discover:
 
 - **A blocked run gets one too.** The receipt attests the run's terminal

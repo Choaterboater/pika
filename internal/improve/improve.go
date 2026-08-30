@@ -21,6 +21,21 @@ var ErrDirtyTree = errors.New("improve: working tree must be clean")
 // ErrNoChanges prevents a misleading empty commit after an agent run.
 var ErrNoChanges = errors.New("improve: Codex made no changes to commit")
 
+// ErrPrivateStateMoved refuses a run whose agent moved Pika's private
+// state out of the subtree that protects it.
+//
+// changePaths filters by path, so it can only protect state that is still
+// where Pika put it. `git mv .project/state/work/<id>/record.json
+// leaked.json` defeats a path filter outright: Git reports the rename on
+// one line naming both sides, the destination is an ordinary path the
+// filter has no reason to reject, and the private content rides into the
+// commit inside it. Both sides are read for that reason, and the answer
+// is a refusal rather than a silently dropped path — dropping half a
+// rename would leave the tree in a shape the operator never asked for,
+// and what is under `.project/state` is not a file Pika can quietly
+// decline to commit and call the matter closed.
+var ErrPrivateStateMoved = errors.New("improve: the agent moved Pika's private state out of " + privateStateDir)
+
 // The three worlds `pika resume` refuses, named separately. Each one
 // leaves an operator with a different decision to make — a finished run
 // wants `pika status`, a vanished branch wants a new run, a moved
@@ -479,7 +494,11 @@ func lifecycle(ctx context.Context, cfg Config, kind string, handle *workrec.Han
 	if err != nil {
 		return result, err
 	}
-	result.ChangedFiles = changePaths(statusPaths(changed))
+	entries := statusEntries(changed)
+	if moved := privateStateMoved(entries); moved != "" {
+		return result, fmt.Errorf("%w: %s", ErrPrivateStateMoved, moved)
+	}
+	result.ChangedFiles = changePaths(entries)
 	if len(result.ChangedFiles) == 0 {
 		return result, ErrNoChanges
 	}
@@ -722,15 +741,66 @@ func orNoBaseCommit(commit string) string {
 // changePaths removes Pika's own local state from the set of files a run
 // is allowed to commit. See privateStateDir for why it filters the whole
 // subtree.
-func changePaths(paths []string) []string {
-	out := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if path == privateStateDir || strings.HasPrefix(path, privateStateDir+"/") {
-			continue
+//
+// A rename contributes both of its paths, origin first. Adding the origin
+// is what stages the rename's deletion, so a commit built from this list
+// records the move rather than leaving the file behind at both paths;
+// naming only the destination, as this once did, is also how a private
+// origin escaped the filter entirely. privateStateMoved has already
+// refused that case by the time this runs, so what reaches here is either
+// wholly private (dropped) or wholly public (kept).
+func changePaths(entries []statusEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		for _, path := range [...]string{entry.origin, entry.path} {
+			if path == "" || isPrivateState(path) {
+				continue
+			}
+			out = append(out, path)
 		}
-		out = append(out, path)
 	}
 	return out
+}
+
+// privateStateMoved names the first path an agent has moved across the
+// `.project/state` boundary, or "" if none was. Pika refuses the run when
+// it answers.
+//
+// Both sides of a rename are read. Out of the subtree is the leak this
+// exists for: the destination is an ordinary path the filter has no
+// reason to reject, so the private content would ride into the commit
+// inside it. Into the subtree is the mirror of it — a repository file
+// pushed where Pika's own gitignored state lives. Between two private
+// paths is the agent rearranging a run record that is not its to touch.
+// None of the three is work Pika can commit on an operator's behalf.
+//
+// A deletion is the same event seen later. Pika resets the index before
+// it reads this status, which collapses a staged rename into a worktree
+// deletion of the origin plus an untracked destination — so the origin
+// arrives alone, still under `.project/state`, still gone. Nothing in a
+// run deletes tracked private state, and Run refuses a dirty tree before
+// it starts, so a private path reported as deleted here can only have
+// been removed by the agent during the handoff.
+func privateStateMoved(entries []statusEntry) string {
+	for _, entry := range entries {
+		if entry.origin != "" {
+			if isPrivateState(entry.origin) {
+				return entry.origin
+			}
+			if isPrivateState(entry.path) {
+				return entry.path
+			}
+			continue
+		}
+		if isPrivateState(entry.path) && strings.Contains(entry.code, "D") {
+			return entry.path
+		}
+	}
+	return ""
+}
+
+func isPrivateState(path string) bool {
+	return path == privateStateDir || strings.HasPrefix(path, privateStateDir+"/")
 }
 
 func runGit(ctx context.Context, root string, args ...string) (string, error) {
@@ -743,20 +813,31 @@ func runGit(ctx context.Context, root string, args ...string) (string, error) {
 	return string(output), nil
 }
 
-func statusPaths(value string) []string {
-	var out []string
+// statusEntry is one line of `git status --porcelain`: its two status
+// columns and the path or paths the line names. A rename or a copy names
+// two — the origin first — and both of them matter, so neither is thrown
+// away here.
+type statusEntry struct {
+	code   string
+	origin string // the pre-rename path; empty unless the line named two
+	path   string
+}
+
+func statusEntries(value string) []statusEntry {
+	var out []statusEntry
 	for _, line := range strings.Split(value, "\n") {
 		if len(line) < 4 {
 			continue
 		}
-		path := strings.TrimSpace(line[3:])
-		if before, after, renamed := strings.Cut(path, " -> "); renamed {
-			path = after
-			_ = before
+		entry := statusEntry{code: line[:2]}
+		entry.path = strings.TrimSpace(line[3:])
+		if origin, dest, renamed := strings.Cut(entry.path, " -> "); renamed {
+			entry.origin, entry.path = origin, dest
 		}
-		if path != "" {
-			out = append(out, path)
+		if entry.path == "" {
+			continue
 		}
+		out = append(out, entry)
 	}
 	return out
 }
