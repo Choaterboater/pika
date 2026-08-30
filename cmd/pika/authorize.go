@@ -31,8 +31,9 @@ type authorizeResult struct {
 // runAuthorize implements `pika authorize`: it generates
 // .project/state/envelope.yaml from a declared scope instead of making
 // the operator hand-author the one file that stands between an agent and
-// every mutating tool. `pika doctor` and `pika explain envelope_denied`
-// both send people here, so this command is the answer to their advice.
+// every MCP tool — reads included since M3. `pika doctor` and `pika
+// explain envelope_denied` both send people here, so this command is the
+// answer to their advice.
 //
 // Exit codes: 0 the envelope was written and re-validated, 1 nothing was
 // written (an existing envelope without --force) or the written document

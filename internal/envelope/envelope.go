@@ -251,10 +251,12 @@ func (e *Envelope) Allows(op Operation) bool {
 	if e == nil || e.Env == nil {
 		return false
 	}
-	// Enforcement coverage as of M1: only fs_write and exec have a
-	// caller that asks before acting. fs_read, network, credential,
-	// github and budget are answered correctly here and validated by
-	// the schema, but no kernel code path consults them yet.
+	// Enforcement coverage as of M3: fs_write, exec and fs_read have a
+	// caller that asks before acting. network, credential, github and
+	// budget are answered correctly here and validated by the schema,
+	// but no kernel code path consults them — and none can, because the
+	// binary performs no operation of those classes at all. See
+	// docs/reference/m3-delta.md for the evidence.
 	switch op.Kind {
 	case KindFSRead:
 		return e.allowsRead(op.Target)

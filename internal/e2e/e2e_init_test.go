@@ -507,12 +507,11 @@ func evidenceReceipt() map[string]any {
 
 // TestE2EMCPSession runs one full agent session against the real binary
 // over real stdio pipes on an initialized go repository: initialize,
-// tools/list, the read-only kernel tools, the envelope-denied matrix for
-// every tool with a filesystem or process effect (fail-closed without an
-// envelope), the unavailable apply_plan, then `pika authorize` followed by
-// a green run_checks, and a clean EOF shutdown with exit 0. A second
-// session on a fresh non-adopted repository proves preview_plan is denied
-// there too.
+// tools/list, the envelope-denied matrix for every tool — reads included
+// since M3 — while no envelope exists, the unavailable apply_plan, then
+// `pika authorize` followed by the kernel read tools and a green
+// run_checks, and a clean EOF shutdown with exit 0. A second session on a
+// fresh non-adopted repository proves preview_plan is denied there too.
 func TestE2EMCPSession(t *testing.T) {
 	if reason := toolchainAbsent("go"); reason != "" {
 		t.Skipf("toolchain absent: %s", reason) // run_checks executes the go test gate
@@ -556,34 +555,24 @@ func TestE2EMCPSession(t *testing.T) {
 		}
 	}
 
-	// inspect_repo: read-only, fail-open without an envelope.
-	result, errObj := s.call("inspect_repo", map[string]any{})
-	if errObj != nil {
-		t.Fatalf("inspect_repo failed: %v", errObj)
+	// The envelope-denied matrix: every tool is fail-closed while
+	// .project/state/envelope.yaml is absent, and the denial runs before
+	// any repository inspection or write. Reads are in this matrix as of
+	// M3: enumerating a repository is a capability an agent is granted,
+	// not a neutral act it may perform unauthorized.
+	for _, name := range []string{"inspect_repo", "read_contract"} {
+		_, errObj := s.call(name, map[string]any{})
+		if errObj == nil {
+			t.Fatalf("%s without envelope: want envelope_denied error", name)
+		}
+		if code := toolErrorCode(t, errObj); code != "envelope_denied" {
+			t.Fatalf("%s error code = %q, want envelope_denied", name, code)
+		}
 	}
 
-	// read_contract: the scaffolded contract plus resolved profiles.
-	result, errObj = s.call("read_contract", map[string]any{})
-	if errObj != nil {
-		t.Fatalf("read_contract failed: %v", errObj)
-	}
-	data := result["data"].(map[string]any)
-	if data["contract"] == nil {
-		t.Fatalf("read_contract returned no contract:\n%v", result)
-	}
-	profiles, ok := data["profiles"].(map[string]any)
-	if !ok {
-		t.Fatalf("read_contract returned no profiles:\n%v", result)
-	}
-	selected := fmt.Sprint(profiles["selected"])
-	if !strings.Contains(selected, "go@1") || !strings.Contains(selected, "core@1") {
-		t.Fatalf("resolved profiles = %v, want core@1 and go@1", profiles["selected"])
-	}
-
-	// The envelope-denied matrix: every mutating tool is fail-closed
-	// while .project/state/envelope.yaml is absent, and the denial runs
-	// before any repository inspection or write.
-	_, errObj = s.call("preview_plan", map[string]any{})
+	// The rest of the matrix: the tools with a filesystem or process
+	// effect, denied before anything is discovered or written.
+	_, errObj := s.call("preview_plan", map[string]any{})
 	if errObj == nil {
 		t.Fatal("preview_plan without envelope: want envelope_denied error")
 	}
@@ -607,7 +596,7 @@ func TestE2EMCPSession(t *testing.T) {
 	if code := toolErrorCode(t, errObj); code != "envelope_denied" {
 		t.Fatalf("acquire_scope error code = %q, want envelope_denied", code)
 	}
-	// run_checks is in this matrix, not among the fail-open reads: it
+	// run_checks needs more than the read grant every tool now needs: it
 	// spawns the contract's gate commands, so it needs an exec grant
 	// exactly as a write needs an fs_write grant.
 	_, errObj = s.call("run_checks", map[string]any{"scope": "all"})
@@ -641,6 +630,33 @@ func TestE2EMCPSession(t *testing.T) {
 	}
 	if code := toolErrorCode(t, errObj); code != "already_adopted" {
 		t.Fatalf("preview_plan error code = %q, want already_adopted", code)
+	}
+
+	// The kernel read tools, run after `pika authorize` because since M3
+	// that is the ordering the server enforces: with no envelope both
+	// were denied above, and the operator's one command is what makes
+	// them work.
+	_, errObj = s.call("inspect_repo", map[string]any{})
+	if errObj != nil {
+		t.Fatalf("inspect_repo failed: %v", errObj)
+	}
+
+	// read_contract: the scaffolded contract plus resolved profiles.
+	result, errObj = s.call("read_contract", map[string]any{})
+	if errObj != nil {
+		t.Fatalf("read_contract failed: %v", errObj)
+	}
+	data := result["data"].(map[string]any)
+	if data["contract"] == nil {
+		t.Fatalf("read_contract returned no contract:\n%v", result)
+	}
+	profiles, ok := data["profiles"].(map[string]any)
+	if !ok {
+		t.Fatalf("read_contract returned no profiles:\n%v", result)
+	}
+	selected := fmt.Sprint(profiles["selected"])
+	if !strings.Contains(selected, "go@1") || !strings.Contains(selected, "core@1") {
+		t.Fatalf("resolved profiles = %v, want core@1 and go@1", profiles["selected"])
 	}
 
 	// run_checks: the same ladder as check --all, green here.

@@ -7,11 +7,10 @@
 // Tool results use the {ok, data?, error?{code,message}} envelope with
 // stable error codes. tools/call failures keep the protocol layer healthy:
 // the stable envelope rides in error.data, never as a process exit. Every
-// tool that mutates the filesystem or spawns a process checks the
-// capability envelope (.project/state/envelope.yaml) first — a missing or
-// invalid envelope denies (fail-closed). Tools that only read the
-// repository stay fail-open. The asymmetry with `pika check`, which a
-// human runs in their own shell and which therefore needs no envelope, is
+// tool checks the capability envelope (.project/state/envelope.yaml)
+// before it acts — reads included — so a missing or invalid envelope
+// denies (fail-closed). The asymmetry with `pika check`, which a human
+// runs in their own shell and which therefore needs no envelope, is
 // deliberate: an agent is authorized, an operator authorizes.
 package mcp
 
@@ -356,9 +355,13 @@ func paramsError(format string, args ...any) *rpcError {
 
 // --- tool handlers ---
 
-// toolInspectRepo implements inspect_repo: the discovery inventory.
-// Read-only and fail-open without an envelope.
+// toolInspectRepo implements inspect_repo: the discovery inventory. The
+// walk covers the whole tree, so it is authorized as one fs_read of the
+// repository root before discovery starts.
 func (s *server) toolInspectRepo(_ json.RawMessage) (map[string]any, *toolError) {
+	if terr := s.authorize(envelope.KindFSRead, "."); terr != nil {
+		return nil, terr
+	}
 	inv, err := discover.Discover(s.repoRoot)
 	if err != nil {
 		return nil, toolErrf(errInternal, "discover: %v", err)
@@ -377,15 +380,25 @@ func (s *server) toolReadContract(args json.RawMessage) (map[string]any, *toolEr
 	}
 	path := contractPath
 	if params.Path != "" {
-		// The path argument must name a file inside the repository: reads
-		// stay inside the repo root, so no argument can exfiltrate files
-		// from outside it.
-		rel, err := contract.NormalizeRepoPath(params.Path)
-		if err != nil {
-			return nil, toolErrf(errInvalidParams, "read_contract path: %v", err)
-		}
-		path = rel
+		path = params.Path
 	}
+	// The envelope is asked about the path the caller named, before any
+	// normalization. Normalizing first would hand allowsRead a target
+	// already proved repo-inside, and the check could then never deny
+	// anything — an authorization that cannot fail is decoration.
+	if terr := s.authorize(envelope.KindFSRead, path); terr != nil {
+		return nil, terr
+	}
+	// Both bounds are kept. allowsRead answers the policy question and
+	// NormalizeRepoPath answers the shape question, and they do not
+	// overlap completely: an absolute path *inside* the repository
+	// satisfies allowsRead and is still rejected here, because the tool
+	// joins repo-relative paths onto repoRoot and nothing else.
+	rel, err := contract.NormalizeRepoPath(path)
+	if err != nil {
+		return nil, toolErrf(errInvalidParams, "read_contract path: %v", err)
+	}
+	path = rel
 	c, err := contract.Load(filepath.Join(s.repoRoot, filepath.FromSlash(path)))
 	if err != nil {
 		return nil, toolErrf(errContractInvalid, "%v", err)
