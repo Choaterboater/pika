@@ -632,6 +632,31 @@ func TestE2EMCPSession(t *testing.T) {
 		t.Fatalf("preview_plan error code = %q, want already_adopted", code)
 	}
 
+	// acquire_scope's description promises an exclusive lease; this is
+	// the end-to-end proof that it is one. `authorize --scope project`
+	// granted fs_write on docs, so the envelope is not what refuses the
+	// second acquire — the lease is.
+	if _, errObj = s.call("acquire_scope", map[string]any{"path": "docs"}); errObj != nil {
+		t.Fatalf("acquire_scope on an authorized path failed: %v", errObj)
+	}
+	_, errObj = s.call("acquire_scope", map[string]any{"path": "docs/guides"})
+	if errObj == nil {
+		t.Fatal("acquire_scope inside a leased path: want scope_conflict error")
+	}
+	if code := toolErrorCode(t, errObj); code != "scope_conflict" {
+		t.Fatalf("conflicting acquire_scope error code = %q, want scope_conflict", code)
+	}
+	_, errObj = s.call("release_scope", map[string]any{"path": "docs/guides"})
+	if errObj == nil {
+		t.Fatal("release_scope without a prior acquire: want scope_conflict error")
+	}
+	if code := toolErrorCode(t, errObj); code != "scope_conflict" {
+		t.Fatalf("unheld release_scope error code = %q, want scope_conflict", code)
+	}
+	if _, errObj = s.call("release_scope", map[string]any{"path": "docs"}); errObj != nil {
+		t.Fatalf("release_scope of a held lease failed: %v", errObj)
+	}
+
 	// The kernel read tools, run after `pika authorize` because since M3
 	// that is the ordering the server enforces: with no envelope both
 	// were denied above, and the operator's one command is what makes

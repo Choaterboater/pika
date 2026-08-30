@@ -152,6 +152,25 @@ func TestExplainErrorCode(t *testing.T) {
 	}
 }
 
+// TestExplainScopeConflict: a stable error code an agent can be handed
+// and cannot look up is a dead end. `pika explain` is the documented way
+// to understand a code, so a code it does not know is not documented.
+func TestExplainScopeConflict(t *testing.T) {
+	e, err := Lookup("scope_conflict", resolveCore(t))
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if e.Kind != KindErrorCode {
+		t.Errorf("Kind = %q, want %q", e.Kind, KindErrorCode)
+	}
+	if !strings.Contains(e.Rationale, "lease") {
+		t.Errorf("scope_conflict does not explain the lease: %q", e.Rationale)
+	}
+	if e.Remediation == "" {
+		t.Error("scope_conflict has no remediation")
+	}
+}
+
 func TestUnknownIDListsKnownIDs(t *testing.T) {
 	resolved := resolveCore(t)
 	if _, err := Lookup("no-such-rule", resolved); err == nil {
@@ -161,7 +180,7 @@ func TestUnknownIDListsKnownIDs(t *testing.T) {
 	if len(ids) == 0 {
 		t.Fatal("KnownIDs returned nothing")
 	}
-	for _, want := range []string{"naming-catch-all", "typecheck", "envelope_denied"} {
+	for _, want := range []string{"naming-catch-all", "typecheck", "envelope_denied", "scope_conflict"} {
 		found := false
 		for _, id := range ids {
 			if id == want {
