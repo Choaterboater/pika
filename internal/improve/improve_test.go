@@ -246,6 +246,124 @@ func TestRunDoesNotCommitAgentStagedPrivateState(t *testing.T) {
 	}
 }
 
+// The force-add above is not the only way private state reaches a commit.
+// `git status --porcelain --untracked-files=all` reports a staged rename
+// on one line naming both sides — rename detection is on by default, no
+// -M needed — so an agent that runs
+//
+//	git mv .project/state/work/seed/record.json leaked.json
+//
+// hands the filter a destination it has no reason to reject. Nothing
+// before Pika's own `git add` catches it either: createHandoff compares
+// HEAD, the branch and the refs, never the index.
+//
+// What that commits is not hypothetical. `.project/state` holds the
+// handoff prompt, the pre-run check report, and — until CreateHandoff's
+// deferred cleanup — the raw unredacted final message.
+//
+// The fixture tracks the private file, because Git only reports a rename
+// for a path it is already tracking, and it does not ignore
+// `.project/state`, for the reason the force-add test above gives.
+func TestRunRefusesPrivateStateRenamedOutOfTheSubtree(t *testing.T) {
+	const secret = "UNREDACTED-TRANSCRIPT-c0ffee"
+	const private = ".project/state/work/seed/record.json"
+	root := fixtureRepositoryWithTrackedPrivateState(t, private, secret+"\n")
+	checks := []*verify.Report{
+		{Pass: false, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}},
+		{Pass: true},
+	}
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check: func() (*verify.Report, error) {
+			report := checks[0]
+			checks = checks[1:]
+			return report, nil
+		},
+		Runner: renamingRunner{from: private, to: "leaked.json"},
+	})
+	if !errors.Is(err, ErrPrivateStateMoved) {
+		t.Fatalf("error = %v, want ErrPrivateStateMoved", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), private) {
+		t.Errorf("refusal = %v, want it to name %s", err, private)
+	}
+	if result.Commit != "" {
+		t.Errorf("result.Commit = %q, want no commit", result.Commit)
+	}
+	for _, path := range result.ChangedFiles {
+		if path == "leaked.json" {
+			t.Errorf("changed files = %v, want the smuggled path refused, not listed", result.ChangedFiles)
+		}
+	}
+
+	// The guarantee is about what is in the repository, so read it from
+	// the repository. Every committed path outside `.project/state` must
+	// be free of the private content, whatever the run returned.
+	head := gitOutput(t, root, "rev-parse", "--abbrev-ref", "HEAD")
+	tracked := gitOutput(t, root, "ls-tree", "-r", "--name-only", "HEAD")
+	for _, path := range strings.Split(tracked, "\n") {
+		if path == "" || strings.HasPrefix(path, ".project/state/") {
+			continue
+		}
+		if body := gitOutput(t, root, "show", "HEAD:"+path); strings.Contains(body, secret) {
+			t.Fatalf("%s on branch %s committed Pika's private state", path, head)
+		}
+	}
+	if strings.Contains(tracked, "leaked.json") {
+		t.Fatalf("committed tree = %q, want the rename destination uncommitted", tracked)
+	}
+}
+
+// The lifecycle above never sees the `R ` line itself: Pika resets the
+// index before it reads status, which turns a staged rename into a
+// worktree deletion plus an untracked destination. The rename line is
+// still what Git reports for a staged rename anywhere else, and the two
+// shapes are one event, so both are pinned here against the literal
+// porcelain output — including the line the reproduction produced:
+//
+//	R  .project/state/work/x/record.json -> tracked/leaked.json
+func TestPrivateStateMovedReadsBothSidesOfARename(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status string
+		want   string
+	}{
+		{"staged rename out of the subtree",
+			"R  .project/state/work/x/record.json -> tracked/leaked.json",
+			".project/state/work/x/record.json"},
+		{"the same rename after the index reset",
+			" D .project/state/work/x/record.json\n?? tracked/leaked.json",
+			".project/state/work/x/record.json"},
+		{"staged rename into the subtree",
+			"R  src/app.go -> .project/state/hidden.go",
+			".project/state/hidden.go"},
+		{"a rename Pika has no business refusing",
+			"R  src/old.go -> src/new.go\n?? fixed.txt",
+			""},
+		{"private state merely present is dropped, not refused",
+			"?? .project/state/work/x/record.json\n M README.md",
+			""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := privateStateMoved(statusEntries(tc.status)); got != tc.want {
+				t.Fatalf("privateStateMoved(%q) = %q, want %q", tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+// A rename Pika does allow has to commit as a rename. Staging only the
+// destination leaves the origin behind, so the commit would carry the
+// file's content at both paths.
+func TestChangePathsStagesBothSidesOfAnAllowedRename(t *testing.T) {
+	got := changePaths(statusEntries("R  src/old.go -> src/new.go\n?? fixed.txt\n?? .project/state/work/x/record.json"))
+	want := []string{"src/old.go", "src/new.go", "fixed.txt"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("changePaths = %v, want %v", got, want)
+	}
+}
+
 // A run that is interrupted is only recoverable if every transition
 // reached the disk before the next one started. This asserts the whole
 // history, not just its head: a record that jumped from baseline to
@@ -997,6 +1115,26 @@ func fixtureRepositoryWithoutStateIgnore(t *testing.T) string {
 	return newFixture(t, "")
 }
 
+// fixtureRepositoryWithTrackedPrivateState goes one step further and
+// commits a file inside `.project/state`. Git reports a rename only for a
+// path it already tracks, so this is the world a `git mv` out of the
+// subtree needs — and it is an ordinary one: any repository that does not
+// ignore `.project/state` gets there the first time someone commits.
+func fixtureRepositoryWithTrackedPrivateState(t *testing.T, path, body string) string {
+	t.Helper()
+	root := newFixture(t, "")
+	full := filepath.Join(root, filepath.FromSlash(path))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, root, "add", "--", path)
+	gitRun(t, root, "commit", "-qm", "track private state")
+	return root
+}
+
 func newFixture(t *testing.T, gitignore string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -1096,6 +1234,27 @@ func (r *stagingRunner) Run(_ context.Context, root, promptPath, outputPath stri
 		return fmt.Errorf("git add private state: %w: %s", err, output)
 	}
 	return os.WriteFile(outputPath, []byte("staged private state\n"), 0o600)
+}
+
+// renamingRunner is the agent that smuggles private state past the path
+// filter with a rename instead of a force-add. `git mv` is one command an
+// agent has every ordinary reason to reach for, and the status line it
+// produces names the private origin and an innocent destination together.
+type renamingRunner struct {
+	from string
+	to   string
+}
+
+func (r renamingRunner) Run(_ context.Context, root, _, outputPath string) error {
+	if err := os.WriteFile(filepath.Join(root, "fixed.txt"), []byte("fixed\n"), 0o644); err != nil {
+		return err
+	}
+	cmd := exec.Command("git", "mv", "--", r.from, r.to)
+	cmd.Dir = root
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git mv private state: %w: %s", err, output)
+	}
+	return os.WriteFile(outputPath, []byte("renamed private state\n"), 0o600)
 }
 
 type rewritingRunner struct{}

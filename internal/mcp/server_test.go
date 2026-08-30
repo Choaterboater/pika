@@ -384,6 +384,74 @@ func TestPublishEvidenceRedactsAndWrites(t *testing.T) {
 	}
 }
 
+// A receipt issued by the component that ran the gates is evidence; one
+// supplied by the agent whose work it attests is a claim. evidence.Write
+// renames over an existing target without complaint — improve.issueReceipt
+// depends on exactly that to fill the file it claimed with O_EXCL — so the
+// refusal has to live at this end. Without it an agent can replace a
+// kernel-issued receipt with its own, which is the substitution this
+// milestone exists to prevent.
+//
+// The assertion is on the bytes, not the return value: the guarantee is
+// about the file. The second receipt therefore differs from the first, so
+// a silent overwrite cannot pass by writing identical content.
+func TestPublishEvidenceRefusesToOverwriteAnExistingReceipt(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project"))
+	s := startServer(t, root)
+	s.initialize()
+
+	wantResult(t, s.callTool(1, "publish_evidence", evidenceArgs()))
+	path := filepath.Join(root, ".project", "evidence", "20260828-mcp-test-a1b2.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("first receipt not written: %v", err)
+	}
+
+	substitute := evidenceArgs()
+	receipt := substitute["receipt"].(map[string]any)
+	receipt["commit"] = "deadbee"
+	receipt["completion"] = map[string]any{"complete": true, "reason": "substituted by the agent"}
+	errObj := wantToolError(t, s.callTool(2, "publish_evidence", substitute), "invalid_params")
+	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "already exists") {
+		t.Errorf("refusal message = %q, want it to name the existing receipt", msg)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("receipt gone after the refused publish: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("receipt was replaced:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if strings.Contains(string(after), "deadbee") {
+		t.Fatal("the agent's substituted receipt reached disk")
+	}
+
+	// A refusal that got as far as evidence.Write would leave its temp
+	// file behind in the evidence directory.
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".evidence-") {
+			t.Fatalf("refused publish left a temp file: %s", e.Name())
+		}
+	}
+
+	// The guarantee is about an occupied path, not about publishing: a
+	// fresh path still works.
+	fresh := evidenceArgs()
+	fresh["receipt"].(map[string]any)["work_id"] = "20260828-mcp-test-c3d4"
+	res := wantResult(t, s.callTool(3, "publish_evidence", fresh))
+	if res["data"].(map[string]any)["path"] != ".project/evidence/20260828-mcp-test-c3d4.json" {
+		t.Fatalf("fresh publish path = %v", res["data"])
+	}
+	if _, err := os.Stat(filepath.Join(root, ".project", "evidence", "20260828-mcp-test-c3d4.json")); err != nil {
+		t.Fatalf("fresh receipt not written: %v", err)
+	}
+}
+
 func TestFailOpenReadsFailClosedMutations(t *testing.T) {
 	// No envelope file at all, but a valid contract for the read tools.
 	root := fixtureRepo(t, minContract, "")

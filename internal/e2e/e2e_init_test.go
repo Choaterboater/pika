@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -30,6 +31,11 @@ import (
 
 // binPath is the pika binary built once by TestMain.
 var binPath string
+
+// fakeCodexDir is the directory holding the fake agent binary, built
+// once by TestMain under the name pika spawns. The work-lifecycle tests
+// put it at the front of the child's PATH; see testdata/fakecodex.
+var fakeCodexDir string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "pctl-e2e-bin")
@@ -44,9 +50,31 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "e2e: build pika: %v\n%s", err, out)
 		os.Exit(1)
 	}
+	// The agent boundary is a binary looked up on PATH, so faking it is
+	// building one. It lives beside the pika binary and dies with it.
+	fakeCodexDir = filepath.Join(dir, "agent")
+	if err := os.MkdirAll(fakeCodexDir, 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: agent dir:", err)
+		os.Exit(1)
+	}
+	agent := exec.Command("go", "build", "-o", filepath.Join(fakeCodexDir, exeName("codex")), "./testdata/fakecodex")
+	agent.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := agent.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: build fake codex: %v\n%s", err, out)
+		os.Exit(1)
+	}
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// exeName is what an executable is called on this platform. PATH lookup
+// on Windows will not find a file without the suffix.
+func exeName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
 }
 
 // languages lists the V1 profiles in spec §5.4 order.
@@ -145,9 +173,19 @@ type checkReport struct {
 // runCLI runs the built binary in dir and asserts the exit code.
 func runCLI(t *testing.T, dir string, wantExit int, args ...string) string {
 	t.Helper()
+	return runCLIEnv(t, dir, nil, wantExit, args...)
+}
+
+// runCLIEnv is runCLI with extra environment entries appended to the
+// test process's own. Only the work lifecycle needs it: pika spawns its
+// agent as a binary looked up on PATH, so faking that boundary means
+// changing the child's PATH.
+func runCLIEnv(t *testing.T, dir string, env []string, wantExit int, args ...string) string {
+	t.Helper()
 	var stdout, stderr bytes.Buffer
 	cmd := exec.Command(binPath, args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
@@ -159,7 +197,7 @@ func runCLI(t *testing.T, dir string, wantExit int, args ...string) string {
 		t.Fatalf("pika %v: %v", args, err)
 	}
 	if code != wantExit {
-		t.Fatalf("pika %v in %s: exit %d, want %d\nstderr: %s", args, dir, code, wantExit, stderr.String())
+		t.Fatalf("pika %v in %s: exit %d, want %d\nstdout: %s\nstderr: %s", args, dir, code, wantExit, stdout.String(), stderr.String())
 	}
 	return stdout.String()
 }
