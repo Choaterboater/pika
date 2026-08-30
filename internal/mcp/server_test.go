@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -472,6 +473,76 @@ func TestRunChecksReport(t *testing.T) {
 	data := errObj["data"].(map[string]any)
 	if data["error"].(map[string]any)["code"] != "invalid_params" {
 		t.Fatalf("bad scope code = %v, want invalid_params", data)
+	}
+}
+
+// run_checks spawns the same command gates `pika check` does, and must
+// spawn them in the server's repoRoot. Before --root was threaded into
+// `pika mcp`, repoRoot was always the server process's own working
+// directory, so an unbound cmd.Dir was harmless by construction; once
+// repoRoot can differ, an unbound cmd.Dir silently verifies the wrong
+// tree and reports it as the checked repository's result.
+func TestRunChecksRunsGatesInRepoRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses the POSIX /bin/pwd")
+	}
+	// /bin/pwd is the physical-path binary, not a shell builtin: it
+	// reports the process's real working directory rather than an
+	// inherited $PWD. Contract commands are split on whitespace and
+	// exec'd with no shell, so a bare argv is what fits here.
+	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\ncommands:\n  test: /bin/pwd\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\n"
+	root := fixtureRepo(t, contract, "")
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	processDir, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want == processDir {
+		t.Fatalf("fixture root %q equals the test process directory; the test proves nothing", want)
+	}
+
+	s := startServer(t, root)
+	s.initialize()
+	res := wantResult(t, s.callTool(1, "run_checks", map[string]any{"scope": "all"}))
+	rep, ok := res["data"].(map[string]any)["report"].(map[string]any)
+	if !ok {
+		t.Fatalf("run_checks data = %v, want a report", res["data"])
+	}
+	gates, ok := rep["gates"].([]any)
+	if !ok {
+		t.Fatalf("report gates = %v, want a list", rep["gates"])
+	}
+	var got string
+	var found bool
+	for _, raw := range gates {
+		g, ok := raw.(map[string]any)
+		if !ok || g["id"] != "test" {
+			continue
+		}
+		found = true
+		if g["status"] != "pass" {
+			t.Fatalf("test gate = %v, want pass", g)
+		}
+		got = strings.TrimSpace(fmt.Sprint(g["outputTail"]))
+	}
+	if !found {
+		t.Fatalf("no test gate in report %v", rep)
+	}
+	// The gate reports its directory as the kernel names it; resolve
+	// both sides so a symlinked temp dir is not mistaken for a miss.
+	resolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatalf("gate reported directory %q: %v", got, err)
+	}
+	if resolved != want {
+		t.Fatalf("gate ran in %q, want the server repoRoot %q (process dir is %q)", resolved, want, processDir)
 	}
 }
 

@@ -492,7 +492,10 @@ func (s *server) toolRunChecks(args json.RawMessage) (map[string]any, *toolError
 		return nil, toolErrf(errContractInvalid, "%v", err)
 	}
 	gates = append(gates, ordered...)
-	report, err := verify.Run(context.Background(), gates, scope)
+	// The gates must run in the repository the server was pointed at
+	// (--root, or the discovered root), never the server process's own
+	// working directory — mirroring check.go.
+	report, err := verify.Run(context.Background(), gates, scope, verify.WithDir(s.repoRoot))
 	if err != nil {
 		return nil, toolErrf(errInternal, "verify: %v", err)
 	}
