@@ -608,7 +608,7 @@ func (s *server) toolAcquireScope(args json.RawMessage) (map[string]any, *toolEr
 	if terr != nil {
 		return nil, terr
 	}
-	dir := filepath.Join(s.repoRoot, filepath.FromSlash(scopeLocksDir))
+	dir := ScopeLocksDir(s.repoRoot)
 	// lease.Acquire does not create its directory; the caller does.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, toolErrf(errInternal, "acquire_scope: create %s: %v", scopeLocksDir, err)
@@ -687,6 +687,29 @@ func (s *server) releaseHeldScopes(errOut io.Writer) {
 		}
 		delete(s.scopes, rel)
 	}
+}
+
+// ScopeLocksDir is the directory scope leases live in beneath repoRoot.
+//
+// It is exported for the same reason improve.RunLease is: `pika recover`
+// is the one remedy for a lease whose session died holding it, and a
+// recover that spelled this path itself would be a second definition of
+// where scope leases live — free to drift from this one the first time
+// it moves, and silently, since a recover looking in the wrong place
+// reports a repository that is already clean.
+func ScopeLocksDir(repoRoot string) string {
+	return filepath.Join(repoRoot, filepath.FromSlash(scopeLocksDir))
+}
+
+// ScopeFromLockName reads the repository-relative path a lock file name
+// stands for, reporting false for any name this package did not write.
+// The lock directory is an ordinary directory and a stray file in it
+// names no scope.
+func ScopeFromLockName(name string) (string, bool) {
+	if !strings.HasSuffix(name, scopeLockSuffix) {
+		return "", false
+	}
+	return decodeScopeLockName(name)
 }
 
 // scopeLockSuffix marks the lease files this package owns, so a stray

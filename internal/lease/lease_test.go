@@ -270,3 +270,73 @@ func TestUnwrittenLeaseNamesNoHolder(t *testing.T) {
 		t.Errorf("HeldError.Info = %+v, want nil: the lease names nobody", he.Info)
 	}
 }
+
+// Clear is the one sweep, and what it refuses is the whole point of
+// having it in one place: a live holder is a process in the tree, and a
+// foreign holder is a pid this machine cannot judge at all. Only a
+// holder proved gone on this host is removed.
+func TestClearSweepsOnlyAProvablyDeadHolder(t *testing.T) {
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name  string
+		info  Info
+		state State
+	}{
+		{"live", Info{ID: "running", PID: os.Getpid(), Host: host}, StateHeld},
+		{"foreign", Info{ID: "elsewhere", PID: deadPID, Host: "another-machine.invalid"}, StateUnverifiable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if _, err := Acquire(dir, "lock", tc.info); err != nil {
+				t.Fatal(err)
+			}
+			var he *HeldError
+			cleared, err := Clear(dir, "lock")
+			if cleared {
+				t.Fatalf("Clear removed a %v lease", tc.state)
+			}
+			if !errors.As(err, &he) {
+				t.Fatalf("Clear of a %v lease = %v, want *HeldError", tc.state, err)
+			}
+			if he.State != tc.state {
+				t.Errorf("HeldError.State = %v, want %v", he.State, tc.state)
+			}
+			if _, err := os.Lstat(Path(dir, "lock")); err != nil {
+				t.Errorf("lease file after a refused Clear: %v, want it untouched", err)
+			}
+		})
+	}
+
+	t.Run("free", func(t *testing.T) {
+		dir := t.TempDir()
+		cleared, err := Clear(dir, "lock")
+		if cleared || err != nil {
+			t.Errorf("Clear of a free name = %v, %v; want false and no error: that is the state the caller wanted", cleared, err)
+		}
+	})
+
+	t.Run("stale", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("processAlive cannot prove a holder dead on Windows")
+		}
+		dir := t.TempDir()
+		if _, err := Acquire(dir, "lock", Info{ID: "crashed", PID: deadPID, Host: host}); err != nil {
+			t.Fatal(err)
+		}
+		cleared, err := Clear(dir, "lock")
+		if !cleared || err != nil {
+			t.Fatalf("Clear of a stale lease = %v, %v; want it swept", cleared, err)
+		}
+		if _, err := os.Lstat(Path(dir, "lock")); !os.IsNotExist(err) {
+			t.Errorf("lease file after Clear: %v, want it gone", err)
+		}
+		// And the name is usable again, which is the point.
+		if _, err := Acquire(dir, "lock", Info{ID: "next"}); err != nil {
+			t.Errorf("Acquire after Clear: %v, want the name free", err)
+		}
+	})
+}

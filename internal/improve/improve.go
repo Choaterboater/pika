@@ -227,7 +227,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	// lifecycle creates. It carries the run id so a refusal can name a
 	// run `pika status` can look up, and it is held until settle has
 	// recorded a terminal outcome.
-	held, err := takeRunLease(root, workID)
+	held, err := TakeRunLease(root, workID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -254,7 +254,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	return settle(ctx, root, handle, result, runErr, false)
 }
 
-// takeRunLease claims the repository for one run, refusing rather than
+// TakeRunLease claims the repository for one run, refusing rather than
 // waiting or stealing when another already holds it.
 //
 // Neither alternative is available. Waiting would make a run that has
@@ -264,10 +264,15 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 // promise that one process is in the tree, and a second that takes it
 // anyway has only added a lock file to the corruption.
 //
+// It is exported because `pika handoff` drives one phase of this
+// lifecycle without going through Run: it writes a bundle into the
+// repository and spawns an agent in the working tree, which is the
+// hazard this lease exists to exclude, reached through a second door.
+//
 // lease.Acquire does not create its directory, so this does. A
 // repository that has never held a run has no state directory at all,
 // and the run about to be recorded needs one regardless.
-func takeRunLease(root *repopath.Root, workID string) (*lease.Handle, error) {
+func TakeRunLease(root *repopath.Root, workID string) (*lease.Handle, error) {
 	dir, name := RunLease(root)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("improve: create %s: %w", dir, err)
@@ -419,7 +424,7 @@ func Resume(ctx context.Context, root, workID string, cfg Config) (result Result
 	// leaves — and picking it up on the strength of a matching work id
 	// is how a resume joins a run that never stopped. `pika recover` is
 	// where that judgement belongs, with an operator behind it.
-	held, err := takeRunLease(repo, workID)
+	held, err := TakeRunLease(repo, workID)
 	if err != nil {
 		return Result{}, err
 	}

@@ -96,11 +96,28 @@ func runHandoff(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 // The record is created only once there is work to hand over: the
 // no-failed-gate exit above returns before this is called, because a run
 // refused before it does anything must leave nothing behind.
-func recordedHandoff(ctx context.Context, root *repopath.Root, agent string, report *verify.Report, runner improve.Runner) (improve.Handoff, string, error) {
-	workID, err := evidence.NewWorkID(time.Now().UTC(), "handoff")
+//
+// It takes the same whole-repository run lease `pika work` does, and is
+// refused in the same words. A handoff writes a bundle into the
+// repository and spawns an agent inside the working tree, so a handoff
+// running beside a run is two processes editing one tree — the exact
+// hazard the lease exists to exclude. Not going through improve.Run is
+// not a reason to hold nothing; it is only a second door into the same
+// room.
+func recordedHandoff(ctx context.Context, root *repopath.Root, agent string, report *verify.Report, runner improve.Runner) (handoff improve.Handoff, workID string, err error) {
+	workID, err = evidence.NewWorkID(time.Now().UTC(), "handoff")
 	if err != nil {
 		return improve.Handoff{}, "", err
 	}
+	// Taken before anything is written, and carrying this run's id so a
+	// refusal names a run `pika status` can look up. A handoff refused
+	// because another run holds the repository has done nothing, so it
+	// reports no work id either: there is no run to go and look at.
+	leased, err := improve.TakeRunLease(root, workID)
+	if err != nil {
+		return improve.Handoff{}, "", err
+	}
+	defer func() { err = errors.Join(err, leased.Release()) }()
 	// The baseline is already observed by the time this is reached: the
 	// report handed in is what the ladder said, so the run is born with
 	// its baseline phase already complete.

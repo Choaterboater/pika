@@ -93,6 +93,20 @@ What M2 changed underneath existing repositories, and two known gaps it delibera
 
 The evidence for each — including the one error code that moved on a documented surface, and what the `fs_read` change does *not* mean — is in [docs/reference/m3-delta.md](docs/reference/m3-delta.md).
 
+**Milestone 4 (safe concurrency) complete.** Added:
+
+| Area | What works |
+|---|---|
+| One holder lock | `internal/lease` is the single `O_EXCL` exclusion in the binary, extracted from the transaction lock that has never corrupted a repository. It records the holder's id, pid, start time and **host**, and it is never stolen automatically on any path |
+| One run at a time | `pika work`, `pika improve`, `pika resume` and `pika handoff` hold an exclusive whole-repository run lease at `.project/state/run.lock`. A second run refuses immediately, naming the holding run and its pid, before it spawns an agent or touches the tree. Two concurrent runs shared one working tree and one HEAD; neither knew the other was there |
+| Scope leases are real | MCP `acquire_scope`/`release_scope` are backed by that lease under `.project/state/locks/`, exclusive over a path *and its whole subtree*, with the stable `scope_conflict` code. Only the session holding a lease can give it back |
+| A foreign holder is never stale | A pid recorded on another host proves nothing locally — it can be long dead here and still writing there — so it is reported `unverifiable`, never swept, and never described as stale. That word is what would make an operator clear a lock a live writer still holds |
+| Recovery covers all of it | `pika recover` reports and, with `--apply`, clears the run lease and the scope leases as well as the transaction lock. Without it a killed run wedged the repository with no supported way out — exactly the dead end recover was built for one layer down. Clearing a lease never discards the run: `pika resume` still finishes it |
+| Git option injection closed | Every branch and commit `internal/improve` hands to Git is passed after the separator that command actually honours — `--` where a branch is the operand, `--end-of-options` for revision commands where `--` means "paths follow" — so a branch or ref beginning with `-` can no longer be read as a flag |
+| End-to-end | `internal/e2e` runs two concurrent `pika work` invocations through the real binary and asserts the second refuses naming the holder while the first completes, then kills a run and clears its lease with `pika recover` |
+
+What changed, and why the SQLite coordination board and the multi-agent machinery in the spec were deliberately **not** built, is recorded in [docs/reference/m4-delta.md](docs/reference/m4-delta.md).
+
 
 ## Install
 
@@ -141,7 +155,7 @@ pika mcp
 | `pika init` | Create a lean project contract and scaffold for a new repository |
 | `pika adopt` | Inventory an existing repository; produces a draft contract and migration preview without changing working code |
 | `pika apply` | Promote the adoption drafts into a live contract transactionally — operator-owned files create-if-missing, the two kernel-owned files refreshed and reported, full rollback on failure, and a rewritten human-readable review bundle |
-| `pika recover` | Report a transaction that never finished — holder, liveness, and every file a rollback would touch — and undo it with `--apply` |
+| `pika recover` | Report what a killed process left behind — a transaction that never finished, and the run and scope leases it never gave back, with every holder, its liveness, and every file a rollback would touch — and clear it with `--apply` |
 | `pika check` | Run the verification ladder locally or in CI (`--all`, `--changed`, `--ci`; `--ci` makes no LLM calls) |
 | `pika status` | List the durable work runs this repository has, or report one in full: phases, branch, commit, outcome, and the reason it stopped |
 | `pika doctor` | Diagnose contract, lock, exceptions, envelope, per-gate command, toolchain, and git — without executing a single gate |

@@ -347,7 +347,7 @@ pika explain envelope_denied
 |---|---|
 | Naming rules | `naming-kebab-case`, `naming-catch-all`, `file-size-review`, `generated-owner` |
 | Verification gates | `contract`, `format`, `lint`, `typecheck`, `test`, `smoke` |
-| MCP error codes | `envelope_denied`, `contract_invalid`, `already_adopted`, `invalid_params`, `unavailable`, `internal` |
+| MCP error codes | `envelope_denied`, `contract_invalid`, `already_adopted`, `scope_conflict`, `invalid_params`, `unavailable`, `internal` |
 
 Run `pika explain` with an unknown id to print the ids this repository actually knows.
 
@@ -484,6 +484,20 @@ authorization runs before the path normalization that used to reject it, on
 purpose: normalizing first would hand the check a target already proved
 repo-inside, and it could then never deny anything.
 
+### Scope leases and `scope_conflict`
+
+The envelope says which paths an agent *may* write; a **scope lease** is what makes one of them exclusive. `acquire_scope` takes a lease on a repository-relative path, recorded at `.project/state/locks/<encoded-path>.lock`; `release_scope` gives it back. Both are refused with the stable code `scope_conflict`:
+
+| Situation | Why |
+|---|---|
+| the path, or one inside or containing it, is already leased | exclusive over a path means exclusive over its whole subtree — a lease on `src` conflicts with one on `src/pkg` in both directions, because an exclusion an agent could sidestep by naming a subdirectory would not be one |
+| the holding session asks for a lease it already holds | a lease it holds is not a second lease it may take |
+| `release_scope` names a path this session does not hold | an agent told it released somebody else's lease would go on to write under it |
+
+Leases never expire and are never stolen: the holding session releases it, or the session ends and the server gives back everything it still holds. `pika explain scope_conflict` prints the rationale and the remedy.
+
+A killed MCP session cannot give anything back, so its leases stay on disk and every later `acquire_scope` on those paths is refused. [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) clears the ones whose holder is provably gone.
+
 ---
 
 ## 10. Hand a failed check to Codex
@@ -547,6 +561,21 @@ pika work "$GOAL"                             # exit 2 when GOAL is unset or bla
 ```
 
 `--branch <name>`, `--agent <name>`, `--json` and `--root <dir>` behave exactly as `improve`'s do, and the default branch is the same `chore/pika-improve` — so a run interrupted before it branched resumes onto the branch `pika resume` would pick anyway.
+
+### One repository runs one run at a time
+
+`work`, `improve`, `resume` and `handoff` each take an exclusive **run lease** on the whole repository, at `.project/state/run.lock`, and hold it until the run records a terminal outcome. A second one started while the first is in flight refuses immediately, before it spawns an agent or touches anything:
+
+```
+$ pika work "a second goal"
+pika work: improve: another run holds this repository: run 20260830-feature-b2792c9f
+(pid 8900 on build-01, started 2026-08-30T23:08:14Z) is in progress; one repository runs
+one run at a time, because both would commit through the same working tree
+```
+
+This is the hazard one user with two terminals can reach. Both runs write one working tree and move one HEAD: the second run's agent edits land in the first run's commit, and the second run's branch checkout moves the tree the first one is verifying. The refusal names the holding run so `pika status <work-id>` can be pointed straight at it.
+
+The lease is never waited on and never stolen. Waiting would make a run that stopped for a reason indistinguishable from one that hung, and an operator staring at a silent terminal could not tell which they had. Stealing is the defect itself. If the holder is gone, [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) is the remedy — and it is a decision, not a retry.
 
 ---
 
@@ -615,23 +644,39 @@ If Git proves the work already landed — the branch points at the commit the re
 
 ---
 
-## 15. Unwedge a crashed transaction (`pika recover`)
+## 15. Unwedge a crashed run or transaction (`pika recover`)
 
 ### The situation this exists for
 
-`pika apply` runs under a crash-safe journal and an exclusive lock at `.project/state/recovery/lock`. If the process is killed part-way — a lost SSH session, an OOM kill, a CI runner that vanished — three things are true at once:
+pika holds three kinds of exclusive lock, and **none of them is ever stolen automatically, on any path** — not even when the process that took it is provably gone:
+
+| Lock | Taken by | Where |
+|---|---|---|
+| Transaction lock | `pika apply` | `.project/state/recovery/lock` |
+| Run lease | `pika work`, `pika improve`, `pika resume`, `pika handoff` | `.project/state/run.lock` |
+| Scope leases | an MCP session's `acquire_scope` | `.project/state/locks/` |
+
+That refusal is why the mechanism has never corrupted a repository: stealing a lock from a process that turns out to still be running is how two writers come to share one working tree. The cost of it is that a process killed part-way — a lost SSH session, an OOM kill, a CI runner that vanished — leaves the repository locked out, forever, until somebody intervenes. `pika recover` is that intervention, and it is the only supported one.
+
+After a killed `pika apply`, three things are true at once:
 
 1. The tree may be half-mutated: some planned operations ran, the rest did not.
 2. The journal and per-op backups needed to undo them are on disk.
-3. **The lock is still held, and it is never stolen — not even when the process that took it is gone.**
-
-That third point is deliberate: stealing a lock from a process that turns out to still be running is how two transactions come to apply plans to one tree. But it means every later transaction fails, forever, with:
+3. The transaction lock is still held, so every later transaction fails with:
 
 ```
 txn: scope lease required: recovery lock at .../recovery/lock held by pid 41234 since ...
 ```
 
-`pika recover` is the way out.
+After a killed `pika work`, the run record is intact and `pika status` shows the run — but its lease was never given back, so `pika resume` refuses to rejoin it:
+
+```
+improve: another run holds this repository: run 20260830-feature-9ca9ae9e (pid 41234 on
+build-01, started 2026-08-30T12:00:00Z) is no longer running and never released its
+lease; `pika recover` clears it
+```
+
+`pika resume` does not clear that lease itself, and this is deliberate. A record saying "interrupted" is bit for bit what a run that is still working leaves behind, so a resume that took the lease on the strength of a matching work id would be joining a run that never stopped. Clearing it is a decision, and it belongs to an operator with the report in hand.
 
 ### Look first
 
@@ -639,7 +684,7 @@ txn: scope lease required: recovery lock at .../recovery/lock held by pid 41234 
 pika recover
 ```
 
-The default changes nothing. It reports where recovery state lives, who holds the lock, **whether that process is still running**, and every journaled operation with what a rollback would do to it:
+The default changes nothing. It reports where recovery state lives, who holds every lock, **whether that holder can be proved gone**, and every journaled operation with what a rollback would do to it:
 
 ```
 root      /home/you/my-service (contract)
@@ -653,10 +698,37 @@ transaction 17e4c1a09b3f0000-3f9c21ab
   undo  create .project/profiles.lock
   skip  delete review/adoption-review.md  (the mutation never ran)
 
-nothing has been changed. Re-run with --apply to roll this back and release the lock.
+nothing has been changed. Re-run with --apply to roll this back and clear what no process is behind.
 ```
 
 `undo` and `skip` are not guesses. Each entry is classified against the file on disk and its preserved backup, by the same code the rollback itself uses — so the report is the plan, not a second opinion about it.
+
+A repository whose runs were killed rather than whose transactions were reports its leases the same way, and says of each one what `--apply` would do with it:
+
+```
+root      /home/you/my-service (contract)
+recovery  /home/you/my-service/.project/state/recovery
+
+no interrupted transaction
+
+leases
+  run   /home/you/my-service/.project/state/run.lock
+        covers the whole repository: one run at a time, because two would commit through one working tree
+        stale, held by 20260830-feature-9ca9ae9e (pid 41234 on build-01, started 2026-08-30T12:00:00Z)
+        --apply clears this: the holder process is gone and it was recorded on this host
+  scope /home/you/my-service/.project/state/locks/src%2Fapi.lock
+        covers src/api and everything under it
+        stale, held by scope:src/api#1756555200000000000 (pid 41250 on build-01, started 2026-08-30T12:00:05Z)
+        --apply clears this: the holder process is gone and it was recorded on this host
+
+nothing has been changed. Re-run with --apply to roll this back and clear what no process is behind.
+```
+
+### Leases are whole-repository, and scope leases cover subtrees
+
+The run lease excludes the **entire repository**, not a directory or a branch. That is not caution, it is the shape of the hazard: two runs share one working tree and one HEAD, so the second one's agent edits land in the first one's commit, and the second one's branch checkout moves the tree the first one is verifying. Neither would know the other was there. Path-scoped run leases would serve parallel writers, and pika does not have any — one repository runs one run at a time.
+
+A scope lease is narrower but works the same way in its subtree: a lease on `src` conflicts with one on `src/pkg` in both directions, because an exclusion an agent could sidestep by naming a subdirectory would not be one.
 
 ### Then act
 
@@ -664,16 +736,27 @@ nothing has been changed. Re-run with --apply to roll this back and release the 
 pika recover --apply
 ```
 
-This rolls every journaled operation back in reverse order, restores each file byte-for-byte from its backup, retires the journal and the backups, and releases the lock. The repository is left exactly as it was before the transaction started, and new transactions can begin.
+This rolls every journaled operation back in reverse order, restores each file byte-for-byte from its backup, retires the journal and the backups, releases the transaction lock, and clears every lease whose holder is provably gone:
+
+```
+cleared the run lease at /home/you/my-service/.project/state/run.lock (held by 20260830-feature-9ca9ae9e, no longer running)
+
+the repository is clear; new transactions and runs can begin
+```
+
+Clearing a run's lease does **not** discard the run. The record stays exactly where it was, `pika status` still lists it, and `pika resume <work-id>` picks it up from the phase it reached. Recover unlocks the door; resume finishes the work.
 
 ### What it refuses
 
 | State | What `pika recover` does |
 |---|---|
-| the holder process is still running | **refuses**, exit 2, naming the pid — wait for it, do not roll its work out from under it |
+| the holder process is still running | **refuses**, exit 2, naming the run and the pid — wait for it, do not roll its work out from under it or clear the lease it is inside |
+| the holder is on **another host** | **refuses**, exit 2, and never calls it stale. A pid recorded on another machine proves nothing here: it can be long dead locally and still writing where it was taken. Check that machine, then remove the file yourself |
 | the lock names no holder at all | **refuses**, exit 2 — an empty lock cannot be proved stale, so it says so and names the file to remove once you are certain |
 | a journal entry does not match the disk | stops that journal with an error naming the entry; something outside pika edited those files between the crash and now |
-| nothing pending | exits 0 saying so; a repository with no interrupted transaction is a normal state |
+| nothing pending | exits 0 saying so; a repository with no interrupted transaction and no lease left behind is a normal state |
+
+Refusals are all-or-nothing and nothing is attempted: a live run in the tree is a reason not to start rolling anything back at all.
 
 ### On Windows, `--apply` always refuses
 
@@ -683,15 +766,16 @@ pika answers conservatively rather than wrongly: **every positive pid reads as
 alive**, so `pika recover --apply` refuses every wedged repository there with
 `the holder process is still running`.
 
-The report is unaffected — the journal walk, the `undo`/`skip` classification
-and the file listing are all platform-independent, so `pika recover` still
-tells you exactly what happened and what a rollback would touch. Only the
-liveness verdict, and therefore the authorization to act on it, cannot be
-trusted. Once you have confirmed by other means that the holder is gone,
-delete `.project/state/recovery/lock` by hand and re-run. This is a known gap:
+The report is unaffected — the journal walk, the `undo`/`skip` classification,
+the lease listing and the file listing are all platform-independent, so
+`pika recover` still tells you exactly what happened and what a rollback would
+touch. Only the liveness verdict, and therefore the authorization to act on it,
+cannot be trusted. Once you have confirmed by other means that the holder is
+gone, delete `.project/state/recovery/lock`, `.project/state/run.lock` or the
+file under `.project/state/locks/` by hand and re-run. This is a known gap:
 [../reference/m2-delta.md](../reference/m2-delta.md#gap-2--pika-recover---apply-cannot-prove-a-holder-dead-on-windows).
 
-`pika doctor` reports the same state as a `recovery` finding and points here, so the situation is discoverable without already knowing this command exists.
+`pika doctor` reports an interrupted **transaction** as a `recovery` finding and points here, so that situation is discoverable without already knowing this command exists. It does not inspect the run and scope leases; after a killed run, the refusal you get from `pika work` or `pika resume` names `pika recover` directly.
 
 ---
 
@@ -745,7 +829,7 @@ git log -1 chore/pika-improve     # the verified commit, still local and unpubli
 ```sh
 pika doctor                       # root, contract, lock, exceptions, envelope, recovery, gates, git
 pika explain <rule-or-gate-or-code>
-pika recover                      # when doctor reports a transaction that never finished
+pika recover                      # a transaction or a run that never finished; --apply to act
 ```
 
 ---
@@ -795,6 +879,8 @@ A usage or configuration error (exit `2`) replaces `result` with `error` and pri
 | `.project/state/` | Board, recovery journals, run records, agent transcripts (redacted at write time, never published) | **Never** (gitignored by init) |
 | `.project/state/work/<work-id>/` | One run's durable record and its handoff bundle | **Never** |
 | `.project/state/recovery/` | Transaction journals, per-op backups, and the recovery lock | **Never** |
+| `.project/state/run.lock` | The whole-repository run lease, present only while a run is in flight — or after one was killed holding it | **Never** |
+| `.project/state/locks/` | One file per MCP scope lease, named for the path it covers | **Never** |
 | `.project/state/envelope.yaml` | Capability envelope — mode 0600, local-only, machine-specific | **Never** |
 | `review/adoption-review.md` | Human-readable adoption review | Yes |
 

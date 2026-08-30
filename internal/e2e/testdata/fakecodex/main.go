@@ -16,9 +16,18 @@
 //	FAKE_CODEX_MESSAGE  the final agent message (defaults to a fixed line)
 //	FAKE_CODEX_PROMPT   copy the prompt read from stdin to this path
 //	FAKE_CODEX_ARGV     record the argv pika spawned at this path, one per line
+//	FAKE_CODEX_SPAWNED  create this file before the edit is made, so a
+//	                    test can act while the working tree is still clean
+//	FAKE_CODEX_WAIT     block until this file appears, before the edit
 //	FAKE_CODEX_STARTED  create this file once the edit is on disk
 //	FAKE_CODEX_HANG     block until this file appears, so the test can
 //	                    interrupt pika at a known point in the lifecycle
+//
+// The two gates bracket the one thing the agent does that the
+// repository can see. SPAWNED/WAIT hold a run that has taken everything
+// it takes and changed nothing — which is where a test can ask what a
+// second run does about it — and STARTED/HANG hold one whose edit is
+// already on disk.
 //
 // Every path but FAKE_CODEX_FILE is absolute and belongs to the test, not
 // to the repository under test: a run's own tree must contain only what
@@ -69,6 +78,14 @@ func run(argv []string) error {
 	if err := record(os.Getenv("FAKE_CODEX_PROMPT"), string(prompt)); err != nil {
 		return err
 	}
+	// Before the edit: the run has taken its branch and its lease and
+	// has changed nothing the repository can see. A test holding here
+	// is asking what a second run does about a first one that is
+	// genuinely in flight.
+	if err := record(os.Getenv("FAKE_CODEX_SPAWNED"), "spawned\n"); err != nil {
+		return err
+	}
+	hang(os.Getenv("FAKE_CODEX_WAIT"))
 	if name := os.Getenv("FAKE_CODEX_FILE"); name != "" {
 		path := filepath.Join(root, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

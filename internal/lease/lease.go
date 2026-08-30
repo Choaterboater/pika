@@ -201,6 +201,43 @@ func (h *Handle) Release() error {
 	return nil
 }
 
+// Clear removes a lease whose holder is provably gone, and refuses
+// everything else. It is the one sweep in the binary: the rule for when
+// a lease may be taken away from somebody who did not give it back
+// lives here, so a second caller cannot arrive at a gentler version of
+// it.
+//
+// It re-reads the file rather than trusting a state a caller inspected
+// earlier. The decision to remove a lock has to be made from what is on
+// disk at the moment of removal, not from what was there when a report
+// was printed.
+//
+// Only StateStale is removed. StateHeld belongs to a process that is
+// running. StateUnverifiable belongs to a holder on another host, where
+// a pid that looks dead here proves nothing — sweeping it is exactly
+// how two writers end up in one tree — and a lease naming no readable
+// holder cannot be proved anything at all. Each of those comes back as
+// a *HeldError carrying the state, so the caller can say which it met
+// and what the operator should do about it.
+//
+// A free name returns false with no error: that is the state the caller
+// wanted, not a failure.
+func Clear(dir, name string) (bool, error) {
+	path := Path(dir, name)
+	info, state, err := Inspect(dir, name)
+	switch state {
+	case StateFree:
+		return false, nil
+	case StateStale:
+	default:
+		return false, &HeldError{Path: path, Info: info, State: state, Err: err}
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("lease: remove %s: %w", path, err)
+	}
+	return true, nil
+}
+
 // Inspect reports the lease named name in dir without changing it. A
 // free name returns a nil Info and no error. A lease that exists but
 // names no readable holder returns a nil Info with the read error and
