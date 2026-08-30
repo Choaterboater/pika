@@ -11,8 +11,7 @@ packages:
     profiles:
     - core@1
     - swift@1
-commands:
-  format: swift format
+commands: {}
 agents: {}
 github:
   merge: squash

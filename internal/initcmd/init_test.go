@@ -315,19 +315,26 @@ func TestUnknownProfileRejected(t *testing.T) {
 // preinstalled on GitHub runners) regressed silently once already.
 func TestCISetupCoversContractCommands(t *testing.T) {
 	required := map[string][]string{
-		// contract test command `go test ./...`: setup-go installs Go.
+		// contract commands `gofmt -l -w .`, `go vet ./...`,
+		// `go build -o /dev/null ./...`, `go test ./...`: setup-go
+		// installs the whole toolchain.
 		"go": []string{"actions/setup-go@v5"},
-		// typescript commands are discovery sentinels; node 24 setup
-		// keeps the suggested commands runnable.
+		// no typescript hint is autofillable, so the contract names no
+		// command; node 24 setup keeps the hinted commands runnable once
+		// the user adds the scripts and installs dependencies.
 		"typescript": []string{"actions/setup-node@v4", "node-version: \"24\""},
-		// contract test command `python -m pytest`: runners ship Python
-		// without pytest.
-		"python": []string{"actions/setup-python@v5", "python -m pip install pytest"},
-		// contract commands `cargo build` / `cargo test`: cargo ships on
-		// runners; the workflow still pins stable.
+		// contract commands `python -m pytest`, `ruff format .`,
+		// `ruff check .`, `mypy .`: runners ship a bare interpreter, so
+		// all three packages are installed explicitly.
+		"python": []string{"actions/setup-python@v5", "python -m pip install pytest ruff mypy"},
+		// contract commands `cargo build` / `cargo test` /
+		// `cargo fmt -- --check` / `cargo clippy -- -D warnings`: cargo
+		// ships on runners and rustup's stable profile carries rustfmt
+		// and clippy; the workflow still pins stable.
 		"rust": []string{"rustup default stable"},
 		// contract commands `swift build` / `swift test`: swift ships on
-		// runners.
+		// runners. The format hint does not autofill, so no
+		// swift-format-capable toolchain is required.
 		"swift": []string{},
 	}
 	for _, lang := range languages {
@@ -427,25 +434,51 @@ func TestDigitLeadingNamesProduceValidStackIdentifiers(t *testing.T) {
 
 // A fresh TypeScript repo used to pass `pika check` with all five gates
 // skipped: typescript@1 declares every slot discovery-only, so the report
-// was green while nothing was verified.
-func TestCommandsPopulatedFromHintsWhenToolPresent(t *testing.T) {
-	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "typescript@1"})
+// was green while nothing was verified. Populating from a bare PATH probe
+// swapped that for a worse failure — every npm hint was adopted and the
+// scaffold then failed its own checks — so a hint is adopted only when
+// its pack marks it autofillable.
+func TestCommandsPopulatedFromAutofillableHints(t *testing.T) {
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "go@1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	present := func(string) (string, error) { return "/usr/bin/stub", nil }
 
 	got := commandsFromChecks(resolved.Checks, present)
-	if got["test"] != "npm test" {
-		t.Errorf("commands[test] = %q, want %q", got["test"], "npm test")
+	want := map[string]string{
+		"format":    "gofmt -l -w .",
+		"lint":      "go vet ./...",
+		"typecheck": "go build -o /dev/null ./...",
 	}
-	if got["lint"] != "npm run lint" {
-		t.Errorf("commands[lint] = %q, want %q", got["lint"], "npm run lint")
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("commands = %v, want %v", got, want)
+	}
+}
+
+// Every typescript@1 hint runs through npm or npx, which resolve on any
+// machine with node installed and then delegate to a package.json script
+// or a registry download the scaffold does not provide. The PATH probe
+// says yes to all four; autofill says no to all four, and the slots stay
+// honest discovery skips.
+func TestDelegatingHintsAreNotAdoptedEvenWhenTheirToolIsPresent(t *testing.T) {
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "typescript@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := func(string) (string, error) { return "/usr/bin/stub", nil }
+
+	if got := commandsFromChecks(resolved.Checks, present); len(got) != 0 {
+		t.Fatalf("commands = %v; npm/npx hints delegate to scripts a fresh scaffold does not define and must never be adopted", got)
+	}
+	// The hints themselves survive: doctor renders them as remediation.
+	if got := strings.Join(resolved.Checks.Lint.Hint, " "); got != "npm run lint" {
+		t.Errorf("lint hint = %q, want it kept for doctor's remediation", got)
 	}
 }
 
 func TestCommandsOmittedWhenToolAbsent(t *testing.T) {
-	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "typescript@1"})
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "go@1"})
 	if err != nil {
 		t.Fatal(err)
 	}

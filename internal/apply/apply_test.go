@@ -154,9 +154,11 @@ func TestApplyHappyPath(t *testing.T) {
 		}
 	}
 	// The fixture's Makefile gives adopt format, lint, and test; go@1
-	// leaves typecheck a discovery sentinel hinting `go build ./...`.
-	if got := appliedContract.Commands["typecheck"]; got != "go build ./..." {
-		t.Errorf("applied commands[typecheck] = %q, want the go@1 hint %q", got, "go build ./...")
+	// leaves typecheck a discovery sentinel whose autofillable hint is
+	// `go build -o /dev/null ./...` (plain `go build ./...` would drop a
+	// linked binary in the repository root every time the gate ran).
+	if got := appliedContract.Commands["typecheck"]; got != "go build -o /dev/null ./..." {
+		t.Errorf("applied commands[typecheck] = %q, want the go@1 hint %q", got, "go build -o /dev/null ./...")
 	}
 	// Nothing outside commands is rewritten at promotion time.
 	appliedContract.Commands = draftContract.Commands

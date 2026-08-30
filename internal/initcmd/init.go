@@ -304,9 +304,18 @@ func buildContract(name string, selection []string, commands map[string]string) 
 var lookPath = exec.LookPath
 
 // commandsFromChecks fills contract.commands from pack hints for slots
-// that are discovery sentinels whose suggested tool is actually present.
-// Without this a fresh repository can pass `pika check` with every gate
-// skipped — green while verifying nothing.
+// that are discovery sentinels whose pack marks the hint autofillable and
+// whose suggested tool is actually present. Without this a fresh
+// repository can pass `pika check` with every gate skipped — green while
+// verifying nothing.
+//
+// Autofill is load-bearing, not belt-and-braces. A tool on PATH proves
+// the binary exists, never that the command works: `npm` is installed on
+// most developer machines but `npm run lint` needs a script the scaffold
+// does not define, so populating it hands the user a repository that
+// fails its own checks the moment it is created. Only a pack that has
+// verified its hint against a fresh scaffold sets autofill; every other
+// hint stays advice for doctor to render and a human to adopt.
 //
 // lookPath is injected so golden tests stay deterministic regardless of
 // what the authoring machine has installed.
@@ -328,7 +337,7 @@ func commandsFromChecks(cs profiles.CheckSet, lookPath func(string) (string, err
 		if len(s.check.Cmd) > 0 || !s.check.Discovery {
 			continue
 		}
-		if len(s.check.Hint) == 0 {
+		if !s.check.Autofill || len(s.check.Hint) == 0 {
 			continue
 		}
 		if _, err := lookPath(s.check.Hint[0]); err != nil {
@@ -553,7 +562,9 @@ func ciPaths(lang string) string {
 // ciSteps renders the toolchain setup steps preceding the pika
 // steps. Go is always set up because pika itself installs through
 // `go install`; the language step makes the stack's check gates runnable.
-// Rust and Swift toolchains are preinstalled on GitHub-hosted runners.
+// Rust and Swift toolchains are preinstalled on GitHub-hosted runners,
+// and rustup's stable profile carries rustfmt and clippy, so the rust
+// format and lint commands need no extra install.
 func ciSteps(lang string) string {
 	steps := "      - uses: actions/setup-go@v5\n" +
 		"        with:\n" +
@@ -564,11 +575,16 @@ func ciSteps(lang string) string {
 			"        with:\n" +
 			"          node-version: \"24\"\n"
 	case "python":
+		// A runner ships a Python interpreter and nothing else: every
+		// tool python@1 can put in the contract — pytest for the test
+		// slot, ruff for format and lint, mypy for typecheck — has to be
+		// installed here or the gate that names it fails in CI while
+		// passing on the author's machine.
 		steps += "      - uses: actions/setup-python@v5\n" +
 			"        with:\n" +
 			"          python-version: \"3.13\"\n" +
-			"      - name: Install test tooling\n" +
-			"        run: python -m pip install pytest\n"
+			"      - name: Install check tooling\n" +
+			"        run: python -m pip install pytest ruff mypy\n"
 	case "rust":
 		steps += "      - name: Pin stable Rust\n" +
 			"        run: rustup default stable\n"

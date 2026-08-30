@@ -11,11 +11,7 @@ packages:
     profiles:
     - core@1
     - typescript@1
-commands:
-  format: npm run format
-  lint: npm run lint
-  test: npm test
-  typecheck: npx tsc --noEmit
+commands: {}
 agents: {}
 github:
   merge: squash

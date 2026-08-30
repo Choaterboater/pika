@@ -119,12 +119,16 @@ type Verification struct {
 
 // checkSpec is the pack-side form of a check slot. A discovery sentinel
 // may carry a hint: the suggested command for when the repository's own
-// discovery finds nothing.
+// discovery finds nothing. autofill additionally promises that the hint
+// is a complete command that runs correctly in a freshly scaffolded
+// project of this stack, so `pika init` may write it straight into
+// contract.commands.
 type checkSpec struct {
 	ID        string   `yaml:"id"`
 	Cmd       []string `yaml:"cmd"`
 	Discovery bool     `yaml:"discovery"`
 	Hint      []string `yaml:"hint"`
+	Autofill  bool     `yaml:"autofill"`
 }
 
 // DocTrigger names documentation that must stay in sync with changes.
@@ -175,11 +179,21 @@ type Layer struct {
 // plus args, never a shell string) or a discovery sentinel meaning the
 // stack layer supplies the real command. A discovery sentinel may carry a
 // hint: the suggested command for when repository discovery finds none.
+//
+// Hint and Autofill answer two different questions. Hint is advice for a
+// human ("this is probably what you want here"), and doctor renders it
+// verbatim as remediation. Autofill is a promise to the machine: the hint
+// is a whole, self-contained command that succeeds in a freshly
+// scaffolded project, so authoring may adopt it unattended. `npm run
+// lint` is sound advice and an unsound adoption — npm is installed, the
+// script it delegates to is not — which is exactly why the two are
+// separate fields.
 type Check struct {
 	ID        string
 	Cmd       []string
 	Discovery bool
 	Hint      []string
+	Autofill  bool
 }
 
 // CheckSet holds the five verification slots.
@@ -336,8 +350,12 @@ func (p *Pack) checkSet() (CheckSet, error) {
 			if len(spec.Cmd) != 0 {
 				return cs, fmt.Errorf("check %q: discovery takes no cmd", spec.ID)
 			}
+			if spec.Autofill && len(spec.Hint) == 0 {
+				return cs, fmt.Errorf("check %q: autofill needs a hint to fill from", spec.ID)
+			}
 			slot.Discovery = true
 			slot.Hint = spec.Hint
+			slot.Autofill = spec.Autofill
 			continue
 		}
 		if len(spec.Cmd) == 0 {
@@ -345,6 +363,9 @@ func (p *Pack) checkSet() (CheckSet, error) {
 		}
 		if len(spec.Hint) != 0 {
 			return cs, fmt.Errorf("check %q: hint belongs to a discovery sentinel", spec.ID)
+		}
+		if spec.Autofill {
+			return cs, fmt.Errorf("check %q: autofill belongs to a discovery sentinel", spec.ID)
 		}
 		slot.Cmd = spec.Cmd
 	}

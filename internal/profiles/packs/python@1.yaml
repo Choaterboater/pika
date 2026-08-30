@@ -26,15 +26,22 @@ verification:
   # Discovery sentinels carry the suggested command for when the
   # repository's own discovery (Makefile, pyproject scripts) finds
   # nothing; the resolver keeps them as sentinels, not commands.
+  # autofill marks the hints measured against a fresh `pika init
+  # --profile python` scaffold: ruff and mypy are single self-contained
+  # binaries that need no project configuration, and all three exit 0 on
+  # the scaffold as written. CI installs them alongside pytest.
   checks:
     - id: format
       discovery: true
+      autofill: true
       hint: [ruff, format, .]
     - id: lint
       discovery: true
+      autofill: true
       hint: [ruff, check, .]
     - id: typecheck
       discovery: true
+      autofill: true
       hint: [mypy, .]
     - id: test
       cmd: [python, -m, pytest]

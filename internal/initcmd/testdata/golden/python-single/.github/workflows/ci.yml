@@ -34,8 +34,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install test tooling
-        run: python -m pip install pytest
+      - name: Install check tooling
+        run: python -m pip install pytest ruff mypy
       - name: Install pika
         run: go install github.com/Choaterboater/pika/cmd/pika@latest
       - name: Verify

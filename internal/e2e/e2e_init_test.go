@@ -53,13 +53,15 @@ func TestMain(m *testing.M) {
 var languages = []string{"go", "typescript", "python", "swift", "rust"}
 
 // toolchainAbsent reports why the language's real check gates cannot run
-// on this machine, or "" when every contract command is runnable. The
-// typescript scaffold keeps all five slots as discovery sentinels, so it
-// never needs a toolchain; go is always present because the tests run
-// under `go test`.
+// on this machine, or "" when every contract command is runnable. go is
+// always present because the tests run under `go test`.
 func toolchainAbsent(lang string) string {
 	switch lang {
 	case "typescript":
+		// No typescript@1 hint is autofillable: every one delegates to a
+		// package.json script or an npx download the scaffold does not
+		// provide, so the contract names no command and all five slots
+		// skip. Nothing to install, and nothing that can fail.
 		return ""
 	case "go":
 		if _, err := exec.LookPath("go"); err != nil {
