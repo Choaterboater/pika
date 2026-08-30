@@ -487,3 +487,48 @@ func TestWorkIDSuffixWidthIsNotAssumed(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordDoesNotShareItsPhaseSliceWithTheHandle pins the read-modify-
+// save loop tasks 4-8 run: read the record, append a phase, save it back.
+// If Record() handed out the handle's own Phases slice, that loop would
+// write through the handle's cache — silently, since nothing on this path
+// returns an error. Two failure modes, both exercised here: writing to an
+// element the handle still counts as its own, and two derived records
+// appending onto one shared backing array so the second clobbers the
+// first.
+func TestRecordDoesNotShareItsPhaseSliceWithTheHandle(t *testing.T) {
+	root := testRoot(t)
+	const id = "20260830-durable-work-7f3a"
+	h := mustCreate(t, root, id)
+
+	// Spare capacity is the point: an append lands inside the backing
+	// array rather than allocating a fresh one.
+	rec := h.Record()
+	rec.Phases = append(make([]PhaseStamp, 0, 4), PhaseStamp{Phase: PhaseBaseline, At: time.Unix(1, 0).UTC()})
+	if err := h.Save(rec); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Mutating an element of a record obtained from Record() must not
+	// reach the handle's cache.
+	a := h.Record()
+	a.Phases[0].Note = "scribbled by the caller"
+	if got := h.Record().Phases[0].Note; got != "" {
+		t.Errorf("caller write reached the handle's cache: Phases[0].Note = %q, want empty", got)
+	}
+
+	// Two independent read-modify cycles must not share an append slot.
+	a = h.Record()
+	a.Phases = append(a.Phases, PhaseStamp{Phase: PhaseHandoff})
+	b := h.Record()
+	b.Phases = append(b.Phases, PhaseStamp{Phase: PhaseRecheck})
+	if a.Phases[1].Phase != PhaseHandoff {
+		t.Errorf("second append clobbered the first: a.Phases[1].Phase = %q, want %q", a.Phases[1].Phase, PhaseHandoff)
+	}
+	if b.Phases[1].Phase != PhaseRecheck {
+		t.Errorf("b.Phases[1].Phase = %q, want %q", b.Phases[1].Phase, PhaseRecheck)
+	}
+	if n := len(h.Record().Phases); n != 1 {
+		t.Errorf("appends changed the handle's own record: len(Phases) = %d, want 1", n)
+	}
+}

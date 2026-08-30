@@ -76,9 +76,19 @@ func (h *Handle) Dir() string { return h.dir }
 func (h *Handle) HandoffDir() string { return filepath.Join(h.dir, handoffDirName) }
 
 // Record is the last record read or written through this handle. The
-// returned copy shares the report pointers and phase slice with the
-// handle; treat it as read-only and Save a fresh value to change state.
-func (h *Handle) Record() Record { return h.rec }
+// Phases slice is cloned, so a caller running the usual read-modify-save
+// loop — read the record, append a phase, Save it back — cannot write
+// through the handle's cache and desync it from disk.
+//
+// Baseline and Recheck are still shared pointers: deep-copying a whole
+// verify.Report on every read would cost more than callers need, since a
+// phase transition produces a new report rather than editing one. Replace
+// those fields wholesale; never mutate the pointed-to report in place.
+func (h *Handle) Record() Record {
+	out := h.rec
+	out.Phases = append([]PhaseStamp(nil), h.rec.Phases...)
+	return out
+}
 
 // workDir is the collection of run directories for a root.
 func workDir(root *repopath.Root) string {
@@ -98,8 +108,11 @@ func runDir(root *repopath.Root, workID string) (string, error) {
 // first record and creates the handoff directory. It refuses an id that
 // already exists and never overwrites one: the run directory is claimed
 // with a single mkdir, so two processes drawing the same work id lose
-// loudly rather than sharing a record. Work ids carry only 16 bits of
-// suffix entropy, so this refusal is the collision guard, not a nicety.
+// loudly rather than sharing a record. The suffix entropy that makes a
+// collision unlikely in the first place is documented on
+// evidence.NewWorkID and stated only there; this refusal is what turns
+// whatever margin that is into a guarantee, so it must stay a single
+// mkdir and never soften into a stat-then-create.
 func Create(root *repopath.Root, rec Record) (*Handle, error) {
 	dir, err := runDir(root, rec.WorkID)
 	if err != nil {
@@ -232,10 +245,18 @@ func (h *Handle) Save(rec Record) error {
 		os.Remove(name)
 		return fmt.Errorf("workrec: rename record into place: %w", err)
 	}
+	// The cache is adopted here, between the rename and the directory
+	// fsync, because the rename is the instant the new content becomes
+	// what a reader of record.json sees. evidence/write.go has no cache to
+	// keep honest, so its ordering does not matter; here, updating after
+	// the fsync would let a failed fsync return an error while Record()
+	// still reported the previous phase — disagreeing with a file that has
+	// already moved on. The fsync error is still returned: it says the
+	// rename may not survive a crash, not that it did not happen.
+	h.rec = rec
 	if err := syncDir(h.dir); err != nil {
 		return fmt.Errorf("workrec: fsync run directory: %w", err)
 	}
-	h.rec = rec
 	return nil
 }
 
