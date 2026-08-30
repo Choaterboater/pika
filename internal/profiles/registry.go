@@ -12,6 +12,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,17 +33,25 @@ const (
 	lockSource = "embedded"
 )
 
-// packEntry is one registered embedded pack.
+// packEntry is one registered embedded pack: its YAML and the scaffold
+// templates it ships.
+//
+// templates is nil for a pack that ships none, which is every pack but
+// core today. It is part of the pack's identity, not an attachment to
+// it: a pack's templates are what an adopted repository was scaffolded
+// from, so a correction to one has to move the pack's digest or no
+// repository can ever learn its scaffolded files are stale.
 type packEntry struct {
-	name    string
-	version string
-	data    []byte
+	name      string
+	version   string
+	data      []byte
+	templates fs.FS
 }
 
 // embeddedPacks is the M1 registry. Later tasks register language, kind,
 // and capability packs here.
 var embeddedPacks = map[string]packEntry{
-	CoreRef: {name: "core", version: "1", data: corePackYAML},
+	CoreRef: {name: "core", version: "1", data: corePackYAML, templates: coreTemplates},
 }
 
 type Pack struct {
@@ -416,16 +426,35 @@ func namingRules(specs []namingSpec) []NamingRule {
 	return rules
 }
 
-// packDigest returns the hex sha256 of one pack's raw bytes.
-func packDigest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+// packDigest returns the hex sha256 of one pack: its raw YAML bytes
+// followed by its scaffold templates, in the shape hashTemplates
+// defines. Editing either rotates the digest, which is what lets gate 1
+// tell a repository that the templates it was scaffolded from have been
+// corrected since.
+func packDigest(e packEntry) string {
+	h := sha256.New()
+	h.Write(e.data)
+	mustHashTemplates(h, e.templates)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// mustHashTemplates folds a pack's templates into h and treats a failure
+// as fatal. The templates are an embed.FS baked into the binary, so
+// walking and reading them cannot fail at runtime; a failure would mean
+// the registry holds a filesystem that is not the embedded one, and
+// silently emitting a digest that omitted the templates would hand every
+// adopted repository a lock that certifies bytes nobody hashed.
+func mustHashTemplates(h hash.Hash, fsys fs.FS) {
+	if err := hashTemplates(h, fsys); err != nil {
+		panic(err.Error())
+	}
 }
 
 // PackDigest returns the canonical integrity digest over ALL embedded
 // packs: every pack reference in sorted order, each followed by its raw
-// bytes, hashed together. Adding or editing any embedded pack changes
-// the digest.
+// bytes and then its scaffold templates, hashed together. Adding or
+// editing any embedded pack — or any template one ships — changes the
+// digest.
 func PackDigest() string {
 	refs := make([]string, 0, len(embeddedPacks))
 	for ref := range embeddedPacks {
@@ -437,6 +466,7 @@ func PackDigest() string {
 		h.Write([]byte(ref))
 		h.Write([]byte{0})
 		h.Write(embeddedPacks[ref].data)
+		mustHashTemplates(h, embeddedPacks[ref].templates)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -485,7 +515,7 @@ func PackDigestFor(ref string) (digest string, ok bool) {
 	if !ok {
 		return "", false
 	}
-	return packDigest(entry.data), true
+	return packDigest(entry), true
 }
 
 // WriteLock writes the profiles.lock JSON to path for the selected pack
@@ -511,7 +541,7 @@ func WriteLock(path string, selected []string) error {
 		lock.Packs[entry.name] = LockPack{
 			Version: entry.version,
 			Source:  lockSource,
-			Digest:  packDigest(entry.data),
+			Digest:  packDigest(entry),
 		}
 	}
 	out, err := json.MarshalIndent(lock, "", "  ")

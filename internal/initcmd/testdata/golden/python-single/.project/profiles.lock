@@ -1,10 +1,10 @@
 {
-  "digest": "e892fb2a12938e299c7ce695af2c298879aa8ea100b83d0472db68cd0f8d0bc6",
+  "digest": "ecbac0b313ab42ebbaaf656ac687119785efa5cce6da99c348500527eeb8b8d5",
   "packs": {
     "core": {
       "version": "1",
       "source": "embedded",
-      "digest": "e8240007f5f61ea872ad727a695441bdef3a343b7046ab5aa08528c6b6ff2fdf"
+      "digest": "482f15e7a5c9ffbb6049342127ac85b5125d717d47dc61f0ce949d94d8e2e3f0"
     },
     "python": {
       "version": "1",

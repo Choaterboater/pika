@@ -1,15 +1,38 @@
 package profiles
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
+
+// wantCoreDigest recomputes the core pack's digest from first
+// principles — the pack YAML, then each template name, a NUL, and the
+// template's bytes — rather than calling packDigest. A test that asserts
+// a digest by invoking the code that produced it asserts nothing.
+func wantCoreDigest(t *testing.T) string {
+	t.Helper()
+	h := sha256.New()
+	h.Write(corePackYAML)
+	for _, name := range coreTemplateNames {
+		b, err := fs.ReadFile(coreTemplates, name)
+		if err != nil {
+			t.Fatalf("core pack is missing template %s: %v", name, err)
+		}
+		h.Write([]byte(name))
+		h.Write([]byte{0})
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 func TestCoreProfileResolve(t *testing.T) {
 	r, err := Resolve([]string{"core@1"})
@@ -163,9 +186,16 @@ func TestWriteLockDigest(t *testing.T) {
 	if lock.Packs["core"].Source != "embedded" {
 		t.Errorf("source = %q, want embedded", lock.Packs["core"].Source)
 	}
-	sum := sha256.Sum256(corePackYAML)
-	if lock.Packs["core"].Digest != hex.EncodeToString(sum[:]) {
-		t.Errorf("core digest = %q, want sha256 of embedded pack bytes", lock.Packs["core"].Digest)
+	if got := lock.Packs["core"].Digest; got != wantCoreDigest(t) {
+		t.Errorf("core digest = %q, want sha256 over the core pack YAML and its templates", got)
+	}
+	// The templates are genuinely inside the digest: the pack YAML alone
+	// no longer produces it. Before M3 it did, which is why correcting
+	// the CI template rotated nothing and left every adopted repository
+	// with an `@latest` workflow and no way to find out.
+	yamlOnly := sha256.Sum256(corePackYAML)
+	if lock.Packs["core"].Digest == hex.EncodeToString(yamlOnly[:]) {
+		t.Error("core digest is the pack YAML alone: the pack's templates are outside the digest")
 	}
 	if lock.Digest != PackDigest() {
 		t.Errorf("digest = %q, want canonical PackDigest", lock.Digest)
@@ -208,11 +238,11 @@ func TestWriteLockTwoPacks(t *testing.T) {
 	if lock.Packs["core"].Version != "1" || lock.Packs["go"].Version != "1" {
 		t.Errorf("pack versions = %v, want core and go at version 1", lock.Packs)
 	}
-	sumCore := sha256.Sum256(corePackYAML)
 	sumGo := sha256.Sum256(goPackYAML)
-	if lock.Packs["core"].Digest != hex.EncodeToString(sumCore[:]) {
-		t.Errorf("core digest = %q, want sha256 of core pack bytes", lock.Packs["core"].Digest)
+	if got := lock.Packs["core"].Digest; got != wantCoreDigest(t) {
+		t.Errorf("core digest = %q, want sha256 over the core pack YAML and its templates", got)
 	}
+	// The go pack ships no templates, so its digest is its YAML alone.
 	if lock.Packs["go"].Digest != hex.EncodeToString(sumGo[:]) {
 		t.Errorf("go digest = %q, want sha256 of go pack bytes", lock.Packs["go"].Digest)
 	}
@@ -354,5 +384,111 @@ func TestFailOnOutputRequiresACommandOrHint(t *testing.T) {
 	}
 	if !cs.Format.FailOnOutput {
 		t.Error("resolved format slot lost its fail-on-output flag on the cmd path")
+	}
+}
+
+// --- templates inside the pack digest ---
+//
+// A pack's templates are baked in by go:embed, so no test can edit one on
+// disk and watch the digest move. This drives the real seam instead: the
+// registry's core entry is pointed at an in-memory mirror of the shipped
+// templates — which must reproduce the shipped digest exactly, or the
+// mirror is not a mirror and the rest proves nothing — and then at the
+// same mirror with one byte changed. Same helper, same call path through
+// PackDigestFor and PackDigest, one edited input.
+
+// useCoreTemplates points the registered core pack at fsys for the rest
+// of the test and restores the shipped templates afterwards.
+func useCoreTemplates(t *testing.T, fsys fs.FS) {
+	t.Helper()
+	original := embeddedPacks[CoreRef]
+	t.Cleanup(func() { embeddedPacks[CoreRef] = original })
+	entry := original
+	entry.templates = fsys
+	embeddedPacks[CoreRef] = entry
+}
+
+// mirrorCoreTemplates copies the shipped templates into an in-memory
+// filesystem the test can edit.
+func mirrorCoreTemplates(t *testing.T) fstest.MapFS {
+	t.Helper()
+	out := fstest.MapFS{}
+	for _, name := range coreTemplateNames {
+		b, err := fs.ReadFile(coreTemplates, name)
+		if err != nil {
+			t.Fatalf("core pack is missing template %s: %v", name, err)
+		}
+		out[name] = &fstest.MapFile{Data: b}
+	}
+	return out
+}
+
+func TestEditingATemplateRotatesThePackDigest(t *testing.T) {
+	before, ok := PackDigestFor(CoreRef)
+	if !ok {
+		t.Fatal("core pack is not registered")
+	}
+	registryBefore := PackDigest()
+
+	mirror := mirrorCoreTemplates(t)
+	useCoreTemplates(t, mirror)
+	if got, _ := PackDigestFor(CoreRef); got != before {
+		t.Fatalf("mirror digest = %q, want the shipped %q: the in-memory copy is not byte-identical, so an edit to it would prove nothing", got, before)
+	}
+
+	edited := mirrorCoreTemplates(t)
+	edited["ci.yml.tmpl"] = &fstest.MapFile{Data: append(slices.Clone(mirror["ci.yml.tmpl"].Data), '\n')}
+	useCoreTemplates(t, edited)
+
+	if got, _ := PackDigestFor(CoreRef); got == before {
+		t.Errorf("editing ci.yml.tmpl left the core pack digest at %q: templates are outside PackDigestFor", got)
+	}
+	if got := PackDigest(); got == registryBefore {
+		t.Errorf("editing ci.yml.tmpl left the registry digest at %q: templates are outside PackDigest", got)
+	}
+}
+
+// reverseDirFS is a filesystem whose ReadDir hands entries back in
+// reverse order. fs.ReadDir sorts only for a filesystem that does not
+// implement ReadDirFS, so this genuinely reaches fs.WalkDir out of
+// order — which is the point: it is the enumeration a future refactor
+// could introduce without meaning to, and the digest must not notice.
+type reverseDirFS struct{ fs.FS }
+
+func (r reverseDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	entries, err := fs.ReadDir(r.FS, name)
+	if err != nil {
+		return nil, err
+	}
+	slices.Reverse(entries)
+	return entries, nil
+}
+
+// The digest hashes template paths in explicitly sorted order, so a
+// filesystem that enumerates them backwards must hash to the same bytes.
+// A digest that moved here would rotate without its input changing, and
+// every adopted repository would fail gate 1 with no diff to point at.
+func TestTemplateHashingIsOrderStable(t *testing.T) {
+	sorted := sha256.New()
+	if err := hashTemplates(sorted, coreTemplates); err != nil {
+		t.Fatalf("hash shipped templates: %v", err)
+	}
+	reversed := sha256.New()
+	if err := hashTemplates(reversed, reverseDirFS{coreTemplates}); err != nil {
+		t.Fatalf("hash reverse-enumerated templates: %v", err)
+	}
+	if !bytes.Equal(sorted.Sum(nil), reversed.Sum(nil)) {
+		t.Error("template hashing depends on the filesystem's enumeration order")
+	}
+
+	// And the agreement is not vacuous: the same helper over different
+	// bytes has to disagree, or the test above would pass on a helper
+	// that hashed nothing at all.
+	changed := sha256.New()
+	if err := hashTemplates(changed, fstest.MapFS{"ci.yml.tmpl": &fstest.MapFile{Data: []byte("x")}}); err != nil {
+		t.Fatalf("hash substitute templates: %v", err)
+	}
+	if bytes.Equal(sorted.Sum(nil), changed.Sum(nil)) {
+		t.Error("template hashing produced the same digest for a different template set")
 	}
 }
