@@ -446,3 +446,44 @@ func TestSaveRefusesForeignWorkID(t *testing.T) {
 		t.Fatalf("mismatched Save leaked into the record: %+v", reopened.Record())
 	}
 }
+
+// TestWorkIDSuffixWidthIsNotAssumed pins the variable-width suffix:
+// NewWorkID now mints 8 hex digits and 4-hex ids minted earlier stay
+// valid, so nothing here may slice an id at a fixed offset.
+func TestWorkIDSuffixWidthIsNotAssumed(t *testing.T) {
+	root := testRoot(t)
+	ids := []string{
+		"20260830-durable-work-7f3a",
+		"20260830-durable-work-7f3a91c2",
+	}
+	for _, id := range ids {
+		h := mustCreate(t, root, id)
+		if filepath.Base(h.Dir()) != id {
+			t.Fatalf("Dir() = %q, want a directory named %q", h.Dir(), id)
+		}
+		reopened, err := Open(root, id)
+		if err != nil {
+			t.Fatalf("Open(%s): %v", id, err)
+		}
+		if reopened.Record().WorkID != id {
+			t.Fatalf("round-trip lost the id: %+v", reopened.Record())
+		}
+	}
+
+	recs, err := List(root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(recs) != len(ids) {
+		t.Fatalf("List returned %d records, want %d: %+v", len(recs), len(ids), recs)
+	}
+	seen := map[string]bool{}
+	for _, r := range recs {
+		seen[r.WorkID] = true
+	}
+	for _, id := range ids {
+		if !seen[id] {
+			t.Errorf("List dropped %s", id)
+		}
+	}
+}
