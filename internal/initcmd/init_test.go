@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/version"
@@ -632,5 +633,195 @@ func TestPythonTestCommandRunsOnDebian(t *testing.T) {
 	if err != nil {
 		t.Fatalf("python@1 test command %q does not run where only python3 exists: %v\n%s",
 			strings.Join(cmd, " "), err, out)
+	}
+}
+
+// --- `--force` regenerates from the repository, not from flags alone ---
+//
+// `pika init --force` is the documented remedy for a rotated profile
+// digest, so it runs against repositories that already carry a contract,
+// a profile selection, a module path and a set of recorded exceptions.
+// Rebuilding all of that from whatever happened to be on the command
+// line turns the remedy into data loss: a bare --force used to produce a
+// core-only contract with an empty commands block and an erased
+// exceptions record. Every value is now resolved as explicit flag, else
+// read-back from the repository, else refusal.
+
+// seedRepo scaffolds a repository the way an operator's would already
+// exist before they run the upgrade note's `pika init --force`.
+func seedRepo(t *testing.T, lang string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "go-single")
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{lang}}); err != nil {
+		t.Fatalf("seed init: %v", err)
+	}
+	return dir
+}
+
+func loadContract(t *testing.T, dir string) *contract.Contract {
+	t.Helper()
+	c, err := contract.Load(filepath.Join(dir, filepath.FromSlash(contractRel)))
+	if err != nil {
+		t.Fatalf("contract: %v", err)
+	}
+	return c
+}
+
+func TestForceReadsProfilesBackFromTheContract(t *testing.T) {
+	dir := seedRepo(t, "go")
+	before := loadContract(t, dir)
+
+	// A bare --force: no --profile, exactly what the upgrade note tells
+	// the operator to run.
+	if _, err := Run(InitOptions{Dir: dir, Force: true}); err != nil {
+		t.Fatalf("force init: %v", err)
+	}
+
+	after := loadContract(t, dir)
+	if !slices.Equal(after.Profiles, before.Profiles) {
+		t.Errorf("profiles = %v, want %v read back from the contract", after.Profiles, before.Profiles)
+	}
+	if !slices.Contains(after.Profiles, "go@1") {
+		t.Errorf("profiles = %v, want the go pack retained", after.Profiles)
+	}
+	// The selection is what fills the commands block, so losing it
+	// silently disarms every gate.
+	if len(after.Commands) == 0 {
+		t.Errorf("commands = %v, want the go pack's gates retained", after.Commands)
+	}
+	if !maps.Equal(after.Commands, before.Commands) {
+		t.Errorf("commands = %v, want %v", after.Commands, before.Commands)
+	}
+}
+
+func TestForceReadsProjectNameBackFromTheContract(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "untidy Dir.Name")
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Name: "custom-name"}); err != nil {
+		t.Fatalf("seed init: %v", err)
+	}
+	if _, err := Run(InitOptions{Dir: dir, Force: true}); err != nil {
+		t.Fatalf("force init: %v", err)
+	}
+	if got := loadContract(t, dir).Project.Name; got != "custom-name" {
+		t.Errorf("project name = %q, want custom-name read back from the contract", got)
+	}
+}
+
+func TestExplicitFlagsWinOverReadBack(t *testing.T) {
+	dir := seedRepo(t, "go")
+	if _, err := Run(InitOptions{
+		Dir:      dir,
+		Force:    true,
+		Name:     "renamed",
+		Module:   "example.com/renamed",
+		Profiles: []string{"rust"},
+	}); err != nil {
+		t.Fatalf("force init: %v", err)
+	}
+
+	c := loadContract(t, dir)
+	if c.Project.Name != "renamed" {
+		t.Errorf("project name = %q, want renamed from --name", c.Project.Name)
+	}
+	if !slices.Contains(c.Profiles, "rust@1") || slices.Contains(c.Profiles, "go@1") {
+		t.Errorf("profiles = %v, want the rust pack from --profile and no go pack", c.Profiles)
+	}
+	// --module wins over the module recovered from the go.mod the seed
+	// scaffold left behind.
+	goMod, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(goMod), "module go-single") {
+		t.Fatalf("fixture go.mod = %q, want the seed module still present", goMod)
+	}
+	if _, err := Run(InitOptions{Dir: dir, Force: true, Profiles: []string{"go"}, Module: "example.com/renamed"}); err != nil {
+		t.Fatalf("force init with --module: %v", err)
+	}
+	goMod, err = os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(goMod), "module example.com/renamed") {
+		t.Errorf("go.mod = %q, want module example.com/renamed from --module", goMod)
+	}
+}
+
+// Each exception carries a rule id, a rationale, an owner and a review
+// condition that a human wrote and a reviewer accepted. Regenerating a
+// managed file must never discard them: that is destroying evidence, not
+// rewriting a generated artifact.
+func TestForcePreservesRecordedExceptions(t *testing.T) {
+	dir := seedRepo(t, "go")
+	record := "vendor/legacy_Client.go:\n" +
+		"  rule-id: naming-kebab-case\n" +
+		"  reason: vendored upstream source; renaming it breaks the sync script\n" +
+		"  owner: platform-team\n" +
+		"  review-condition: drop when upstream ships a Go module\n"
+	path := filepath.Join(dir, filepath.FromSlash(checks.ExceptionsFile))
+	if err := os.WriteFile(path, []byte(record), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(InitOptions{Dir: dir, Force: true}); err != nil {
+		t.Fatalf("force init: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%s lost by --force: %v", checks.ExceptionsFile, err)
+	}
+	if string(got) != record {
+		t.Errorf("%s rewritten by --force:\ngot:\n%s\nwant:\n%s", checks.ExceptionsFile, got, record)
+	}
+	// Byte equality is the assertion; loading it proves the bytes are
+	// still a usable record rather than an accidentally intact blob.
+	ex, err := checks.LoadExceptions(dir)
+	if err != nil {
+		t.Fatalf("LoadExceptions after force: %v", err)
+	}
+	if _, ok := ex["vendor/legacy_Client.go"]; !ok {
+		t.Errorf("recorded exception missing after force: %v", ex)
+	}
+}
+
+// The contract has no module field, so a Go module path can only come
+// from a flag or from go.mod. Falling back to the directory name is what
+// used to rewrite go.mod under a name nothing imports and scaffold a
+// stray cmd/<dirname>/main.go beside the real one.
+func TestForceRefusesWhenNoModuleCanBeRecovered(t *testing.T) {
+	dir := seedRepo(t, "go")
+	if err := os.Remove(filepath.Join(dir, "go.mod")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Run(InitOptions{Dir: dir, Force: true})
+	if err == nil {
+		t.Fatal("force with no recoverable module: got nil error, want refusal")
+	}
+	if !strings.Contains(err.Error(), "--module") {
+		t.Errorf("refusal %q does not tell the operator to pass --module", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("refusal still wrote go.mod: %v", err)
+	}
+}
+
+// A corrupt contract is a fact to report. Quietly rebuilding from flags
+// is how an operator loses a contract they could have repaired.
+func TestForceRefusesUnparseableContract(t *testing.T) {
+	dir := seedRepo(t, "go")
+	path := filepath.Join(dir, filepath.FromSlash(contractRel))
+	if err := os.WriteFile(path, []byte("schema: 1\nproject:\n  name: [broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(InitOptions{Dir: dir, Force: true, Profiles: []string{"go"}, Module: "example.com/x"}); err == nil {
+		t.Fatal("force over an unparseable contract: got nil error, want refusal")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "[broken") {
+		t.Errorf("refusal overwrote the contract it could not read: %q", got)
 	}
 }
