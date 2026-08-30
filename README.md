@@ -21,16 +21,16 @@ The repository contract (`.project/contract.yaml`) is the project-level source o
 
 > ### Upgrade note — regenerate `profiles.lock`
 >
-> Milestones 1.5 and 2 each edited the embedded profile packs, which rotated `profiles.PackDigest()` both times. **Every `.project/profiles.lock` written by an earlier pika build now fails gate 1** with a digest mismatch — the lock is doing its job, the packs really did change. Regenerate it:
+> Milestones 1.5, 2 and 3 each rotated `profiles.PackDigest()`. **Every `.project/profiles.lock` written by an earlier pika build now fails gate 1** with a digest mismatch naming the pack — the lock is doing its job, the packs really did change. M3's rotation came from folding each pack's templates into its digest, which is what finally lets an adopted repository be told its scaffolded CI workflow is out of date. Regenerate:
 >
 > ```sh
-> git status --porcelain                            # clean: the diff below is then only --force's work
-> pika init --force --profile go --name my-service  # the profiles and name this repository actually uses
-> git diff                                          # restore anything you had hand-edited
-> pika check --all                                  # gate 1 goes green again
+> git status --porcelain   # clean: the diff below is then only the command's work
+> pika init --force        # profiles, name and module are read back from the repository
+> git diff                 # the contract, the lock, the PR template, the CI workflow
+> pika check --all         # gate 1 goes green again
 > ```
 >
-> `--force` rebuilds the contract from the profiles on *that* command line, not from the contract on disk, and takes the project name from `--name` or the directory's basename rather than reading it back. It regenerates every other file `init` manages — `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.gitignore`, the PR template, the CI workflow, the language scaffold — and resets `.project/exceptions.yaml` to `{}`. Read [the flag's full behavior](docs/guides/usage.md#--force-regenerates-more-than-the-lock) before running it. There is no in-place lock repair: a lock you can hand-edit back to green is a lock that proves nothing.
+> **`--force` no longer costs you anything you wrote.** It regenerates what the kernel owns — the contract, the lock, the PR template, the CI workflow — and leaves `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.gitignore`, the language scaffold and `.project/exceptions.yaml` exactly as they are. Profiles, project name and Go module path are resolved as explicit flag → read back from the repository → refuse, so the bare command above is the whole upgrade. `--reset-docs` is the explicit opt-in for the old behavior; nothing restores a deleted exception, so nothing deletes one. Read [the flag's full behavior](docs/guides/usage.md#--force-regenerates-more-than-the-lock). There is no in-place lock repair: a lock you can hand-edit back to green is a lock that proves nothing.
 
 **Milestone 1 (deterministic kernel) complete.** Shipped:
 
@@ -79,7 +79,19 @@ Envelope enforcement coverage and the M1.5 pack-digest rotation are recorded in 
 | Doctor | `pika doctor` cross-checks the envelope against each gate's whole argv, so a grant that would not cover a gate is a warning now rather than an `envelope_denied` mid-task |
 | End-to-end | `internal/e2e` drives the real binary through `work`, `status`, `resume` and `recover` inside temp repositories, with a fake agent binary standing in for `codex` — no model, credential or network anywhere |
 
-What M2 changed underneath existing repositories, what is unchanged from M1.5 — `fs_read`, `network`, `credential`, `github` and `budget` are **still schema-only, with no enforcement call site** — and two known gaps that were deliberately left open are recorded in [docs/reference/m2-delta.md](docs/reference/m2-delta.md).
+What M2 changed underneath existing repositories, and two known gaps it deliberately left open, are recorded in [docs/reference/m2-delta.md](docs/reference/m2-delta.md). Its envelope table — `fs_read`, `network`, `credential`, `github` and `budget` schema-only with no enforcement call site — was true when M2 shipped and is superseded by M3 below.
+
+**Milestone 3 (trust and the upgrade path) complete.** Added:
+
+| Area | What works |
+|---|---|
+| Safe regeneration | `pika init --force` regenerates only what the kernel owns (contract, lock, PR template, CI workflow) and reads profiles, project name and Go module back out of the repository. Your `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.gitignore`, language scaffold and — above all — `.project/exceptions.yaml` are left alone. `--reset-docs` is the explicit opt-in for the old behavior, and even it does not touch the exceptions record |
+| Stale scaffolds are detectable | Pack templates are inside `PackDigest`, so a repository scaffolded from a since-corrected template fails gate 1 by name instead of silently keeping an `@latest` CI workflow forever. This closes [M2 gap 1](docs/reference/m2-delta.md#gap-1--a-template-only-pack-change-is-invisible-to-every-adopted-repository) |
+| …and fixable | `pika apply` refreshes the two kernel-owned files through the transaction and reports every rewrite as a `write`; operator-owned files stay create-if-missing. In an already-adopted repository, where `apply` refuses, `pika init --force` is the refresh |
+| Envelope, fail-closed | `fs_read` is enforced at the MCP read tools, so `inspect_repo` and `read_contract` now need an envelope like every other tool. That is a requirement to *declare* policy, not a narrowing of read scope. `network`, `credential`, `github` and `budget` get no check on purpose — the binary performs no operation of those classes, and the evidence is written down rather than asserted |
+| Containment | Every git path listing pika parses is read with `-z`, so a path git would otherwise quote can no longer slip past the private-state filter; verified paths are staged with `--literal-pathspecs`, so a filename containing `*`, `?` or `[` cannot drag untouched files into a commit; and `record.json` and the MCP board are redacted at the point of writing |
+
+The evidence for each — including the one error code that moved on a documented surface, and what the `fs_read` change does *not* mean — is in [docs/reference/m3-delta.md](docs/reference/m3-delta.md).
 
 
 ## Install
@@ -128,7 +140,7 @@ pika mcp
 |---|---|
 | `pika init` | Create a lean project contract and scaffold for a new repository |
 | `pika adopt` | Inventory an existing repository; produces a draft contract and migration preview without changing working code |
-| `pika apply` | Promote the adoption drafts into a live contract transactionally — create-if-missing, full rollback on failure, and a rewritten human-readable review bundle |
+| `pika apply` | Promote the adoption drafts into a live contract transactionally — operator-owned files create-if-missing, the two kernel-owned files refreshed and reported, full rollback on failure, and a rewritten human-readable review bundle |
 | `pika recover` | Report a transaction that never finished — holder, liveness, and every file a rollback would touch — and undo it with `--apply` |
 | `pika check` | Run the verification ladder locally or in CI (`--all`, `--changed`, `--ci`; `--ci` makes no LLM calls) |
 | `pika status` | List the durable work runs this repository has, or report one in full: phases, branch, commit, outcome, and the reason it stopped |
@@ -158,7 +170,7 @@ Every command accepts `--root <dir>`. Without it, the repository root is discove
 2. **AI decides; the kernel transacts** — agents may decide what should change; only the kernel decides whether and how it is safely applied.
 3. **Evidence beats consensus** — source state, executable checks, and recorded decisions determine completion.
 4. **Parallelize independent work** — read-only exploration fans out; writers get exclusive scopes or isolated workspaces.
-5. **Public-safe history** — the kernel-issued evidence receipt under `.project/evidence/` is redacted, schema-validated and committed; the run record it was issued from, with its prompts and raw agent output, stays local under `.project/state/` (gitignored by `init`). Operational state and public attestation are separate on purpose.
+5. **Public-safe history** — the kernel-issued evidence receipt under `.project/evidence/` is redacted, schema-validated and committed; the run record it was issued from, with its prompts, gate output and the agent's own words, stays local under `.project/state/` (gitignored by `init`, and redacted at the point of writing since M3). Operational state and public attestation are separate on purpose: the receipt is validated and meant to be published, the record is neither.
 
 ## Development
 
@@ -172,7 +184,7 @@ CGO_ENABLED=0 go build ./...   # the shipped binary is CGO-free
 
 This repository is adopted by its own kernel. `.project/contract.yaml`, `.project/profiles.lock` and `.project/exceptions.yaml` are committed; `.project/state/` is gitignored. `.github/workflows/ci.yml` builds the binary **from the commit under test** — never `go install ...@latest` — and runs `pika check --ci` on this repository, so a change that would break the verifier is caught by the verifier it breaks.
 
-The suite CI runs includes `internal/e2e`, which drives the real binary through the whole durable lifecycle inside temp repositories, with a fake agent binary on `PATH` in place of `codex`. No model, credential or network is involved anywhere, so `pika check --ci` stays provably LLM-free while still covering the path that spawns an agent.
+The suite CI runs includes `internal/e2e`, which drives the real binary through the whole durable lifecycle — and through the upgrade path: `--force` over a hand-written README and a recorded exception, a stale lock detected by name, and `apply` refreshing a kernel-owned file — inside temp repositories, with a fake agent binary on `PATH` in place of `codex`. No model, credential or network is involved anywhere, so `pika check --ci` stays provably LLM-free while still covering the path that spawns an agent.
 
 ```sh
 go build -o /tmp/pika ./cmd/pika

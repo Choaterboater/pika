@@ -31,6 +31,13 @@ your own files outside it. There is deliberately no in-place "repair the
 lock" command: a lock a user can edit back to green is a lock that proves
 nothing.
 
+> **Superseded by M3.** `--force` never regenerated only what lives under
+> `.project/` — it rewrote `README.md`, the language scaffold and the GitHub
+> files too, and reset `.project/exceptions.yaml`. Since M3 it regenerates the
+> contract, the lock, the PR template and the CI workflow, reads its inputs
+> back out of the repository, and leaves everything else alone. See
+> [M3 §5](m3-delta.md#5-pika-init---force-is-safe-to-run).
+
 ---
 
 ## 2. Envelope enforcement now covers `fs_write` **and** `exec`
@@ -47,6 +54,13 @@ them have an enforcement call site in the binary today.
 | `credential` | No | schema and matcher exist; no call site asks |
 | `github` | No | schema and matcher exist; no call site asks |
 | `budget` | No | `pika authorize` never writes a budget at all, because no code compares spend against a ceiling and an unenforced ceiling is a lie in a file whose whole job is to be true |
+
+> **Superseded by M3 for `fs_read`**, which is now enforced at the MCP read
+> tools — a requirement to hold an envelope, not a narrowing of read scope.
+> `network`, `credential`, `github` and `budget` are still unenforced, and M3
+> records the evidence that they cannot be enforced because the binary
+> performs no operation of those classes. See
+> [M3 §1 and §2](m3-delta.md#1-fs_read-is-enforced).
 
 Two consequences worth stating plainly:
 

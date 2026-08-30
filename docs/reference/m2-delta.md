@@ -37,6 +37,14 @@ committing it.
 There is still deliberately no in-place "repair the lock" command: a lock a
 user can edit back to green is a lock that proves nothing.
 
+> **Superseded by M3 — this paragraph describes `--force` as it behaved at M2.**
+> Since M3 it regenerates only the kernel-owned files (contract, lock, PR
+> template, CI workflow), reads profiles, project name and Go module back out
+> of the repository, and never touches `.project/exceptions.yaml`. The
+> destructive behavior described above is now the explicit `--reset-docs`
+> opt-in. See [M3 §5](m3-delta.md#5-pika-init---force-is-safe-to-run). The
+> text is kept as written because it is the record M3 was built from.
+
 ---
 
 ## 2. The format gate can now fail — and no longer rewrites your files
@@ -210,6 +218,14 @@ current template by hand.
 
 Closing this properly means extending the digest to cover the template FS —
 which rotates the digest once more, for everyone.
+
+> **Closed in M3, both halves.** Pack templates are now inside `PackDigest()`,
+> so a corrected template rotates the pack digest and gate 1 names the pack;
+> and `pika apply` compares the two kernel-owned files against the rendered
+> template and refreshes a stale one, reporting each rewrite. Point 3 above is
+> therefore no longer true of the current binary. It cost the digest rotation
+> this section predicted. See
+> [M3 §6](m3-delta.md#6-the-template-blind-spot-is-closed-and-what-it-cost).
 
 ### Gap 2 — `pika recover --apply` cannot prove a holder dead on Windows
 

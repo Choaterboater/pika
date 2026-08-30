@@ -21,8 +21,9 @@ pika init --profile go --name my-service
 |---|---|
 | `--profile` | Language stack: `go`, `typescript`, `python`, `swift`, `rust` (repeatable for multi-stack) |
 | `--name` | Project name (default: directory name, kebab-cased) |
-| `--module` | Go module path (default: derived from name) |
-| `--force` | Regenerate the managed files in an already-initialized repository — read the warning below before using it |
+| `--module` | Go module path (default: derived from name). Inert under a bare `--force` — see below |
+| `--force` | Regenerate the kernel-owned files in an already-initialized repository; leaves your own alone |
+| `--reset-docs` | With `--force` only: also restore the scaffolded `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.gitignore` and language scaffold over the repository's own |
 | `--json` | Emit the created-file manifest as JSON |
 
 What you get: `.project/contract.yaml` (the project contract), `.project/profiles.lock`, `.project/exceptions.yaml`, a `docs/` spine, `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, a GitHub Actions workflow, a `.gitignore` protecting `.project/state/`, and a language-owned source scaffold.
@@ -42,44 +43,72 @@ pika check --all
 ### `--force` regenerates more than the lock
 
 `--force` is the only way to refresh a `.project/profiles.lock` that an older
-pika wrote, so it is the remedy every upgrade note points at. It is a blunter
-instrument than that framing suggests, and it is worth knowing exactly what it
-rewrites before you run it in a repository you care about.
+pika wrote, so it is the remedy every upgrade note points at. It regenerates
+more than the lock — but only what the *kernel* owns, and **it is safe to run
+in a repository you have been living in.** That is a change: until M3 it
+rewrote every file `init` manages and reset `.project/exceptions.yaml` to
+`{}`, which made the one documented upgrade remedy something you had to brace
+for.
 
-It rewrites **every file `init` manages**, unconditionally and without asking:
-
-| Rewritten by `--force` | Left alone |
+| Rewritten by `--force` (kernel-owned) | Left exactly as it is (yours) |
 |---|---|
-| `.project/contract.yaml`, `.project/profiles.lock` | Every file `init` did not create |
-| `.project/exceptions.yaml` — **reset to `{}`** | `.project/state/` |
-| `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.gitignore` | `.project/evidence/` |
-| `.github/pull_request_template.md`, `.github/workflows/ci.yml` | |
-| the `docs/` spine placeholders | |
-| the language scaffold — `go.mod`, `cmd/<name>/main.go`, `Package.swift`, … — whenever a `--profile` selects that pack | |
+| `.project/contract.yaml` | `README.md`, `AGENTS.md`, `CONTRIBUTING.md` |
+| `.project/profiles.lock` | `.gitignore` and the `docs/` spine placeholders |
+| `.github/pull_request_template.md` | the language scaffold — `go.mod`, `cmd/<name>/main.go`, `Package.swift`, … |
+| `.github/workflows/ci.yml` | `.project/exceptions.yaml` — never rewritten, not even by `--reset-docs` |
+| | every file `init` did not create, `.project/state/`, `.project/evidence/` |
 
-Three consequences that bite:
+The split is ownership, not convenience. The contract, the lock, the PR
+template and the CI workflow encode how the kernel wants to be run, so a copy
+left behind by an older kernel is the kernel's own defect to correct.
+Everything else is a starting point your repository is expected to outgrow,
+and it is yours the moment it exists.
 
-- **The contract is rebuilt from the profiles you pass on *this* invocation,
-  not from the contract on disk.** A bare `pika init --force` in a `go@1`
-  repository rewrites it as core-only, with `commands: {}` — every
-  verification gate gone.
-- **The project name comes from `--name`, or from the directory's basename.**
-  It is not read back from the contract. If they differ, `--force` writes
-  `module <dirname>` into `go.mod` and scaffolds a second
-  `cmd/<dirname>/main.go` beside the real one.
-- **Anything hand-edited into a managed file is regenerated away**: the
-  `agents:` block, extra `commands:`, `extensions:`, your `README.md`, and
-  every record in `.project/exceptions.yaml`.
-
-So the honest upgrade recipe is: run it on a clean tree, pass the same
-`--profile` and `--name` the repository was scaffolded with, and read the diff
-before committing.
+**Inputs are read back from the repository, not from the command line.** Each
+of profiles, project name and Go module path resolves the same way: the
+explicit flag when you pass one, else the value the repository already
+declares — profiles and name from the contract, the module from `go.mod` —
+else a refusal naming what it could not recover. So a bare `pika init --force`
+in a `go@1` repository stays a `go@1` repository with its gates intact, and
+there is nothing you have to remember to retype:
 
 ```sh
-git status --porcelain                            # clean: the diff below is then only --force's work
-pika init --force --profile go --name my-service  # the profiles and name this repository actually uses
-git diff                                          # restore anything you had hand-edited
-pika check --all                                  # gate 1 goes green again
+pika init --force        # this is the whole upgrade command
+```
+
+One consequence is surprising unless it is stated: **`go.mod` is
+operator-owned, so `--module` does nothing under a bare `--force`** in a
+repository that already has one. The flag reaches the rendered scaffold, and
+that `go.mod` is then left unwritten because yours already exists. `--module`
+takes effect on a fresh `init`, or alongside `--reset-docs`. Renaming a Go
+module means editing `go.mod` and the imports; it is not a scaffolding
+operation.
+
+### `--reset-docs` is the destructive opt-in
+
+`--reset-docs` asks for the scaffold's own text back over your files — what
+`--force` used to do unasked:
+
+```sh
+pika init --force --reset-docs   # overwrites README.md, AGENTS.md, CONTRIBUTING.md,
+                                 # .gitignore, the docs spine placeholders and
+                                 # the language scaffold
+```
+
+It requires `--force` (alone it exits 2, because by itself it could only be a
+mistyped intention). It does **not** reach `.project/exceptions.yaml`: an
+exception carries a rationale, an owner and a review condition a human wrote
+and a reviewer accepted, and regenerating documentation is not a reason to
+discard evidence. No flag clears the exceptions record; delete the entries you
+no longer want.
+
+Either way, regenerate on a clean tree and read the diff:
+
+```sh
+git status --porcelain   # clean: the diff below is then only the command's work
+pika init --force
+git diff                 # the kernel-owned files, and nothing else
+pika check --all         # gate 1 goes green again
 ```
 
 ---
@@ -119,9 +148,23 @@ This promotes the drafts transactionally:
 - contract and lock become live
 - `exceptions.yaml` is written
 - missing core files (AGENTS.md, CONTRIBUTING.md, PR template, CI workflow) are created from templates
-- your own files are never overwritten (create-if-missing; user files always win)
+- **your own files are never overwritten** — `README.md`, `AGENTS.md`,
+  `CONTRIBUTING.md`, `go.mod` and the language scaffold are create-if-missing,
+  and a file you already have is reported as `already exists; kept the
+  existing file`
+- the two **kernel-owned** files — `.github/pull_request_template.md` and
+  `.github/workflows/ci.yml` — are compared against the current template and
+  refreshed when they differ, because a copy left behind by an older kernel is
+  the kernel's own defect to correct. Each refresh is reported as a `write`;
+  one that already matches is skipped
 
-If anything fails mid-apply, the transaction rolls back and the report says so honestly — including the failure case where a rollback itself could not complete (it points you at `.project/state/recovery/`).
+That last point is the same ownership split `pika init --force` honours
+([§1](#--force-regenerates-more-than-the-lock)), and it is the reason
+`pika apply` can hand an unadopted repository a current CI workflow instead of
+silently inheriting a stale one. A refresh is never silent: a kernel rewrite
+nobody reported is indistinguishable from an edit you made yourself.
+
+If anything fails mid-apply, the transaction rolls back — the refresh with it — and the report says so honestly, including the failure case where a rollback itself could not complete (it points you at `.project/state/recovery/`).
 
 After a successful apply, the review file is rewritten with status **APPLIED** and the gate-1 result.
 
@@ -132,6 +175,13 @@ Refusals (safe, no mutation):
 | `already adopted` | A committed contract exists — use `pika check` |
 | missing drafts | Nothing to apply — run `pika adopt` first |
 | invalid draft | The draft fails validation — fix or re-run `pika adopt` |
+
+`already adopted` is a hard boundary, and it decides which command refreshes a
+stale kernel-owned file. `apply` refuses before it inspects anything, so its
+refresh is reachable **only during adoption** — a repository that already has
+`.project/contract.yaml` cannot get there. In an adopted repository the
+refresh command is `pika init --force`, which rewrites the same two files
+([§1](#--force-regenerates-more-than-the-lock)).
 
 ---
 
@@ -249,6 +299,7 @@ What it inspects:
 | lock | Whether `profiles.lock` pins the contract's profiles at digests matching this binary's embedded packs |
 | exceptions | Whether `.project/exceptions.yaml` loads and every record is complete |
 | envelope | The grants in `.project/state/envelope.yaml`, or a warning that agents will be denied |
+| recovery | Whether a transaction never finished — who holds the lock, and whether that process is still running. It points at [`pika recover`](#15-unwedge-a-crashed-transaction-pika-recover) rather than acting |
 | `gate.*` | Per gate: the command that will run, or the pack's suggested hint when no command is configured — plus a warning when an envelope exists and does not authorize that gate's whole argv line, which is otherwise not discovered until an agent hits `envelope_denied` mid-task |
 | git | Whether git is available |
 
@@ -420,11 +471,18 @@ cd /path/to/project
 pika mcp
 ```
 
-Serves the kernel over stdio JSON-RPC. Point any MCP-compatible agent harness at the command `pika mcp`. **Every tool requires a capability envelope at `.project/state/envelope.yaml`, reads included** — deny-by-default, so an agent cannot inventory, read, run or write anything you have not explicitly authorized. Until M2 the read tools worked without one; they no longer do, because enumerating your repository is a capability an agent is granted, not a neutral act it may perform unasked. The remedy is one command, and the smallest envelope is enough to read:
+Serves the kernel over stdio JSON-RPC. Point any MCP-compatible agent harness at the command `pika mcp`. **Every tool requires a capability envelope at `.project/state/envelope.yaml`, reads included** — deny-by-default, so an agent cannot inventory, read, run or write anything you have not explicitly authorized. Through M2 the read tools — `inspect_repo` and `read_contract` — worked without one; **as of M3 they do not**, because enumerating your repository is a capability an agent is granted, not a neutral act it may perform unasked. Read that precisely: the requirement is to *have* an envelope, not a narrowing of which reads are allowed — there is no `fs_read` list to write, and any valid envelope permits any in-repo read. The remedy is one command, and the smallest envelope is enough to read:
 
 ```sh
 pika authorize --scope read     # grants no writes and no exec at all
 ```
+
+One error code moved with that change, which matters if you match on codes:
+`read_contract` with a path outside the repository — `../../.ssh/id_rsa` — now
+answers `envelope_denied` where it answered `invalid_params`. The
+authorization runs before the path normalization that used to reject it, on
+purpose: normalizing first would hand the check a target already proved
+repo-inside, and it could then never deny anything.
 
 ---
 
@@ -509,12 +567,14 @@ A run showing `in-flight?` has no terminal outcome. That is genuinely ambiguous 
 
 | Path | What | Committed? |
 |---|---|---|
-| `.project/state/work/<work-id>/` | The run record and its handoff bundle: prompts, raw agent output, full ladder reports | **Never** (gitignored) |
+| `.project/state/work/<work-id>/` | The run record and its handoff bundle: the goal, the prompt, the agent's final message, full ladder reports | **Never** (gitignored) |
 | `.project/evidence/<work-id>.json` | The kernel-issued evidence receipt for a run that attempted work | Yes |
 
-The split is deliberate. The record is operational state — it exists so a run can be resumed and diagnosed on the machine that ran it, and it holds unredacted agent transcripts. The receipt is the public attestation: schema-validated, redacted, and issued by the kernel rather than written by the agent whose work it describes.
+The split is deliberate. The record is operational state — it exists so a run can be resumed and diagnosed on the machine that ran it, and it holds the run's whole working context: goals, prompts, gate output, the agent's own words. The receipt is the public attestation: schema-validated, redacted, and issued by the kernel rather than written by the agent whose work it describes.
 
-The gitignore is the first guard, not the only one. Before it commits anything, a run drops every path under `.project/state` from the change set, and it **refuses outright** if the agent moved private state out of that directory — `git mv .project/state/work/<id>/record.json notes.md` would otherwise carry an unredacted transcript into the commit under a name the path filter has no reason to reject. The refusal names the path that moved, exits 1, and commits nothing.
+**Both are redacted, and that is not the difference between them.** Every string in the handoff bundle has always been run through `redact.Apply` before it is written, and as of M3 so is every free-text and captured-output field of `record.json` itself — the same treatment the receipt gets. What separates them is not scrubbing but standing: the receipt is schema-validated and meant to be published; the record is neither, and it carries internal notes, paths and reasoning that belong on one machine.
+
+The gitignore is the first guard, not the only one. Before it commits anything, a run drops every path under `.project/state` from the change set, and it **refuses outright** if the agent moved private state out of that directory — `git mv .project/state/work/<id>/record.json notes.md` would otherwise carry a private transcript into the commit under a name the path filter has no reason to reject. The refusal names the path that moved, exits 1, and commits nothing. Redacting at write time is what bounds the damage when a filter like that is wrong: a leaked file then carries `<redacted:oauth>` where a credential was. See [../reference/m3-delta.md](../reference/m3-delta.md#4-known-limit-the-copy-leak).
 
 Two details about the receipt that are easier to read here than to discover:
 
@@ -732,7 +792,7 @@ A usage or configuration error (exit `2`) replaces `result` with `error` and pri
 | `.project/profiles.lock` | Pinned profile digests | Yes |
 | `.project/exceptions.yaml` | Recorded naming exceptions | Yes |
 | `.project/evidence/<work-id>.json` | Kernel-issued evidence receipt for one run — schema-validated and redacted | Yes |
-| `.project/state/` | Board, recovery journals, run records, raw transcripts | **Never** (gitignored by init) |
+| `.project/state/` | Board, recovery journals, run records, agent transcripts (redacted at write time, never published) | **Never** (gitignored by init) |
 | `.project/state/work/<work-id>/` | One run's durable record and its handoff bundle | **Never** |
 | `.project/state/recovery/` | Transaction journals, per-op backups, and the recovery lock | **Never** |
 | `.project/state/envelope.yaml` | Capability envelope — mode 0600, local-only, machine-specific | **Never** |
@@ -740,34 +800,53 @@ A usage or configuration error (exit `2`) replaces `result` with `error` and pri
 
 ## Upgrading: `profiles.lock` written by an older pika
 
-M1.5 and then M2 each edited the embedded profile packs, which rotated the
-pack digests both times. Any `.project/profiles.lock` written by an earlier
+M1.5, M2 and now M3 each rotated the embedded pack digests. Any
+`.project/profiles.lock` written by an earlier
 build fails gate 1 with a digest mismatch — the lock is doing its job; the
 packs really did change. M2's edits were to `go@1` (`gofmt -l .` with the new
 `fail-on-output` flag) and `python@1` (`ruff format --check .`, and `pytest`
-in place of `python -m pytest`).
+in place of `python -m pytest`). M3 changed no pack YAML at all: it folded
+each pack's **templates** into its digest, so `core@1` rotated because its
+`ci.yml.tmpl` is now part of what the pack is.
 
-```sh
-git status --porcelain                            # clean: the diff below is then only --force's work
-pika init --force --profile go --name my-service  # the profiles and name this repository actually uses
-git diff                                          # restore anything you had hand-edited
-pika check --all                                  # gate 1 goes green again
+The failure names the pack, which is how you tell a template correction from a
+hand edit:
+
+```
+profiles.lock: pack core digest e824…2fdf in profiles.lock does not match the
+embedded pack core@1; regenerate the lock with `pika init --force`
 ```
 
-Pass the same `--profile` and `--name` the repository was scaffolded with.
-`--force` rebuilds the contract from the profiles on *that* command line, not
-from the contract on disk, and takes the project name from `--name` or the
-directory's basename rather than reading it back. It regenerates every other
-managed file too — including `README.md`, `AGENTS.md`,
-`.github/workflows/ci.yml`, the language scaffold, and
-`.project/exceptions.yaml`, which is reset to `{}`.
-[§1 has the full list](#--force-regenerates-more-than-the-lock).
+The remedy is one command, and since M3 it needs no arguments and costs you
+nothing you wrote:
+
+```sh
+git status --porcelain   # clean: the diff below is then only the command's work
+pika init --force        # profiles, name and module are read back from the repository
+git diff                 # the contract, the lock, the PR template, the CI workflow
+pika check --all         # gate 1 goes green again
+```
+
+`--force` rewrites only what the kernel owns and leaves your `README.md`,
+`AGENTS.md`, `CONTRIBUTING.md`, `.gitignore`, language scaffold and
+`.project/exceptions.yaml` exactly as they are.
+[§1 has the full split](#--force-regenerates-more-than-the-lock), including
+why `--module` is inert here. Until M3 this command was the destructive
+operation the older text on this page warned about; `--reset-docs` is now the
+only way to ask for that behavior.
 
 There is deliberately no in-place lock repair: a lock you can hand-edit back
 to green proves nothing.
 
-Also worth knowing when upgrading: a pack change that only touches `core@1`'s
-**templates** rotates no digest at all, so gate 1 cannot tell you your CI
-workflow is out of date, and `pika apply` will not replace a file that already
-exists. `pika init --force` is what rewrites it. See
-[../reference/m2-delta.md](../reference/m2-delta.md#gap-1--a-template-only-pack-change-is-invisible-to-every-adopted-repository).
+### The template blind spot is closed
+
+[M2 recorded a gap](../reference/m2-delta.md#gap-1--a-template-only-pack-change-is-invisible-to-every-adopted-repository):
+a pack change touching only `core@1`'s **templates** rotated no digest, so
+gate 1 could not tell an adopted repository that its CI workflow was out of
+date, and `pika apply` would not replace a file that already existed. **M3
+closed both halves.** Pack templates are inside the pack digest, so a
+corrected template now fails gate 1 by name; and `pika apply` refreshes the
+two kernel-owned files rather than skipping them. The cost is the digest
+rotation above — one more, for everyone, which is why it is paired with a
+`--force` you can run without bracing for it. See
+[../reference/m3-delta.md](../reference/m3-delta.md#6-the-template-blind-spot-is-closed-and-what-it-cost).
