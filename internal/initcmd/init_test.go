@@ -3,6 +3,7 @@ package initcmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"maps"
 	"os"
@@ -13,7 +14,20 @@ import (
 	"testing"
 
 	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/profiles"
 )
+
+// TestMain pins PATH resolution for the whole package. The contract's
+// commands block is populated from pack hints whose tool is present on
+// PATH, and the golden trees embed .project/contract.yaml byte for
+// byte. Without a fixed lookPath the golden bytes would depend on what
+// the machine running the tests happens to have installed. The stub
+// reports every tool present, so the goldens record the full
+// hint-populated contract.
+func TestMain(m *testing.M) {
+	lookPath = func(string) (string, error) { return "/usr/bin/stub", nil }
+	os.Exit(m.Run())
+}
 
 // languages lists the V1 language profiles in spec §5.4 order. Each gets a
 // parametrized golden-dir test.
@@ -408,5 +422,50 @@ func TestDigitLeadingNamesProduceValidStackIdentifiers(t *testing.T) {
 				t.Errorf("contract project name = %q, want 1-check", c.Project.Name)
 			}
 		})
+	}
+}
+
+// A fresh TypeScript repo used to pass `pika check` with all five gates
+// skipped: typescript@1 declares every slot discovery-only, so the report
+// was green while nothing was verified.
+func TestCommandsPopulatedFromHintsWhenToolPresent(t *testing.T) {
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "typescript@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := func(string) (string, error) { return "/usr/bin/stub", nil }
+
+	got := commandsFromChecks(resolved.Checks, present)
+	if got["test"] != "npm test" {
+		t.Errorf("commands[test] = %q, want %q", got["test"], "npm test")
+	}
+	if got["lint"] != "npm run lint" {
+		t.Errorf("commands[lint] = %q, want %q", got["lint"], "npm run lint")
+	}
+}
+
+func TestCommandsOmittedWhenToolAbsent(t *testing.T) {
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "typescript@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	absent := func(string) (string, error) { return "", errors.New("not found") }
+
+	if got := commandsFromChecks(resolved.Checks, absent); len(got) != 0 {
+		t.Fatalf("commands = %v, want empty when no tool is on PATH", got)
+	}
+}
+
+// A slot with a real cmd (not a hint) is the pack's own command and must
+// not be duplicated into the contract.
+func TestExplicitPackCommandsAreNotCopied(t *testing.T) {
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "go@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := func(string) (string, error) { return "/usr/bin/stub", nil }
+
+	if got := commandsFromChecks(resolved.Checks, present)["test"]; got != "" {
+		t.Errorf("commands[test] = %q; go@1 already declares cmd, the contract must not duplicate it", got)
 	}
 }

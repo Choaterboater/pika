@@ -12,8 +12,7 @@ packages:
     - core@1
     - swift@1
 commands:
-  test: swift test
-  typecheck: swift build
+  format: swift format
 agents: {}
 github:
   merge: squash

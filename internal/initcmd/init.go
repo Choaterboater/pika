@@ -20,6 +20,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -129,7 +130,8 @@ func Run(opts InitOptions) error {
 		module = name
 	}
 
-	contractYAML, err := buildContract(name, selection, resolved)
+	commands := commandsFromChecks(resolved.Checks, lookPath)
+	contractYAML, err := buildContract(name, selection, commands)
 	if err != nil {
 		return err
 	}
@@ -151,7 +153,7 @@ func Run(opts InitOptions) error {
 	files = append(files, genFile{path: lockRel})
 
 	if opts.JSON {
-		if err := writeManifest(files, opts.Out); err != nil {
+		if err := writeManifest(files, commands, opts.Out); err != nil {
 			return err
 		}
 	}
@@ -273,10 +275,10 @@ func digitSafe(s, prefix string) string {
 }
 
 // buildContract composes the initial contract: schema 1, single topology,
-// one root package carrying the selection, the language pack's real
-// commands where its check slots are not discovery sentinels, and the M1
-// defaults for GitHub merge and evidence policy.
-func buildContract(name string, selection []string, resolved *profiles.Resolved) ([]byte, error) {
+// one root package carrying the selection, the commands resolved from the
+// selected packs' check slots, and the M1 defaults for GitHub merge and
+// evidence policy.
+func buildContract(name string, selection []string, commands map[string]string) ([]byte, error) {
 	c := &contract.Contract{
 		Schema:   1,
 		Project:  contract.Project{Name: name, Topology: "single"},
@@ -284,7 +286,7 @@ func buildContract(name string, selection []string, resolved *profiles.Resolved)
 		Packages: map[string]contract.Package{
 			name: {Root: ".", Profiles: slices.Clone(selection)},
 		},
-		Commands:   contractCommands(resolved.Checks),
+		Commands:   commands,
 		GitHub:     contract.GitHub{Merge: "squash"},
 		Evidence:   contract.Evidence{Publish: "sanitized"},
 		Extensions: map[string]any{},
@@ -296,25 +298,52 @@ func buildContract(name string, selection []string, resolved *profiles.Resolved)
 	return data, nil
 }
 
-// contractCommands collects the resolved check slots that carry real
-// commands — never discovery sentinels — as whitespace-joined argv, the
-// form the contract schema and verify's splitCommand consume.
-func contractCommands(cs profiles.CheckSet) map[string]string {
-	slots := map[string]profiles.Check{
-		"format":    cs.Format,
-		"lint":      cs.Lint,
-		"typecheck": cs.Typecheck,
-		"test":      cs.Test,
-		"smoke":     cs.Smoke,
+// lookPath resolves a tool name against PATH. It is a package variable
+// so tests can pin it: the contract's commands block depends on what is
+// installed, and the golden trees compare contract.yaml byte for byte.
+var lookPath = exec.LookPath
+
+// commandsFromChecks fills contract.commands from pack hints for slots
+// that are discovery sentinels whose suggested tool is actually present.
+// Without this a fresh repository can pass `pika check` with every gate
+// skipped — green while verifying nothing.
+//
+// lookPath is injected so golden tests stay deterministic regardless of
+// what the authoring machine has installed.
+func commandsFromChecks(cs profiles.CheckSet, lookPath func(string) (string, error)) map[string]string {
+	slots := []struct {
+		id    string
+		check profiles.Check
+	}{
+		{"format", cs.Format},
+		{"lint", cs.Lint},
+		{"typecheck", cs.Typecheck},
+		{"test", cs.Test},
+		{"smoke", cs.Smoke},
 	}
 	out := map[string]string{}
-	for _, id := range []string{"format", "lint", "typecheck", "test", "smoke"} {
-		slot := slots[id]
-		if !slot.Discovery && len(slot.Cmd) > 0 {
-			out[id] = strings.Join(slot.Cmd, " ")
+	for _, s := range slots {
+		// An explicit pack command already runs; duplicating it into the
+		// contract would just create a second place to keep in sync.
+		if len(s.check.Cmd) > 0 || !s.check.Discovery {
+			continue
 		}
+		if len(s.check.Hint) == 0 {
+			continue
+		}
+		if _, err := lookPath(s.check.Hint[0]); err != nil {
+			continue
+		}
+		out[s.id] = strings.Join(s.check.Hint, " ")
 	}
 	return out
+}
+
+// CommandsFromChecks is commandsFromChecks resolved against the real
+// PATH. `pika apply` applies the same policy when it promotes a draft
+// contract, so both authoring paths share one implementation.
+func CommandsFromChecks(cs profiles.CheckSet) map[string]string {
+	return commandsFromChecks(cs, lookPath)
 }
 
 // buildFiles assembles every file init writes except the profiles lock
@@ -560,16 +589,19 @@ func writeFile(root, rel string, data []byte) error {
 }
 
 // writeManifest emits the created-file manifest as pretty-printed JSON:
-// every file init wrote, sorted by path.
-func writeManifest(files []genFile, out io.Writer) error {
+// every file init wrote, sorted by path, plus every contract command
+// slot init populated so the caller can see which gates will actually
+// run.
+func writeManifest(files []genFile, commands map[string]string, out io.Writer) error {
 	if out == nil {
 		out = os.Stdout
 	}
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(struct {
-		Files []string `json:"files"`
-	}{Files: filePaths(files)}); err != nil {
+		Files    []string          `json:"files"`
+		Commands map[string]string `json:"commands"`
+	}{Files: filePaths(files), Commands: commands}); err != nil {
 		return fmt.Errorf("pika init: encode manifest: %w", err)
 	}
 	return nil

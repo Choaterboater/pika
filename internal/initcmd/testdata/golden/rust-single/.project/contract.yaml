@@ -12,8 +12,8 @@ packages:
     - core@1
     - rust@1
 commands:
-  test: cargo test
-  typecheck: cargo build
+  format: "cargo fmt -- --check"
+  lint: "cargo clippy -- -D warnings"
 agents: {}
 github:
   merge: squash

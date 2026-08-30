@@ -166,6 +166,18 @@ func Run(opts RunOptions) (Report, error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("apply: resolve draft profiles: %w", err)
 	}
+	// Same policy as `pika init`: a slot the draft leaves empty and the
+	// pack declares as a discovery sentinel gets the pack's hint when
+	// that tool is on PATH. Without it a repository can be applied with
+	// every gate skipped — a green ladder that verifies nothing. Slots
+	// adoption already discovered win; the draft is the user's stated
+	// intent.
+	if added := fillMissingCommands(c, initcmd.CommandsFromChecks(resolved.Checks)); added {
+		contractYAML, err = yaml.Marshal(c)
+		if err != nil {
+			return Report{}, fmt.Errorf("apply: encode promoted contract: %w", err)
+		}
+	}
 	// The core files render exactly the way init renders them: one
 	// implementation, so an applied file is byte-identical to a
 	// scaffolded one.
@@ -265,6 +277,26 @@ func rollback(tx *txn.Tx, cause error) (Report, error) {
 			fmt.Errorf("apply: ROLLBACK FAILED — mutations may remain on disk; inspect .project/state/recovery (the journal is preserved for recovery): %w", rerr))
 	}
 	return Report{Rollback: true}, fmt.Errorf("apply: %w (rolled back to the pre-state)", cause)
+}
+
+// fillMissingCommands adds every hint-derived command the draft does not
+// already declare, and reports whether it changed the contract. A slot
+// the draft already sets is left alone: adoption discovered a real
+// command for it, and that beats a suggestion.
+func fillMissingCommands(c *contract.Contract, hints map[string]string) bool {
+	added := false
+	for _, id := range []string{"format", "lint", "typecheck", "test", "smoke"} {
+		cmd, ok := hints[id]
+		if !ok || strings.TrimSpace(c.Commands[id]) != "" {
+			continue
+		}
+		if c.Commands == nil {
+			c.Commands = map[string]string{}
+		}
+		c.Commands[id] = cmd
+		added = true
+	}
+	return added
 }
 
 // buildPlan assembles the ordered operation plan: promote the drafts,
