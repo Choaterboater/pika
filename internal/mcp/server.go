@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -789,6 +790,14 @@ func (s *server) authorize(kind, target string) *toolError {
 		return toolErrf(errEnvelopeDenied, "no usable capability envelope (%v): %s of %s denied", err, kind, target)
 	}
 	if !env.Allows(envelope.Operation{Kind: kind, Target: target}) {
+		// The remediation names the exact invocation, flag included: a
+		// message that names the denied thing but not the command that
+		// grants it is how an agent ends up looping on envelope_denied.
+		// Unquoted after "run:" so the line is copy-pasteable — nesting
+		// the argv's own quotes inside another pair is not.
+		if kind == envelope.KindExec {
+			return toolErrf(errEnvelopeDenied, "exec not authorized for %q; run: pika authorize --exec %s", target, strconv.Quote(target))
+		}
 		return toolErrf(errEnvelopeDenied, "%s not authorized for %q; run \"pika authorize\"", kind, target)
 	}
 	return nil

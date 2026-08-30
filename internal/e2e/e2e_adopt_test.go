@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -111,4 +112,110 @@ func TestE2EAdoptPreview(t *testing.T) {
 
 	// Usage errors exit 2.
 	runCLI(t, dir, 2, "adopt", "junk")
+}
+
+// TestE2EPreviewPlanExecGrantLoop walks the whole remediation path on an
+// unadopted repository with a check command of its own, against the real
+// binary: `pika authorize --scope project` before any contract exists,
+// preview_plan denied because the preview would spawn `make test`, the
+// exact invocation the denial names, and preview_plan then succeeding.
+// Each step used to be a dead end — authorize exited 2 with no contract,
+// preview_plan spawned the command with no exec grant at all, and there
+// was no flag with which to grant it — so the loop is the assertion.
+func TestE2EPreviewPlanExecGrantLoop(t *testing.T) {
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make not in PATH: the discovered baseline command really is spawned here")
+	}
+	dir := t.TempDir()
+	copyFixtureTree(t, "go-mod", dir)
+	// A root Makefile with a test target is what discovery turns into
+	// ExistingChecks{"test": "make test"} — the legacy-repo shape adopt
+	// exists for.
+	if err := os.WriteFile(filepath.Join(dir, "Makefile"), []byte("test:\n\t@echo baseline\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 1: authorize before adoption. It must succeed (fs_write does
+	// not depend on a contract) and say what it could not derive.
+	out := runCLI(t, dir, 0, "authorize", "--scope", "project", "--json")
+	env := unwrap(t, out, "authorize")
+	if !env.OK {
+		t.Fatalf("authorize before adoption reported ok = false:\n%s", out)
+	}
+	var res struct {
+		Warnings []string `json:"warnings"`
+		Envelope struct {
+			Allow struct {
+				FSWrite []string `json:"fs_write"`
+				Exec    []string `json:"exec"`
+			} `json:"allow"`
+		} `json:"envelope"`
+	}
+	if err := json.Unmarshal(env.Result, &res); err != nil {
+		t.Fatalf("authorize --json result: %v\n%s", err, out)
+	}
+	if len(res.Envelope.Allow.FSWrite) == 0 {
+		t.Fatalf("authorize granted no writes before adoption:\n%s", out)
+	}
+	if len(res.Envelope.Allow.Exec) != 0 {
+		t.Fatalf("authorize invented exec grants with no contract: %v", res.Envelope.Allow.Exec)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "exec") {
+		t.Fatalf("warnings = %v, want one explaining the missing exec grants", res.Warnings)
+	}
+
+	// Step 2: preview_plan is denied, and the denial names the exact
+	// invocation that grants what it needs.
+	s := startMCP(t, dir)
+	s.request("initialize", map[string]any{"protocolVersion": "2024-11-05"})
+	if _, errObj := s.call("preview_plan", map[string]any{}); errObj == nil {
+		t.Fatal("preview_plan spawned the repository's own command with no exec grant")
+	} else {
+		if code := toolErrorCode(t, errObj); code != "envelope_denied" {
+			t.Fatalf("preview_plan error code = %q, want envelope_denied", code)
+		}
+		msg, _ := errObj["message"].(string)
+		if !strings.Contains(msg, `pika authorize --exec "make test"`) {
+			t.Fatalf("denial message = %q, want the exact invocation that grants it", msg)
+		}
+	}
+	for _, draft := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(draft))); !os.IsNotExist(err) {
+			t.Fatalf("a denied preview_plan wrote %s (stat err %v)", draft, err)
+		}
+	}
+	s.stdin.Close()
+	if err := s.cmd.Wait(); err != nil {
+		t.Fatalf("mcp server did not exit cleanly on EOF: %v\nstderr: %s", err, s.stderr.String())
+	}
+
+	// Step 3: follow the remediation literally.
+	runCLI(t, dir, 0, "authorize", "--scope", "project", "--exec", "make test", "--force")
+
+	// Step 4: the same call now runs, and the baseline really ran the
+	// granted command.
+	s2 := startMCP(t, dir)
+	s2.request("initialize", map[string]any{"protocolVersion": "2024-11-05"})
+	result, errObj := s2.call("preview_plan", map[string]any{})
+	if errObj != nil {
+		t.Fatalf("preview_plan after the exec grant: %v", errObj)
+	}
+	data, _ := result["data"].(map[string]any)
+	baseline, ok := data["baselineChecks"].([]any)
+	if !ok || len(baseline) != 1 {
+		t.Fatalf("baselineChecks = %v, want the one discovered command", data["baselineChecks"])
+	}
+	entry := baseline[0].(map[string]any)
+	if entry["command"] != "make test" || entry["status"] != "pass" {
+		t.Fatalf("baseline = %v, want make test to have run and passed", entry)
+	}
+	for _, draft := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(draft))); err != nil {
+			t.Fatalf("preview_plan did not write %s: %v", draft, err)
+		}
+	}
+	s2.stdin.Close()
+	if err := s2.cmd.Wait(); err != nil {
+		t.Fatalf("mcp server did not exit cleanly on EOF: %v\nstderr: %s", err, s2.stderr.String())
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -228,6 +229,81 @@ func TestExplicitGrantsAreHonored(t *testing.T) {
 	}
 	if len(env.Allow.GitHub) != 1 {
 		t.Errorf("github = %v", env.Allow.GitHub)
+	}
+}
+
+// exec is the one class that is both derived (from the contract's gates)
+// and explicit. The explicit list must behave like every other explicit
+// list: honored at every scope, never implicit, and never one grant wider
+// than what was asked for.
+func TestExplicitExecGrantsAreHonoredAtEveryScope(t *testing.T) {
+	const grant = "make test"
+	for _, scope := range []string{ScopeRead, ScopeProject, ScopeRepo} {
+		root := projectRoot(t)
+		base, _, err := Build(Options{Root: root, Scope: scope})
+		if err != nil {
+			t.Fatalf("Build(%s): %v", scope, err)
+		}
+		// Nothing implicit: the fixture's gates are go commands, so an
+		// unasked-for "make test" must not be there. Without this the
+		// assertions below could pass on a derived grant.
+		if slices.Contains(base.Allow.Exec, grant) {
+			t.Fatalf("scope %s granted %q with no --exec", scope, grant)
+		}
+		env, _, err := Build(Options{Root: root, Scope: scope, Exec: []string{grant}})
+		if err != nil {
+			t.Fatalf("Build(%s, --exec): %v", scope, err)
+		}
+		if !slices.Contains(env.Allow.Exec, grant) {
+			t.Errorf("scope %s exec = %v, want it to grant %q", scope, env.Allow.Exec, grant)
+		}
+		if len(env.Allow.Exec) != len(base.Allow.Exec)+1 {
+			t.Errorf("scope %s exec = %v, want exactly the derived grants plus %q", scope, env.Allow.Exec, grant)
+		}
+		for _, derived := range base.Allow.Exec {
+			if !slices.Contains(env.Allow.Exec, derived) {
+				t.Errorf("scope %s dropped its derived grant %q: %v", scope, derived, env.Allow.Exec)
+			}
+		}
+		// An exec grant must not leak into any other class.
+		if len(env.Allow.Network)+len(env.Allow.Credential)+len(env.Allow.GitHub) != 0 {
+			t.Errorf("scope %s: --exec granted something else: %+v", scope, env.Allow)
+		}
+		// And it must survive the kernel's own matcher, which compares
+		// the whole argv line element-wise.
+		bound := envelope.NewEnvelope(env, root.Dir())
+		if !bound.Allows(envelope.Operation{Kind: envelope.KindExec, Target: grant}) {
+			t.Errorf("scope %s: generated envelope denies the command it was told to grant: %v", scope, env.Allow.Exec)
+		}
+		if bound.Allows(envelope.Operation{Kind: envelope.KindExec, Target: "make release"}) {
+			t.Errorf("scope %s: %q widened to another make target", scope, grant)
+		}
+	}
+}
+
+// The enforcement side splits an exec entry on whitespace and compares
+// element-wise, so "make   test" and "make test" are one grant. Writing
+// both would be two entries authorizing one command.
+func TestExplicitExecGrantIsNormalizedAndDeduped(t *testing.T) {
+	env, _, err := Build(Options{
+		Root:  projectRoot(t),
+		Scope: ScopeRead,
+		Exec:  []string{"make   test", "make test", "   "},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(env.Allow.Exec) != 1 || env.Allow.Exec[0] != "make test" {
+		t.Fatalf("exec = %v, want exactly [\"make test\"]", env.Allow.Exec)
+	}
+}
+
+// A lone "*" is the one silent allow-all envelope.Validate refuses to
+// load. Refusing to generate it keeps authorize from writing a file its
+// own kernel rejects.
+func TestExecGrantOfEverythingIsRefused(t *testing.T) {
+	if _, _, err := Build(Options{Root: projectRoot(t), Scope: ScopeProject, Exec: []string{"*"}}); err == nil {
+		t.Fatal("Build(--exec \"*\") = nil error, want a refusal")
 	}
 }
 

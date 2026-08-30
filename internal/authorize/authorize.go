@@ -40,13 +40,21 @@ var Scopes = []string{ScopeRead, ScopeProject, ScopeRepo}
 // projectPaths are the directories pika itself owns (design spec §6).
 var projectPaths = []string{".project", "docs", "review"}
 
-// Options declares the intent an envelope is generated from.
+// Options declares the intent an envelope is generated from. Network,
+// Credential, GitHub and Exec are the explicit lists: nothing in them is
+// ever granted implicitly, at any scope.
 type Options struct {
 	Root       *repopath.Root
 	Scope      string
 	Network    []string
 	Credential []string
 	GitHub     []string
+	// Exec grants commands no contract declares. Each entry is a whole
+	// argv line ("make test"), because envelope.matchesExec compares
+	// element-wise against the whole line an enforcement site asks
+	// about: "make" alone would authorize a bare "make" and deny
+	// "make test".
+	Exec []string
 }
 
 // errNoContract marks the single gateCommands failure that is not a
@@ -103,12 +111,39 @@ func Build(opts Options) (*envelope.Env, []string, error) {
 		case errors.Is(err, errNoContract):
 			warnings = append(warnings, fmt.Sprintf(
 				"no contract at %s yet, so no gate commands were derived: this envelope grants no exec. "+
-					"Re-run \"pika authorize --force\" after \"pika init\" or \"pika adopt\" to authorize the gates the contract declares.",
+					"Grant the commands you mean with --exec \"<argv>\", or re-run \"pika authorize --force\" "+
+					"after \"pika init\" or \"pika adopt\" to authorize the gates the contract declares.",
 				opts.Root.Contract()))
 		default:
 			return nil, nil, err
 		}
 	}
+	// Explicit exec grants are honored at every scope, exactly like the
+	// other explicit lists, and are the only way to authorize a command
+	// no contract declares — the discovered commands preview_plan runs
+	// before a contract exists, for one. Derivation is deliberately not
+	// extended to cover them: deriving exec from discovery would let an
+	// unvetted repository grant itself execution, turning the envelope
+	// from a grant into a rubber stamp.
+	execs := make([]string, 0, len(opts.Exec))
+	for _, e := range opts.Exec {
+		argv := strings.Fields(e)
+		if len(argv) == 0 {
+			continue
+		}
+		// A lone "*" matches every command — the one silent allow-all
+		// envelope.Validate refuses to load. Refusing to generate it
+		// keeps authorize from writing a file its own kernel rejects.
+		// A prefix glob ("git *") is a deliberate, narrower widening
+		// the matcher supports, so it is left to the operator.
+		if len(argv) == 1 && argv[0] == "*" {
+			return nil, nil, fmt.Errorf("authorize: exec grant %q grants every command; name the command instead", e)
+		}
+		// Normalize to the single-spaced argv line the enforcement side
+		// asks about, so "make   test" and "make test" are one grant.
+		execs = append(execs, strings.Join(argv, " "))
+	}
+	env.Allow.Exec = dedupe(append(env.Allow.Exec, execs...))
 
 	env.Allow.Network = dedupe(opts.Network)
 	env.Allow.Credential = dedupe(opts.Credential)

@@ -255,6 +255,7 @@ Before this command existed, the only way to let an agent write anything was to 
 | Flag | Purpose |
 |---|---|
 | `--scope` | `read`, `project` (default), or `repo` — see the table below |
+| `--exec` | Command to authorize, as a **whole argv line**: `--exec "make test"`, not `--exec make` (repeatable; never granted implicitly) |
 | `--network` | Host or `host:port` to authorize (repeatable; never granted implicitly) |
 | `--credential` | Credential name to authorize (repeatable; never granted implicitly) |
 | `--github` | GitHub scope to authorize (repeatable; never granted implicitly) |
@@ -266,15 +267,17 @@ Before this command existed, the only way to let an agent write anything was to 
 
 | Scope | `fs_write` grants | `exec` grants |
 |---|---|---|
-| `read` | none — nothing mutating at all | none |
-| `project` | `.project`, `docs`, `review` — the directories pika owns | every gate command in your contract |
-| `repo` | `.` — the whole repository tree | every gate command in your contract |
+| `read` | none — nothing mutating at all | none, unless you pass `--exec` |
+| `project` | `.project`, `docs`, `review` — the directories pika owns | every gate command in your contract, plus any `--exec` |
+| `repo` | `.` — the whole repository tree | every gate command in your contract, plus any `--exec` |
 
 `read` works in a repository that was never adopted, because it authorizes no change and therefore needs no contract.
 
 `project` and `repo` work there too: the write grant does not depend on a contract. Exec grants are derived from the gates a contract resolves to, so before `pika init` or `pika adopt` there are none to derive — `authorize` says so on stderr, writes the envelope with no `exec`, and exits 0. That is the state `preview_plan` runs in, and it is why the remediation `pika doctor` prints works before adoption. Re-run `pika authorize --force` afterwards to pick up the contract's gate commands. A contract that exists and does not parse is still an error: it is a defect to fix, not a grant to skip.
 
-`exec` grants are the gate's **full argv**, not just the binary: `go build -o /dev/null ./...`, not `go`. That is what the enforcement side matches against, and it is the tighter grant — authorizing bare `go` would also authorize `go build -o /anywhere`, a command no gate runs.
+`exec` grants are **whole argv lines**, whether derived or explicit: `go build -o /dev/null ./...`, not `go`; `--exec "make test"`, not `--exec make`. That is what the enforcement side matches against — `Envelope.Allows` compares an entry element-wise against the whole line the call site asks about, so `make` alone authorizes a bare `make` and denies `make test`. It is also the tighter grant: authorizing bare `go` would additionally authorize `go build -o /anywhere`, a command no gate runs.
+
+`--exec` is the only way to authorize a command no contract declares — a discovered check command `preview_plan` would run before adoption, for instance. pika deliberately never derives those grants from discovery: `preview_plan` exists to inspect repositories nobody has vetted, and letting an unvetted tree grant itself execution would make the envelope a rubber stamp rather than a grant. Deriving from a *committed* contract is safe for the opposite reason — the contract is operator-owned. When a denial happens, the message names the exact invocation, e.g. `run "pika authorize --exec \"make test\""`.
 
 Generated for this repository:
 

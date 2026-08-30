@@ -42,10 +42,11 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	scope := fs.String("scope", authorize.ScopeProject,
 		"what to authorize: read (nothing mutating), project (.project, docs, review), or repo (the whole tree)")
-	var network, credential, github stringList
+	var network, credential, github, execGrant stringList
 	fs.Var(&network, "network", "host or host:port to authorize (repeatable; never granted implicitly)")
 	fs.Var(&credential, "credential", "credential name to authorize (repeatable; never granted implicitly)")
 	fs.Var(&github, "github", "GitHub scope to authorize (repeatable; never granted implicitly)")
+	fs.Var(&execGrant, "exec", "command to authorize as a WHOLE argv line, e.g. --exec \"make test\" (repeatable; never granted implicitly)")
 	force := fs.Bool("force", false, "replace an existing envelope")
 	jsonOut := fs.Bool("json", false, "emit the result as JSON on stdout")
 	rootFlag := fs.String("root", "", rootFlagUsage)
@@ -67,6 +68,7 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		Network:    network,
 		Credential: credential,
 		GitHub:     github,
+		Exec:       execGrant,
 	})
 	if err != nil {
 		return fail(*jsonOut, stdout, stderr, "authorize", codeUsage, err.Error())

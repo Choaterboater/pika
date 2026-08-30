@@ -215,17 +215,18 @@ func envelopeYAML(paths ...string) string {
 }
 
 // writeGeneratedEnvelope writes the envelope `pika authorize --scope
-// <scope>` would generate for the repository at root. Using the real
-// generator rather than a hand-written document is the point: it proves
-// what authorize grants and what this package enforces are the same
-// thing, and it fails the moment the two drift.
-func writeGeneratedEnvelope(t *testing.T, root, scope string) {
+// <scope>` would generate for the repository at root, with any explicit
+// --exec grants. Using the real generator rather than a hand-written
+// document is the point: it proves what authorize grants and what this
+// package enforces are the same thing, and it fails the moment the two
+// drift.
+func writeGeneratedEnvelope(t *testing.T, root, scope string, execGrants ...string) {
 	t.Helper()
 	r, err := repopath.At(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, _, err := authorize.Build(authorize.Options{Root: r, Scope: scope})
+	env, _, err := authorize.Build(authorize.Options{Root: r, Scope: scope, Exec: execGrants})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,8 +496,15 @@ func TestPreviewPlanDeniedWithoutExecGrant(t *testing.T) {
 
 	resp := s.callTool(1, "preview_plan", nil)
 	errObj := wantToolError(t, resp, "envelope_denied")
-	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "make test") {
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(msg, "make test") {
 		t.Errorf("denial message = %q, want it to name the denied command", msg)
+	}
+	// The remediation has to name the flag, not just the command: an
+	// agent told to "run pika authorize" with no way to express the
+	// grant is an agent in a loop.
+	if !strings.Contains(msg, `pika authorize --exec "make test"`) {
+		t.Errorf("denial message = %q, want the exact invocation that grants it", msg)
 	}
 	// A denial must cost the repository nothing: no draft, no baseline.
 	for _, draft := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
@@ -529,6 +537,33 @@ func TestPreviewPlanAllowedWithExecGrant(t *testing.T) {
 			t.Errorf("preview_plan did not write %s: %v", draft, err)
 		}
 	}
+}
+
+// The whole loop, through the real generator: an unadopted repository
+// with a discovered check command, an envelope produced by
+// `pika authorize --scope project --exec "make test"`, and a preview_plan
+// that runs. This is the assertion that authorize can express the grant
+// preview_plan demands — the gap that made the canonical
+// envelope_denied remediation unusable before a contract exists.
+func TestPreviewPlanAllowedWithGeneratedExecGrant(t *testing.T) {
+	root := discoverableCheckRepo(t, "")
+	writeGeneratedEnvelope(t, root, authorize.ScopeProject, "make test")
+	s := startServer(t, root)
+	s.initialize()
+
+	res := wantResult(t, s.callTool(1, "preview_plan", nil))
+	data := res["data"].(map[string]any)
+	baseline, ok := data["baselineChecks"].([]any)
+	if !ok || len(baseline) != 1 {
+		t.Fatalf("baselineChecks = %v, want the one discovered command", data["baselineChecks"])
+	}
+	// Without the explicit grant the same generated envelope must still
+	// deny: the scope alone never authorizes a discovered command.
+	other := discoverableCheckRepo(t, "")
+	writeGeneratedEnvelope(t, other, authorize.ScopeProject)
+	s2 := startServer(t, other)
+	s2.initialize()
+	wantToolError(t, s2.callTool(1, "preview_plan", nil), "envelope_denied")
 }
 
 func TestRunChecksReport(t *testing.T) {

@@ -55,8 +55,8 @@ The repository contract (`.project/contract.yaml`) is the project-level source o
 | Roots | `--root <dir>` on every command; otherwise discovered by walking up for `.project/contract.yaml`, then the draft, then `.git`. `init` never discovers |
 | Doctor | `pika doctor`: root, contract, lock, exceptions, envelope, per-gate command or pack hint, toolchain, git — and it never executes a gate |
 | Explain | `pika explain <id>`: naming rules, gate ids, and MCP error codes, with rationale, remediation, and an exception record that actually parses |
-| Authorize | `pika authorize [--scope read\|project\|repo]` writes `.project/state/envelope.yaml` at mode 0600 — the hand-authored-YAML barrier to using an agent is gone |
-| Exec enforcement | MCP `run_checks` authorizes every gate it will spawn; the human CLI deliberately needs no envelope |
+| Authorize | `pika authorize [--scope read\|project\|repo]` writes `.project/state/envelope.yaml` at mode 0600 — the hand-authored-YAML barrier to using an agent is gone. `--exec`, `--network`, `--credential` and `--github` are the explicit grants; nothing in them is ever implicit |
+| Exec enforcement | MCP `run_checks` authorizes every gate it will spawn, and `preview_plan` every discovered check command its baseline runs; the human CLI deliberately needs no envelope. Exec grants are **whole argv lines** (`--exec "make test"`, not `--exec make`), because the matcher compares element-wise |
 | Scoped checks | `check --changed` resolves a real git diff and degrades loudly — it never silently narrows verification |
 | Self-governance | pika's own `.project/contract.yaml`, `profiles.lock` and `exceptions.yaml` are committed, and CI runs `pika check --ci` with the binary built from the commit under test |
 

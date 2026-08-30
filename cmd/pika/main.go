@@ -122,7 +122,7 @@ var commands = []command{
 	{
 		name:    "authorize",
 		summary: "generate the capability envelope agents need",
-		usage:   "pika authorize [--scope read|project|repo] [--network <host>]... [--credential <name>]... [--github <scope>]... [--force] [--json] [--root <dir>]",
+		usage:   "pika authorize [--scope read|project|repo] [--exec \"<argv>\"]... [--network <host>]... [--credential <name>]... [--github <scope>]... [--force] [--json] [--root <dir>]",
 		run:     runAuthorize,
 	},
 	{
