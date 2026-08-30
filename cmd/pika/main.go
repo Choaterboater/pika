@@ -50,6 +50,12 @@ var commands = []command{
 		run:     runCheck,
 	},
 	{
+		name:    "doctor",
+		summary: "diagnose contract, lock, envelope, gates, and toolchain",
+		usage:   "pika doctor [--json] [--root <dir>]",
+		run:     runDoctor,
+	},
+	{
 		name:    "explain",
 		summary: "explain a naming rule, gate, or error code",
 		usage:   "pika explain <rule-id> [--json] [--root <dir>]",

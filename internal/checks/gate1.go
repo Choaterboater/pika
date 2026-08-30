@@ -37,7 +37,7 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 	// Spec §16: CI validates the contract and profile locks; §5.3 pins
 	// the profile versions in profiles.lock. An unpinned, stale, or
 	// drifted lock is a gate failure, never a silent pass.
-	if err := checkLock(repoRoot, c); err != nil {
+	if err := CheckLock(repoRoot, c); err != nil {
 		return 1, err.Error(), nil
 	}
 	var findings []string
@@ -55,13 +55,15 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 	return 0, "", warnings
 }
 
-// checkLock verifies .project/profiles.lock against the contract's
+// CheckLock verifies .project/profiles.lock against the contract's
 // profile selection (spec §16, §5.3): the lock must exist, must pin
 // every contract profile ref at the contract's version, every pinned
 // digest must match the embedded registry's current digest for that
 // pack, and the lock's top-level digest must match this binary's whole
-// embedded pack registry.
-func checkLock(repoRoot string, c *contract.Contract) error {
+// embedded pack registry. It is exported so `pika doctor` diagnoses lock
+// health with gate 1's own implementation instead of a second one that
+// could disagree.
+func CheckLock(repoRoot string, c *contract.Contract) error {
 	// The lock's location is owned by repopath, never spelled out here:
 	// gate 1 must look under exactly the root its caller resolved.
 	root, err := repopath.At(repoRoot)
