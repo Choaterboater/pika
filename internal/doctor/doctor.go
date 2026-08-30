@@ -170,6 +170,15 @@ func grantedKinds(env *envelope.Envelope) string {
 // outside init. It never executes a gate: spawning real toolchains from a
 // diagnostic command would make doctor slow and side-effecting, so the
 // binary is probed with exec.LookPath instead.
+//
+// The two negative outcomes carry the severity `pika check` would give
+// the same repository, because a diagnostic that disagrees with the
+// kernel it diagnoses is worse than no diagnostic. An undiscovered slot
+// is a warning: verify records it as StatusSkip, which does not fail the
+// ladder. A resolved command whose binary is absent is an error: verify
+// builds a real gate for it either way, exec.CommandContext fails with
+// something that is not an *exec.ExitError, and runGate's default branch
+// scores it StatusFail — exit 1.
 func checkGates(rep *Report, c *contract.Contract, resolved *profiles.Resolved) {
 	if c == nil || resolved == nil {
 		return
@@ -198,9 +207,9 @@ func checkGates(rep *Report, c *contract.Contract, resolved *profiles.Resolved) 
 			continue
 		}
 		if _, err := exec.LookPath(g.Cmd[0]); err != nil {
-			rep.add(id, SeverityWarn,
+			rep.add(id, SeverityError,
 				fmt.Sprintf("%s: %s is not on PATH", strings.Join(g.Cmd, " "), g.Cmd[0]),
-				"install the toolchain, or this gate cannot run here")
+				"install the toolchain; \"pika check\" runs this gate here and fails when the binary is absent")
 			continue
 		}
 		rep.add(id, SeverityOK, strings.Join(g.Cmd, " "), "")

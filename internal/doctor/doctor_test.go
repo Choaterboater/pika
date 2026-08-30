@@ -3,6 +3,7 @@ package doctor
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -236,5 +237,44 @@ func TestDoctorNeverExecutesAGate(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("doctor executed the smoke gate")
+	}
+}
+
+// doctor must not report a state the kernel does not enforce. A resolved
+// gate whose binary is missing is a hard failure in `pika check` — verify
+// builds the gate regardless of PATH and scores the spawn failure
+// StatusFail — so doctor must call it an error and exit non-zero too.
+// Anything softer sends an operator into CI believing the repository is
+// merely imperfect.
+func TestMissingGateBinaryIsAnError(t *testing.T) {
+	const absent = "pika-no-such-binary-4f21c8"
+	// Non-vacuous by construction: if this name ever resolves, the test
+	// would be asserting nothing.
+	if path, err := exec.LookPath(absent); err == nil {
+		t.Fatalf("%s unexpectedly exists at %s", absent, path)
+	}
+	dir := t.TempDir()
+	writeProject(t, dir, "core@1")
+	contractPath := filepath.Join(dir, ".project", "contract.yaml")
+	doc, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = append(doc, []byte("  smoke: \""+absent+" --run\"\n")...)
+	if err := os.WriteFile(contractPath, doc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root, _ := repopath.At(dir)
+
+	rep := Run(root)
+	f := findingByID(t, rep, "gate.smoke")
+	if f.Severity != SeverityError {
+		t.Errorf("gate.smoke severity = %q, want %q", f.Severity, SeverityError)
+	}
+	if !strings.Contains(f.Detail, absent) {
+		t.Errorf("gate.smoke detail = %q, want it to name the missing binary", f.Detail)
+	}
+	if rep.OK {
+		t.Error("a gate that cannot run must flip Report.OK false, matching `pika check` exit 1")
 	}
 }
