@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,22 +151,18 @@ func TestCompletionRules(t *testing.T) {
 
 func TestNewWorkID(t *testing.T) {
 	now := time.Date(2026, 8, 28, 14, 3, 9, 0, time.UTC)
-	id1, err := NewWorkID(now, "auth-timeout")
+	id, err := NewWorkID(now, "auth-timeout")
 	if err != nil {
 		t.Fatalf("NewWorkID: %v", err)
 	}
-	id2, _ := NewWorkID(now.Add(300*time.Millisecond), "auth-timeout") // same second
-	if id1 != id2 {
-		t.Errorf("not deterministic within a second: %q vs %q", id1, id2)
-	}
-	if got, want := id1[:8], "20260828"; got != want {
+	if got, want := id[:8], "20260828"; got != want {
 		t.Errorf("date prefix = %q, want %q", got, want)
 	}
-
-	// Different second yields a different hash suffix (collision resistance).
-	id3, _ := NewWorkID(now.Add(2*time.Second), "auth-timeout")
-	if id3 == id1 {
-		t.Error("different seconds produced identical ids")
+	if !strings.HasPrefix(id, "20260828-auth-timeout-") || len(id) != len("20260828-auth-timeout-")+4 {
+		t.Errorf("id = %q, want 20260828-auth-timeout-<4hex>", id)
+	}
+	if err := ValidateWorkID(id); err != nil {
+		t.Errorf("ValidateWorkID(%q): %v", id, err)
 	}
 	// The spec §14.1 example shape validates.
 	if err := ValidateWorkID("20260828-auth-timeout-7f3a"); err != nil {
@@ -183,6 +180,64 @@ func TestNewWorkID(t *testing.T) {
 		if _, err := NewWorkID(now, bad); err == nil {
 			t.Errorf("NewWorkID accepted slug %q", bad)
 		}
+	}
+}
+
+// TestWorkIDsDoNotCollideWithinOneSecond pins the property the suffix
+// exists for: the same slug in the same second must not keep producing
+// the same id, which silently overwrote one evidence file.
+//
+// The suffix is 16 bits by spec, so strict uniqueness over many draws is
+// not a property random ids have — the birthday bound guarantees repeats.
+// What is asserted instead is the distinct-id rate: drawing n ids from a
+// 65536-value space yields 65536*(1-e^(-n/65536)) distinct values on
+// average, about 3971 for n=4096, with a standard deviation near 8. A
+// floor of 3800 is twenty standard deviations below that, so a random
+// suffix effectively never trips it, while any non-random suffix does:
+// the old sha256(slug‖second) collapses all 4096 draws onto 1 value.
+func TestWorkIDsDoNotCollideWithinOneSecond(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	const (
+		n           = 4096
+		minDistinct = 3800
+	)
+	seen := make(map[string]struct{}, n)
+	firstDup, dupID := -1, ""
+	for i := 0; i < n; i++ {
+		id, err := NewWorkID(now, "auth-timeout")
+		if err != nil {
+			t.Fatalf("NewWorkID: %v", err)
+		}
+		if err := ValidateWorkID(id); err != nil {
+			t.Fatalf("ValidateWorkID(%q): %v", id, err)
+		}
+		if _, dup := seen[id]; dup && firstDup < 0 {
+			firstDup, dupID = i, id
+		}
+		seen[id] = struct{}{}
+	}
+	if len(seen) < minDistinct {
+		t.Fatalf("only %d distinct ids from %d draws for one slug in one second (want >= %d); first duplicate at draw %d: %q",
+			len(seen), n, minDistinct, firstDup, dupID)
+	}
+}
+
+// TestNewWorkIDRandFailure: a failed entropy read is an error, never a
+// fallback to a weaker source that would quietly stop being unique.
+func TestNewWorkIDRandFailure(t *testing.T) {
+	orig := randRead
+	t.Cleanup(func() { randRead = orig })
+	randRead = func([]byte) (int, error) { return 0, errors.New("entropy pool drained") }
+
+	id, err := NewWorkID(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC), "auth-timeout")
+	if err == nil {
+		t.Fatalf("NewWorkID returned %q, want error when the random source fails", id)
+	}
+	if id != "" {
+		t.Errorf("id = %q, want empty on error", id)
+	}
+	if !strings.Contains(err.Error(), "entropy pool drained") {
+		t.Errorf("error does not wrap the rand failure: %v", err)
 	}
 }
 

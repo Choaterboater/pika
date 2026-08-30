@@ -15,13 +15,12 @@ package evidence
 
 import (
 	"bytes"
-	"crypto/sha256"
+	"crypto/rand"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strconv"
 	"sync"
 	"time"
 
@@ -344,12 +343,26 @@ func redactAll(ss []string) []string {
 	return out
 }
 
-// NewWorkID derives a collision-resistant work ID of the spec section
-// 14.1 shape YYYYMMDD-slug-4hex. The 4-hex suffix is the first two bytes
-// of SHA-256 over the slug and the Unix second, so the same slug and
-// timestamp (within the same second) always yield the same ID while
-// distinct runs diverge. The slug must be kebab-case lowercase
-// alnum words, at most maxSlugLen bytes.
+// randRead is the entropy source for work-id suffixes. It is a variable
+// only so tests can observe the read-error path; production always uses
+// crypto/rand.
+var randRead = rand.Read
+
+// NewWorkID mints a work ID of the spec section 14.1 shape
+// YYYYMMDD-slug-4hex. The 4-hex suffix is two bytes drawn from
+// crypto/rand, so two runs of the same slug in the same second get
+// distinct IDs and cannot overwrite each other's evidence file. There is
+// deliberately no fallback source: a work ID that quietly stops being
+// unique is worse than a failed run, so a rand read error is returned.
+//
+// Sixteen bits is small on purpose — the shape is fixed by the spec and
+// the receipt schema, and the ID stays human-typeable. It is a
+// disambiguator, not a global key: callers create a run directory and
+// refuse when it already exists, which turns the rare same-day, same-slug
+// draw collision into a loud refusal rather than a silent overwrite.
+//
+// The slug must be kebab-case lowercase alnum words, at most maxSlugLen
+// bytes.
 func NewWorkID(now time.Time, slug string) (string, error) {
 	if !slugPattern.MatchString(slug) {
 		return "", fmt.Errorf("evidence: slug %q must be kebab-case lowercase alnum words", slug)
@@ -357,12 +370,11 @@ func NewWorkID(now time.Time, slug string) (string, error) {
 	if len(slug) > maxSlugLen {
 		return "", fmt.Errorf("evidence: slug exceeds %d bytes", maxSlugLen)
 	}
-	h := sha256.New()
-	h.Write([]byte(slug))
-	h.Write([]byte{0})
-	h.Write([]byte(strconv.FormatInt(now.Unix(), 10)))
-	suffix := hex.EncodeToString(h.Sum(nil)[:2])
-	return now.Format("20060102") + "-" + slug + "-" + suffix, nil
+	var b [2]byte
+	if _, err := randRead(b[:]); err != nil {
+		return "", fmt.Errorf("evidence: read random work-id suffix: %w", err)
+	}
+	return now.Format("20060102") + "-" + slug + "-" + hex.EncodeToString(b[:]), nil
 }
 
 // ValidateWorkID checks the spec section 14.1 work-id shape:
