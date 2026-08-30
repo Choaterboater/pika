@@ -105,6 +105,48 @@ Serves the kernel over stdio JSON-RPC. Point any MCP-compatible agent harness at
 
 ---
 
+## 6. Hand a failed check to Codex
+
+```sh
+pika handoff
+```
+
+`handoff` runs `pika check --all --json`, selects only failed check gates, and invokes the configured `agents.builder` when its runtime is `codex`. It runs Codex locally with a writable-workspace sandbox, automatic review, and network access disabled; it never uses a danger or approval-bypass mode. Pika also refuses the handoff if the agent changes Git history.
+
+The private bundle is written under `.project/state/handoffs/<run-id>/`:
+
+| File | Purpose |
+| --- | --- |
+| `checks-before.json` | Redacted baseline Pika report |
+| `prompt.md` | Failed gates and safe repair instructions |
+| `codex-last-message.md` | Codex's final response |
+
+Warnings are not repair tasks. Intentional vendor assets, public filenames, and generated outputs must instead be covered by the applicable record in `.project/exceptions.yaml`; covered findings are excluded before the handoff is built.
+
+Choose another configured Codex agent with `pika handoff --agent <name>`. Its configured `model` and `effort` are forwarded to Codex. Use `--json` for automation.
+
+---
+
+## 7. Improve a repository without opening a PR
+
+```sh
+pika improve
+```
+
+`improve` requires a clean worktree. It runs a baseline check; if it is already green, it exits without creating a branch or calling Codex. For failures, it creates `chore/pika-improve`, performs the Codex handoff, reruns the same Pika checks, and commits only a non-empty, verified diff with the message `chore: improve verified findings`.
+
+Use `--branch <name>` to choose another local branch and `--agent <name>` to select a configured Codex builder. On a failed handoff or recheck, Pika leaves the branch and agent edits uncommitted so they can be inspected. `improve` never pushes, opens a pull request, or merges anything.
+
+Your contract needs a Codex builder, for example:
+
+```yaml
+agents:
+  builder:
+    runtime: codex
+```
+
+---
+
 ## Typical loops
 
 **New project, end to end:**

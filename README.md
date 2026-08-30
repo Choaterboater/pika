@@ -73,6 +73,8 @@ pika mcp
 | `pika adopt` | Inventory an existing repository; produces a draft contract and migration preview without changing working code |
 | `pika apply` | Promote the adoption drafts into a live contract transactionally — create-if-missing, full rollback on failure, and a rewritten human-readable review bundle |
 | `pika check` | Run the verification ladder locally or in CI (`--ci` makes no LLM calls) |
+| `pika handoff` | Give actionable failed checks to the configured Codex builder and save a private handoff bundle |
+| `pika improve` | Run checks, let Codex repair failed gates, recheck, and make one verified local commit |
 | `pika mcp` | Serve the kernel to agents over MCP (stdio JSON-RPC) |
 
 All commands support `--json` for automation.
