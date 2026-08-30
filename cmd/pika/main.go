@@ -150,6 +150,12 @@ var commands = []command{
 		run:     runImprove,
 	},
 	{
+		name:    "work",
+		summary: "run a stated goal through the same verified lifecycle, as feature work",
+		usage:   "pika work \"<goal>\" [--branch <name>] [--agent <name>] [--json] [--root <dir>]",
+		run:     runWork,
+	},
+	{
 		name:    "resume",
 		summary: "continue an interrupted work run, or refuse with the reason it cannot",
 		usage:   "pika resume <work-id> [--agent <name>] [--json] [--root <dir>]",

@@ -178,7 +178,7 @@ func runImprove(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	printImproveResult(stdout, result, err)
+	printRunResult(stdout, "improve", result, err)
 	if err != nil {
 		fmt.Fprintln(stderr, "pika improve:", err)
 		return 1
@@ -186,14 +186,18 @@ func runImprove(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// printImproveResult writes the human-readable outcome of one run.
+// printRunResult writes the human-readable outcome of one lifecycle run.
+// name is the command reporting it: `pika improve` and `pika work` drive
+// the same state machine over the same Result and differ only in what
+// they asked it to do, so one printer serves both rather than two that
+// drift apart a branch at a time.
 //
 // Every branch names the run. The work id is the only handle an operator
 // has on what just happened — it is the argument to `pika status` and
 // the name of the receipt — so a text-mode run the caller cannot name
 // reproduces the exact gap the durable record exists to close. `pika
 // handoff` prints `run %s`; these say it the same way.
-func printImproveResult(stdout io.Writer, result improve.Result, err error) {
+func printRunResult(stdout io.Writer, name string, result improve.Result, err error) {
 	switch {
 	case result.WorkID == "":
 		// improve.Run refuses a dirty tree, an unknown work kind and
@@ -201,13 +205,36 @@ func printImproveResult(stdout io.Writer, result improve.Result, err error) {
 		// returns a zero Result. There is no run to name and no branch
 		// or bundle to report, so printing an empty run id would
 		// invent the anonymous run the record abolished.
-		fmt.Fprintln(stdout, "improve: refused before the run started; nothing was created")
-	case result.ChecksBefore != nil && result.ChecksBefore.Pass:
-		fmt.Fprintf(stdout, "improve: baseline checks passed; run %s; no branch or handoff created\n", result.WorkID)
-	case err == nil:
-		fmt.Fprintf(stdout, "improve: verified fixes committed on %s; run %s\ncommit: %s\nchanged: %v\n", result.Branch, result.WorkID, result.Commit, result.ChangedFiles)
+		fmt.Fprintf(stdout, "%s: refused before the run started; nothing was created\n", name)
+	case err != nil:
+		// A run that stopped is a run that stopped, whatever it had or
+		// had not reached. This is read before the branch so a run that
+		// died before branching is never mistaken for one that found
+		// nothing to do; the branch clause degrades to a dash rather
+		// than printing "stopped on branch " with nothing after it.
+		fmt.Fprintf(stdout, "%s: stopped on branch %s; run %s; no commit created\nhandoff: %s\n", name, orDash(result.Branch), result.WorkID, result.Handoff.Dir)
+	case result.Branch == "":
+		// Nothing was attempted. The branch is the marker: the
+		// lifecycle creates it immediately before the handoff and
+		// records it before the agent runs, so a run without one
+		// spawned no agent and committed nothing.
+		//
+		// The predicate used to be ChecksBefore.Pass, which is the
+		// deciding fact for repair work only — the lifecycle returns
+		// early on a green baseline just when the kind is repair, so a
+		// delivered feature run kept ChecksBefore.Pass == true and was
+		// reported here, at exit 0, as having created no branch. Branch
+		// reads off what the run did instead of what its baseline
+		// predicted, and it is the same predicate
+		// internal/improve/receipt.go names attemptedWork, so the two
+		// agree by construction rather than by coincidence.
+		//
+		// With the error already handled above, the lifecycle's only
+		// remaining exit without a branch is the green baseline a
+		// repair run stops on, so that is what this says.
+		fmt.Fprintf(stdout, "%s: baseline checks passed; run %s; no branch or handoff created\n", name, result.WorkID)
 	default:
-		fmt.Fprintf(stdout, "improve: stopped on branch %s; run %s; no commit created\nhandoff: %s\n", result.Branch, result.WorkID, result.Handoff.Dir)
+		fmt.Fprintf(stdout, "%s: verified work committed on %s; run %s\ncommit: %s\nchanged: %v\n", name, result.Branch, result.WorkID, result.Commit, result.ChangedFiles)
 	}
 }
 

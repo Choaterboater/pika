@@ -169,7 +169,7 @@ func TestImproveTextBranchesAllNameTheRun(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout bytes.Buffer
-			printImproveResult(&stdout, tc.result, tc.err)
+			printRunResult(&stdout, "improve", tc.result, tc.err)
 			if want := "; run " + tc.result.WorkID; !strings.Contains(stdout.String(), want) {
 				t.Fatalf("output = %q, want the run clause %q", stdout.String(), want)
 			}
@@ -183,7 +183,7 @@ func TestImproveTextBranchesAllNameTheRun(t *testing.T) {
 // exit says plainly that nothing was created.
 func TestImproveTextRefusalBeforeTheRunStartedNamesNoRun(t *testing.T) {
 	var stdout bytes.Buffer
-	printImproveResult(&stdout, improve.Result{}, improve.ErrDirtyTree)
+	printRunResult(&stdout, "improve", improve.Result{}, improve.ErrDirtyTree)
 
 	got := stdout.String()
 	if strings.Contains(got, "; run ") {
@@ -191,6 +191,59 @@ func TestImproveTextRefusalBeforeTheRunStartedNamesNoRun(t *testing.T) {
 	}
 	if !strings.Contains(got, "refused before the run started") {
 		t.Fatalf("output = %q, want it to say nothing was created", got)
+	}
+}
+
+// Regression, and the reason this predicate had to change. The printer
+// decided "nothing was attempted" from result.ChecksBefore.Pass, which
+// is the deciding fact for repair work only: the lifecycle returns early
+// on a green baseline just when the kind is repair, so a delivered
+// FEATURE run keeps ChecksBefore.Pass == true. It was reported at exit 0
+// as "baseline checks passed; no branch or handoff created" — plausible
+// prose about a run that had branched, spawned an agent and committed.
+//
+// It was unreachable while the CLI never set Kind. `pika work` sets it,
+// so this is now a live path, and the predicate is what the run DID: a
+// run that has a branch attempted work. internal/improve/receipt.go
+// names the same predicate attemptedWork, so the two agree by
+// construction rather than by coincidence.
+func TestDeliveredFeatureRunIsNotReportedAsNoBranch(t *testing.T) {
+	var stdout bytes.Buffer
+	printRunResult(&stdout, "work", improve.Result{
+		WorkID:       "20260830-feature-deadbeef",
+		Branch:       defaultImproveBranch,
+		Commit:       "abc1234",
+		ChangedFiles: []string{"internal/api/health.go"},
+		ChecksBefore: &verify.Report{Pass: true},
+		ChecksAfter:  &verify.Report{Pass: true},
+	}, nil)
+
+	got := stdout.String()
+	if strings.Contains(got, "no branch") {
+		t.Fatalf("output = %q: a run that branched, ran an agent and committed was reported as creating no branch", got)
+	}
+	for _, want := range []string{defaultImproveBranch, "abc1234", "internal/api/health.go"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output = %q, want it to name %q", got, want)
+		}
+	}
+}
+
+// The mirror image: a run that stopped before it ever branched must not
+// be reported as a no-op either. Branch alone cannot tell those apart —
+// both have none — so the error is read first, and the branch clause
+// degrades to a dash rather than printing "stopped on branch ".
+func TestRunStoppedBeforeBranchingIsNotReportedAsNoOp(t *testing.T) {
+	var stdout bytes.Buffer
+	printRunResult(&stdout, "improve", improve.Result{WorkID: "20260830-repair-eeeeeeee"},
+		errors.New("improve: baseline checks: check: no contract"))
+
+	got := stdout.String()
+	if strings.Contains(got, "no branch or handoff created") {
+		t.Fatalf("output = %q: the run stopped, it did not find nothing to do", got)
+	}
+	if !strings.Contains(got, "stopped on branch -") {
+		t.Fatalf("output = %q, want the absent branch shown as a dash", got)
 	}
 }
 
