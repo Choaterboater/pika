@@ -75,13 +75,14 @@ const (
 	StatusSkip = "skip"
 )
 
-// ScopeSkipReason records a gate skipped because no changed file lies in
-// any package that gate covers. It is deliberately distinct from the
-// discovery reason ("no command discovered for <id>") and the cascade
-// reason ("skipped: gate <id> failed"): a reader of the report must be
-// able to tell "this gate had nothing to check" from "this gate had no
-// command" and from "an earlier gate failed". Narrowed verification is
-// only trustworthy when it says so in its own words.
+// ScopeSkipReason records a gate skipped because the change set is empty:
+// the tree is clean, so there is nothing for that gate to check. It is
+// deliberately distinct from the discovery reason ("no command discovered
+// for <id>") and the cascade reason ("skipped: gate <id> failed"): a
+// reader of the report must be able to tell "this gate had nothing to
+// check" from "this gate had no command" and from "an earlier gate
+// failed". Narrowed verification is only trustworthy when it says so in
+// its own words.
 const ScopeSkipReason = "no changed files in scope"
 
 // Gate is one verification rung: an external command (argv, run via exec

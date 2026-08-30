@@ -351,15 +351,17 @@ func TestCheckChangedInsideDeclaredPackageRunsGates(t *testing.T) {
 	}
 }
 
-// A change that lands outside every declared package root narrows the
-// ladder — and says so with its own reason, never by reusing the discovery
-// or cascade reason.
-func TestCheckChangedOutsideDeclaredPackagesNarrowsWithItsOwnReason(t *testing.T) {
+// A change that lands outside every declared package root is
+// unattributable, not irrelevant: root-level files like go.mod are the
+// ones most likely to break every package at once, so the whole ladder
+// runs. Narrowing here would silently verify less than the change
+// deserves.
+func TestCheckChangedOutsideDeclaredPackagesRunsEveryGate(t *testing.T) {
 	dir := writeChangedFixture(t)
 	gitFixtureRepo(t, dir)
 	gitRun(t, dir, "add", "-A")
 	gitRun(t, dir, "commit", "-q", "-m", "init")
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("docs\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n\ngo 1.24\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -367,17 +369,13 @@ func TestCheckChangedOutsideDeclaredPackagesNarrowsWithItsOwnReason(t *testing.T
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderrOut)
 	}
-	found := false
-	for _, g := range rep.Gates[1:] {
-		switch g.Reason {
-		case verify.ScopeSkipReason:
-			found = true
-		case "skipped: gate contract failed":
-			t.Errorf("gate %s reused the cascade reason for a scope skip", g.ID)
+	for _, g := range rep.Gates {
+		if g.Reason == verify.ScopeSkipReason {
+			t.Fatalf("gate %s narrowed away though go.mod — outside every declared package — changed; gates = %+v", g.ID, rep.Gates)
 		}
 	}
-	if !found {
-		t.Fatalf("gates = %+v, want a scope skip for a docs-only change", rep.Gates)
+	if rep.Summary.Pass < 2 {
+		t.Fatalf("summary = %+v, want the contract and test gates to run", rep.Summary)
 	}
 }
 

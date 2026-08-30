@@ -122,7 +122,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		if set.Degraded {
 			scopeWarnings = append(scopeWarnings,
 				"--changed could not resolve a change set ("+set.Reason+"); running every gate")
-		} else if !scopeSelectsGates(set, c.Packages) {
+		} else if !scopeSelectsGates(set) {
 			for i := range ordered {
 				// A gate already skipped for a missing command keeps
 				// that reason: "no command discovered" and "nothing
@@ -160,32 +160,22 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 }
 
 // scopeSelectsGates reports whether the change set puts the package gates
-// (rungs 2-4) in scope. The gates themselves are repository-wide commands,
-// so the question is coarse by construction: does anything the contract
-// calls a package have a changed file in it?
+// (rungs 2-4) in scope. The rule in one sentence: only a change set that
+// is known to be empty narrows the ladder; every other change set runs
+// every gate.
 //
-// Every uncertain answer is "yes". A degraded set selects everything
-// because its answer is unknown, and a contract that declares no packages
-// selects everything on any change at all, because there is no package map
-// to attribute the change to. Only two cases narrow: a genuinely clean
-// tree, and a change set that lands entirely outside every declared
-// package root.
-func scopeSelectsGates(set *changed.Set, pkgs map[string]contract.Package) bool {
+// The gates are repository-wide commands, and a changed file cannot
+// always be attributed to a declared package — a root-level go.mod, a CI
+// workflow, or the contract itself belongs to no package while being able
+// to break all of them. Attribution is therefore not a narrowing signal:
+// treating "outside every package root" as "out of scope" would silently
+// verify less exactly when the blast radius is widest. A degraded set is
+// unknown and so also runs everything.
+func scopeSelectsGates(set *changed.Set) bool {
 	if set.Degraded {
 		return true
 	}
-	if set.Empty() {
-		return false
-	}
-	if len(pkgs) == 0 {
-		return true
-	}
-	for _, p := range pkgs {
-		if set.SelectsPackage(p.Root) {
-			return true
-		}
-	}
-	return false
+	return !set.Empty()
 }
 
 // printReport writes the human-readable check report.
