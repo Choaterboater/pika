@@ -46,8 +46,13 @@ func TestRunCommitsOnlyAfterVerifiedRecheck(t *testing.T) {
 	if got := gitOutput(t, root, "show", "--format=%s", "--no-patch", "HEAD"); got != "chore: improve verified findings" {
 		t.Fatalf("commit subject = %q", got)
 	}
-	if got := gitOutput(t, root, "status", "--porcelain"); got != "" {
-		t.Fatalf("status = %q, want clean after verified commit", got)
+	// The verified commit leaves exactly one thing behind: the receipt
+	// the kernel issued for it. A receipt cannot be inside the commit it
+	// attests, and `.project/evidence` is committed content rather than
+	// ignored local state, so it is the run's one uncommitted artifact.
+	want := "?? .project/evidence/" + result.WorkID + ".json"
+	if got := gitOutput(t, root, "status", "--porcelain", "--untracked-files=all"); got != want {
+		t.Fatalf("status = %q, want only the run's receipt %q", got, want)
 	}
 }
 

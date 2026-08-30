@@ -21,6 +21,11 @@ import (
 
 const defaultImproveBranch = "chore/pika-improve"
 
+// codexRuntime is the only agent runtime pika spawns: configuredCodexRunner
+// refuses a contract agent configured with any other, so this is the
+// runtime both `pika handoff` and `pika improve` record for their runs.
+const codexRuntime = "codex"
+
 // runHandoff implements `pika handoff [--agent <name>] [--json]
 // [--root <dir>]`. It is the explicit agent stage used by improve and can
 // also be run independently when a caller wants to inspect the private
@@ -105,7 +110,7 @@ func recordedHandoff(ctx context.Context, root *repopath.Root, agent string, rep
 		Phase:    workrec.PhaseBaseline,
 		Baseline: report,
 		Role:     agent,
-		Runtime:  "codex",
+		Runtime:  codexRuntime,
 		Phases:   []workrec.PhaseStamp{{Phase: workrec.PhaseBaseline, At: time.Now().UTC()}},
 	})
 	if err != nil {
@@ -151,10 +156,12 @@ func runImprove(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return fail(*jsonOut, stdout, stderr, "improve", codeConfig, err.Error())
 	}
 	result, err := improve.Run(context.Background(), improve.Config{
-		Root:   root.Dir(),
-		Branch: *branch,
-		Check:  func() (*verify.Report, error) { return currentCheckReport(root) },
-		Runner: configuredRunner{root: root, agent: *agent},
+		Root:    root.Dir(),
+		Branch:  *branch,
+		Agent:   *agent,
+		Runtime: codexRuntime,
+		Check:   func() (*verify.Report, error) { return currentCheckReport(root) },
+		Runner:  configuredRunner{root: root, agent: *agent},
 	})
 	if *jsonOut {
 		// The result is the payload on both paths: a run that stopped
@@ -209,7 +216,7 @@ func configuredCodexRunner(root *repopath.Root, agent string) (improve.Runner, e
 	if !ok {
 		return nil, fmt.Errorf("agent %q is not configured in %s", agent, root.Contract())
 	}
-	if configured.Runtime != "codex" {
+	if configured.Runtime != codexRuntime {
 		return nil, fmt.Errorf("agent %q uses runtime %q; `pika improve` requires runtime codex", agent, configured.Runtime)
 	}
 	return improve.CodexRunner{Model: configured.Model, Effort: configured.Effort}, nil

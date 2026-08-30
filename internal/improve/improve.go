@@ -51,9 +51,16 @@ type Config struct {
 	// requires one — that is the whole input for work the ladder cannot
 	// describe. Repair work leaves it empty and takes its instructions
 	// from the failed gates instead.
-	Goal   string
-	Check  CheckFunc
-	Runner Runner
+	Goal  string
+	Check CheckFunc
+	// Agent names the contract agent this run spawns; it is recorded as
+	// the run's role. Runtime is the runtime that agent runs under.
+	// Runner is an interface and cannot name either, and a receipt that
+	// leaves the role and runtime empty is a lie of omission in a
+	// document whose whole purpose is to attest what actually ran.
+	Agent   string
+	Runtime string
+	Runner  Runner
 }
 
 // Result is the complete local outcome. Any error return may still include a
@@ -136,6 +143,8 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		Goal:       cfg.Goal,
 		Kind:       kind,
 		BaseCommit: strings.TrimSpace(baseCommit),
+		Role:       cfg.Agent,
+		Runtime:    cfg.Runtime,
 	})
 	if err != nil {
 		return Result{}, err
@@ -143,7 +152,16 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 
 	result, runErr := lifecycle(ctx, cfg, kind, handle)
 	result.WorkID = workID
-	return result, finish(handle, runErr)
+	runErr = finish(handle, runErr)
+	// The receipt is issued last, from the finished record, so what it
+	// attests is the run's terminal state — a blocked run included. A
+	// failed receipt is joined to the run's own error for the same
+	// reason a failed terminal save is: the reason a run stopped is the
+	// more useful of the two facts, so it is never replaced.
+	if err := issueReceipt(ctx, root, handle.Record()); err != nil {
+		return result, errors.Join(runErr, err)
+	}
+	return result, runErr
 }
 
 // lifecycle is the run itself, from the baseline ladder to the verified
