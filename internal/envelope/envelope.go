@@ -225,10 +225,12 @@ func NewEnvelope(env *Env, repoRoot string) *Envelope {
 	return &Envelope{Env: env, repoRoot: filepath.Clean(repoRoot)}
 }
 
-// Load reads and validates the envelope file at path, expected at
-// .project/state/envelope.yaml under a repository root, which is derived
-// by stripping that layout from path.
-func Load(path string) (*Envelope, error) {
+// Load reads and validates the envelope file at path, binding it to an
+// explicit repository root. The root is supplied by the caller rather
+// than inferred from path, so relocating the envelope — or loading one
+// from anywhere but .project/state — cannot silently change what fs_read
+// authorizes.
+func Load(repoRoot, path string) (*Envelope, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("envelope: read %s: %w", path, err)
@@ -237,7 +239,7 @@ func Load(path string) (*Envelope, error) {
 	if err != nil {
 		return nil, fmt.Errorf("envelope: %s: %w", path, err)
 	}
-	return NewEnvelope(env, filepath.Dir(filepath.Dir(filepath.Dir(path)))), nil
+	return NewEnvelope(env, repoRoot), nil
 }
 
 // Allows reports whether op is authorized. Every class is deny-by-default,

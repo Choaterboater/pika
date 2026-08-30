@@ -250,6 +250,8 @@ rollback_boundary: git reset --hard HEAD
 }
 
 func TestLoad(t *testing.T) {
+	// Load binds the root the caller passes, never one inferred from the
+	// envelope's own location.
 	root := t.TempDir()
 	dir := filepath.Join(root, ".project", "state")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -260,7 +262,7 @@ func TestLoad(t *testing.T) {
 	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env, err := Load(path)
+	env, err := Load(root, path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -273,8 +275,22 @@ func TestLoad(t *testing.T) {
 	if env.Allows(Operation{Kind: "fs_write", Target: "docs/x.md"}) {
 		t.Error("loaded envelope must deny undeclared writes")
 	}
-	if _, err := Load(filepath.Join(dir, "missing.yaml")); err == nil {
+	if _, err := Load(root, filepath.Join(dir, "missing.yaml")); err == nil {
 		t.Error("Load of missing file must fail")
+	}
+	// A relocated envelope keeps authorizing the root it was loaded
+	// against; the old directory arithmetic would have re-rooted it at
+	// the temp directory's grandparent.
+	moved := filepath.Join(root, "envelope.yaml")
+	if err := os.Rename(path, moved); err != nil {
+		t.Fatal(err)
+	}
+	relocated, err := Load(root, moved)
+	if err != nil {
+		t.Fatalf("Load relocated: %v", err)
+	}
+	if relocated.repoRoot != filepath.Clean(root) {
+		t.Errorf("relocated repoRoot = %q, want %q", relocated.repoRoot, filepath.Clean(root))
 	}
 }
 

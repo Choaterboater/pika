@@ -10,7 +10,7 @@ import (
 	"github.com/Choaterboater/pika/internal/apply"
 )
 
-// runApply implements `pika apply [--json]`: a thin CLI over the
+// runApply implements `pika apply [--json] [--root <dir>]`: a thin CLI over the
 // transactional apply engine. Run promotes the adoption drafts into a
 // live contract inside a txn transaction — create-if-missing for every
 // proposed file, full rollback on any mid-plan failure — and rewrites
@@ -21,6 +21,7 @@ func runApply(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "emit the apply report as JSON on stdout")
+	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -28,7 +29,12 @@ func runApply(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pika apply: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	rep, err := apply.Run(apply.RunOptions{Dir: "."})
+	root, err := resolveRoot(*rootFlag)
+	if err != nil {
+		fmt.Fprintln(stderr, "pika apply:", err)
+		return 2
+	}
+	rep, err := apply.Run(apply.RunOptions{Dir: root.Dir()})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		// Report.Rollback is truthful: true only when the undo completed.

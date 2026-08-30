@@ -10,12 +10,9 @@ import (
 
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/version"
 )
-
-// lockRelPath is the profiles lock location relative to the repository
-// root (spec §5.3).
-const lockRelPath = ".project/profiles.lock"
 
 // Gate1 runs verification-ladder rung 1 (spec §12.6): the contract
 // schema-version ceiling, the exceptions record load, and the
@@ -64,10 +61,16 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 // pinned digest must match the embedded registry's current digest for
 // that pack.
 func checkLock(repoRoot string, c *contract.Contract) error {
-	lock, err := profiles.ReadLock(filepath.Join(repoRoot, filepath.FromSlash(lockRelPath)))
+	// The lock's location is owned by repopath, never spelled out here:
+	// gate 1 must look under exactly the root its caller resolved.
+	root, err := repopath.At(repoRoot)
+	if err != nil {
+		return fmt.Errorf("profiles.lock: %w", err)
+	}
+	lock, err := profiles.ReadLock(root.Lock())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%s missing; run `pika init` (or `pika adopt`) to write the profile lock (spec §5.3)", lockRelPath)
+			return fmt.Errorf("%s missing; run `pika init` (or `pika adopt`) to write the profile lock (spec §5.3)", filepath.ToSlash(root.Lock()))
 		}
 		return fmt.Errorf("profiles.lock: %w", err)
 	}

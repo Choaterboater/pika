@@ -11,6 +11,12 @@ import (
 	"github.com/Choaterboater/pika/internal/profiles"
 )
 
+// lockRelPath is the location gate 1 must look for the lock under the
+// root it is given. Production code derives it from repopath; the test
+// spells it out independently so a silent change to that path table
+// fails here rather than passing by construction.
+const lockRelPath = ".project/profiles.lock"
+
 func lockFixture(t *testing.T, refs []string) string {
 	t.Helper()
 	root := t.TempDir()

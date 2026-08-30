@@ -20,8 +20,9 @@ func (p *profileFlags) Set(v string) error {
 }
 
 // runInit implements `pika init [--profile <lang>] [--name <name>]
-// [--module <path>] [--force] [--json]`. M1's scaffold target is the
-// process working directory.
+// [--module <path>] [--force] [--json] [--root <dir>]`. The scaffold
+// target is the resolved repository root, not the process working
+// directory.
 //
 // Exit codes: 0 scaffold created, 1 scaffold refused (an existing
 // contract), 2 usage error.
@@ -34,6 +35,7 @@ func runInit(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	module := fs.String("module", "", "go module path (default: derived from the project name)")
 	force := fs.Bool("force", false, "regenerate the contract and managed files even if a contract exists")
 	jsonOut := fs.Bool("json", false, "emit the created-file manifest as JSON on stdout")
+	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -41,8 +43,13 @@ func runInit(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pika init: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
+	root, err := resolveRoot(*rootFlag)
+	if err != nil {
+		fmt.Fprintln(stderr, "pika init:", err)
+		return 2
+	}
 	if err := initcmd.Run(initcmd.InitOptions{
-		Dir:      ".",
+		Dir:      root.Dir(),
 		Name:     *name,
 		Module:   *module,
 		Profiles: profilesFlag,

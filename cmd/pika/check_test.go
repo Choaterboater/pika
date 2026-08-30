@@ -12,16 +12,15 @@ import (
 	"github.com/Choaterboater/pika/internal/verify"
 )
 
-// writeFixture lays down a minimal contract plus optional lint script in a
-// fresh temp directory and changes into it for the duration of the test.
-func writeFixture(t *testing.T, commands string, lintScript string) string {
+// writeContract writes .project/contract.yaml under root: a core@1
+// selection plus the given commands block. It does not change the
+// working directory.
+func writeContract(t *testing.T, root, commands string) {
 	t.Helper()
-	dir := t.TempDir()
-	t.Chdir(dir)
-	if err := os.MkdirAll(filepath.Join(dir, ".project"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ".project"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	contract := `schema: 1
+	doc := `schema: 1
 project:
   name: fixture
   topology: single
@@ -32,9 +31,33 @@ evidence:
   publish: sanitized
 commands:
 ` + commands
-	if err := os.WriteFile(filepath.Join(dir, ".project", "contract.yaml"), []byte(contract), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".project", "contract.yaml"), []byte(doc), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeMinimalProject lays down the smallest repository gate 1 accepts at
+// root: a core@1 contract, the matching profile lock, and an empty
+// exceptions record. Unlike writeFixture it leaves the working directory
+// alone, so callers can run commands from a subdirectory.
+func writeMinimalProject(t *testing.T, root string) {
+	t.Helper()
+	writeContract(t, root, "  test: \"true\"\n")
+	if err := profiles.WriteLock(filepath.Join(root, ".project", "profiles.lock"), []string{"core@1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".project", "exceptions.yaml"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeFixture lays down a minimal contract plus optional lint script in a
+// fresh temp directory and changes into it for the duration of the test.
+func writeFixture(t *testing.T, commands string, lintScript string) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeContract(t, dir, commands)
 	// Gate 1 validates the profile lock, so the fixture pins the same
 	// selection the contract declares.
 	if err := profiles.WriteLock(filepath.Join(dir, ".project", "profiles.lock"), []string{"core@1"}); err != nil {

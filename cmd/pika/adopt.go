@@ -10,18 +10,19 @@ import (
 	"github.com/Choaterboater/pika/internal/adopt"
 )
 
-// runAdopt implements `pika adopt [--json]` (spec §8.1, §13): a
-// thin CLI over the read-only adoption inventory. Preview walks the
-// current repository (M1's repo root is the process working directory),
-// classifies every discovered convention against core@1, runs the
-// discovered check commands once each to record a baseline, and writes
-// exactly the two .draft proposal files — no tracked file is touched.
+// runAdopt implements `pika adopt [--json] [--root <dir>]` (spec §8.1,
+// §13): a thin CLI over the read-only adoption inventory. Preview walks
+// the resolved repository root, classifies every discovered convention
+// against core@1, runs the discovered check commands once each to record
+// a baseline, and writes exactly the two .draft proposal files — no
+// tracked file is touched.
 //
 // Exit codes: 0 preview produced, 1 failure, 2 usage error.
 func runAdopt(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("adopt", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "emit the adoption report as JSON on stdout")
+	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -29,7 +30,12 @@ func runAdopt(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pika adopt: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	rep, err := adopt.Preview(".")
+	root, err := resolveRoot(*rootFlag)
+	if err != nil {
+		fmt.Fprintln(stderr, "pika adopt:", err)
+		return 2
+	}
+	rep, err := adopt.Preview(root.Dir())
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

@@ -8,23 +8,25 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/improve"
+	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/verify"
 )
 
 const defaultImproveBranch = "chore/pika-improve"
 
-// runHandoff implements `pika handoff [--agent builder] [--json]`. It is the
-// explicit agent stage used by improve and can also be run independently when
-// a caller wants to inspect the private bundle before acting on it.
+// runHandoff implements `pika handoff [--agent <name>] [--json]
+// [--root <dir>]`. It is the explicit agent stage used by improve and can
+// also be run independently when a caller wants to inspect the private
+// bundle before acting on it.
 func runHandoff(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("handoff", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	agent := fs.String("agent", "builder", "contract agent name (must use the Codex runtime)")
 	jsonOut := fs.Bool("json", false, "emit the handoff result as JSON")
+	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -32,7 +34,12 @@ func runHandoff(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pika handoff: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	report, err := currentCheckReport()
+	root, err := resolveRoot(*rootFlag)
+	if err != nil {
+		fmt.Fprintln(stderr, "pika handoff:", err)
+		return 2
+	}
+	report, err := currentCheckReport(root)
 	if err != nil {
 		fmt.Fprintln(stderr, "pika handoff:", err)
 		return 2
@@ -45,17 +52,12 @@ func runHandoff(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	runner, err := configuredCodexRunner(*agent)
+	runner, err := configuredCodexRunner(root, *agent)
 	if err != nil {
 		fmt.Fprintln(stderr, "pika handoff:", err)
 		return 2
 	}
-	root, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintln(stderr, "pika handoff:", err)
-		return 2
-	}
-	handoff, err := improve.CreateHandoff(context.Background(), root, report, runner)
+	handoff, err := improve.CreateHandoff(context.Background(), root.Dir(), report, runner)
 	if err != nil {
 		fmt.Fprintln(stderr, "pika handoff:", err)
 		return 1
@@ -68,14 +70,16 @@ func runHandoff(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runImprove implements `pika improve`. The only Git mutation it performs is
-// a local branch and verified local commit. Publishing remains a human choice.
+// runImprove implements `pika improve [--branch <name>] [--agent <name>]
+// [--json] [--root <dir>]`. The only Git mutation it performs is a local
+// branch and verified local commit. Publishing remains a human choice.
 func runImprove(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("improve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	branch := fs.String("branch", defaultImproveBranch, "local branch for verified fixes")
 	agent := fs.String("agent", "builder", "contract agent name (must use the Codex runtime)")
 	jsonOut := fs.Bool("json", false, "emit the improve result as JSON")
+	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -83,16 +87,16 @@ func runImprove(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pika improve: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
-	root, err := os.Getwd()
+	root, err := resolveRoot(*rootFlag)
 	if err != nil {
 		fmt.Fprintln(stderr, "pika improve:", err)
 		return 2
 	}
 	result, err := improve.Run(context.Background(), improve.Config{
-		Root:   root,
+		Root:   root.Dir(),
 		Branch: *branch,
-		Check:  currentCheckReport,
-		Runner: configuredRunner{agent: *agent},
+		Check:  func() (*verify.Report, error) { return currentCheckReport(root) },
+		Runner: configuredRunner{root: root, agent: *agent},
 	})
 	if *jsonOut {
 		writeJSON(stdout, result)
@@ -113,25 +117,26 @@ func runImprove(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 // configuredRunner delays contract-agent validation until Pika has confirmed
 // that a failed baseline actually needs a repair handoff.
 type configuredRunner struct {
+	root  *repopath.Root
 	agent string
 }
 
 func (r configuredRunner) Run(ctx context.Context, root, promptPath, outputPath string) error {
-	runner, err := configuredCodexRunner(r.agent)
+	runner, err := configuredCodexRunner(r.root, r.agent)
 	if err != nil {
 		return err
 	}
 	return runner.Run(ctx, root, promptPath, outputPath)
 }
 
-func configuredCodexRunner(agent string) (improve.Runner, error) {
-	c, err := contract.Load(defaultContractPath)
+func configuredCodexRunner(root *repopath.Root, agent string) (improve.Runner, error) {
+	c, err := contract.Load(root.Contract())
 	if err != nil {
 		return nil, err
 	}
 	configured, ok := c.Agents[agent]
 	if !ok {
-		return nil, fmt.Errorf("agent %q is not configured in .project/contract.yaml", agent)
+		return nil, fmt.Errorf("agent %q is not configured in %s", agent, root.Contract())
 	}
 	if configured.Runtime != "codex" {
 		return nil, fmt.Errorf("agent %q uses runtime %q; `pika improve` requires runtime codex", agent, configured.Runtime)
@@ -139,9 +144,12 @@ func configuredCodexRunner(agent string) (improve.Runner, error) {
 	return improve.CodexRunner{Model: configured.Model, Effort: configured.Effort}, nil
 }
 
-func currentCheckReport() (*verify.Report, error) {
+// currentCheckReport runs the in-process ladder against root. The --root
+// is passed explicitly so handoff and improve verify the same repository
+// they are about to mutate, whatever the working directory is.
+func currentCheckReport(root *repopath.Root) (*verify.Report, error) {
 	var stdout, stderr bytes.Buffer
-	code := runCheck([]string{"--all", "--json"}, nil, &stdout, &stderr)
+	code := runCheck([]string{"--all", "--json", "--root", root.Dir()}, nil, &stdout, &stderr)
 	if code == 2 {
 		return nil, errors.New(stderr.String())
 	}

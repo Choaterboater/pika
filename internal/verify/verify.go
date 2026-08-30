@@ -30,10 +30,11 @@ const (
 )
 
 // runConfig carries the tunables injected through Run options; tests use
-// them to exercise real deadlines without waiting minutes.
+// the deadlines to exercise real timeouts without waiting minutes.
 type runConfig struct {
 	gateTimeout time.Duration
 	reapDelay   time.Duration
+	dir         string
 }
 
 // Option tunes a Run.
@@ -48,6 +49,18 @@ func WithGateTimeout(d time.Duration) Option {
 // holders after the timeout kill.
 func WithReapDelay(d time.Duration) Option {
 	return func(rc *runConfig) { rc.reapDelay = d }
+}
+
+// WithDir runs every command gate in dir instead of the process working
+// directory. `pika check` passes the resolved repository root, so a check
+// invoked from a subdirectory — or against an explicit --root — verifies
+// the repository the contract describes rather than wherever the caller
+// happened to stand. Unset, gates keep inheriting the process working
+// directory. In-process gates (Gate.Func, e.g. gate 1) never spawn a
+// command and take their root as an explicit argument, so they are
+// unaffected.
+func WithDir(dir string) Option {
+	return func(rc *runConfig) { rc.dir = dir }
 }
 
 // Gate statuses recorded in GateResult.
@@ -206,6 +219,9 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, g.Cmd[0], g.Cmd[1:]...)
+	// An unset dir leaves cmd.Dir empty, which is exec's own "inherit the
+	// process working directory" default.
+	cmd.Dir = rc.dir
 	// Stdin stays nil: gates read /dev/null and can never prompt.
 	setGroup(cmd)
 	// exec.CommandContext's default Cancel kills only the direct child;

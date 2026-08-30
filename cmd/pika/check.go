@@ -6,16 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/verify"
 )
-
-// defaultContractPath is the core profile's contract location relative to
-// the repository root.
-const defaultContractPath = ".project/contract.yaml"
 
 // runCheck implements `pika check [--all|--changed|--ci] [--json]`.
 // The verification ladder (spec §12.6): gate 1 runs the contract/profile
@@ -34,7 +31,8 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	changed := fs.Bool("changed", false, "changed-scope verification (reserved; M1 runs all gates)")
 	ci := fs.Bool("ci", false, "CI mode: implies --all; no interactive prompts")
 	jsonOut := fs.Bool("json", false, "emit the JSON report on stdout")
-	contractPath := fs.String("contract", "", "path to the contract file (default .project/contract.yaml)")
+	contractPath := fs.String("contract", "", "path to the contract file (default <root>/.project/contract.yaml)")
+	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -60,13 +58,23 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		scope = verify.Changed
 	}
 
-	// M1's repo root is the process working directory; the contract and
-	// exceptions records are resolved beneath it (spec §5.2).
-	repoRoot := "."
+	root, err := resolveRoot(*rootFlag)
+	if err != nil {
+		fmt.Fprintln(stderr, "pika check:", err)
+		return 2
+	}
 
-	path := *contractPath
-	if path == "" {
-		path = defaultContractPath
+	// The contract, the exceptions record, and the gate subprocesses are
+	// all bound to the resolved root (spec §5.2), so check reports on one
+	// repository no matter which directory it was invoked from. A
+	// relative --contract resolves against that root, not against the
+	// caller's working directory.
+	path := root.Contract()
+	if *contractPath != "" {
+		path = *contractPath
+		if !filepath.IsAbs(path) {
+			path = root.Join(filepath.FromSlash(path))
+		}
 	}
 
 	// Configuration errors surface before the ladder runs: without a
@@ -90,7 +98,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	gates := verify.CheckSet{{
 		ID: "contract",
 		Func: func(context.Context) (int, string) {
-			exit, output, warnings := checks.Gate1(repoRoot, c, resolved)
+			exit, output, warnings := checks.Gate1(root.Dir(), c, resolved)
 			gate1Warnings = warnings
 			return exit, output
 		},
@@ -102,7 +110,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	}
 	gates = append(gates, ordered...)
 
-	rep, err := verify.Run(context.Background(), gates, scope)
+	rep, err := verify.Run(context.Background(), gates, scope, verify.WithDir(root.Dir()))
 	if err != nil {
 		fmt.Fprintln(stderr, "pika check:", err)
 		return 2

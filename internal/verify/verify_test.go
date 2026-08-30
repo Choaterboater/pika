@@ -2,6 +2,8 @@ package verify
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -234,5 +236,54 @@ func TestTimeoutReapsProcessGroup(t *testing.T) {
 	}
 	if rep.Gates[0].Status != StatusFail || !strings.Contains(rep.Gates[0].Reason, "timed out") {
 		t.Fatalf("g1 = %+v, want timeout fail", rep.Gates[0])
+	}
+}
+
+// WithDir is what keeps `pika check --root` (and a check run from a
+// subdirectory) honest: without it a gate would verify whatever tree the
+// caller happened to stand in and report that as the repository's state.
+func TestWithDirRunsGatesInThePassedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell")
+	}
+	dir := t.TempDir()
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := CheckSet{{ID: "pwd", Cmd: []string{"sh", "-c", "pwd -P"}}}
+	rep, err := Run(context.Background(), cs, All, WithDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Gates[0].Status != StatusPass {
+		t.Fatalf("gate = %+v, want pass", rep.Gates[0])
+	}
+	if got := strings.TrimSpace(rep.Gates[0].OutputTail); got != want {
+		t.Fatalf("gate ran in %q, want %q", got, want)
+	}
+}
+
+// Unset, the option must not change anything: gates keep inheriting the
+// process working directory.
+func TestWithoutDirGatesInheritTheProcessDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell")
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := CheckSet{{ID: "pwd", Cmd: []string{"sh", "-c", "pwd -P"}}}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(rep.Gates[0].OutputTail); got != want {
+		t.Fatalf("gate ran in %q, want the process directory %q", got, want)
 	}
 }

@@ -729,9 +729,11 @@ func (s *server) toolApplyPlan(_ json.RawMessage) (map[string]any, *toolError) {
 
 // authorizeWrite is the single gate every mutating tool passes before any
 // filesystem mutation. The envelope at .project/state/envelope.yaml is the
-// authority; a missing or invalid envelope denies (fail-closed).
+// authority; a missing or invalid envelope denies (fail-closed). The
+// server's own repoRoot is what the envelope is bound to, so moving the
+// envelope file cannot widen or narrow the authorized scope.
 func (s *server) authorizeWrite(target string) *toolError {
-	env, err := envelope.Load(filepath.Join(s.repoRoot, filepath.FromSlash(envelopePath)))
+	env, err := envelope.Load(s.repoRoot, filepath.Join(s.repoRoot, filepath.FromSlash(envelopePath)))
 	if err != nil {
 		return toolErrf(errEnvelopeDenied, "no valid envelope (%v): fs_write of %s denied", err, target)
 	}
