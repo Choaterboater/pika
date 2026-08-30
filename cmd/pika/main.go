@@ -149,6 +149,12 @@ var commands = []command{
 		usage:   "pika improve [--branch <name>] [--agent <name>] [--json] [--root <dir>]",
 		run:     runImprove,
 	},
+	{
+		name:    "resume",
+		summary: "continue an interrupted work run, or refuse with the reason it cannot",
+		usage:   "pika resume <work-id> [--agent <name>] [--json] [--root <dir>]",
+		run:     runResume,
+	},
 }
 
 // help is registered here rather than in the literal above because

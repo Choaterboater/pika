@@ -190,6 +190,10 @@ var jsonCases = map[string]jsonCase{
 	// agent or Git mutation. Neither reaches a runtime.
 	"handoff": {setup: writeMinimalProject},
 	"improve": {setup: writeMinimalProject},
+	// resume is handed a run that already finished: the refusal is a
+	// real exercise of the command — root, record, envelope — and the
+	// only one that reaches no agent and mutates no repository.
+	"resume": {args: []string{resumeEnvelopeRunID}, setup: seedFinishedRun},
 }
 
 // writeUnadoptedRepo lays down the smallest repository `adopt` accepts:

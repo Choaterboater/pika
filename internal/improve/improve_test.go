@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Choaterboater/pika/internal/evidence"
 	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/verify"
 	"github.com/Choaterboater/pika/internal/workrec"
@@ -433,19 +435,365 @@ func TestDirtyTreeRefusalWritesNoRecord(t *testing.T) {
 	if !errors.Is(err, ErrDirtyTree) {
 		t.Fatalf("error = %v, want ErrDirtyTree", err)
 	}
-	if result.WorkID != "" {
-		t.Fatalf("result.WorkID = %q, want none: the run never started", result.WorkID)
+	assertNoRunRecorded(t, root, result)
+}
+
+// Feature work is defined by the goal it is given — the ladder cannot
+// state it — so a feature run with no goal has nothing to ask an agent
+// for. The refusal lands before the record exists, and leaves nothing
+// behind for the same reason the dirty-tree one does.
+func TestFeatureWorkWithoutAGoalWritesNoRecord(t *testing.T) {
+	root := fixtureRepository(t)
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Kind:   workrec.KindFeature,
+		Check:  refusingCheck(t, "feature work with no goal must not reach the ladder"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "feature work requires a goal") {
+		t.Fatalf("error = %v, want the missing-goal refusal", err)
 	}
-	work := filepath.Join(root, ".project", "state", "work")
-	if _, err := os.Stat(work); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("os.Stat(%q) = %v, want not-exist", work, err)
+	assertNoRunRecorded(t, root, result)
+}
+
+// Pika has two kinds of work and refuses anything else by name. Guessing
+// a kind would pick which of the two state machines a caller's typo runs.
+func TestUnknownWorkKindWritesNoRecord(t *testing.T) {
+	root := fixtureRepository(t)
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Kind:   "refactor",
+		Check:  refusingCheck(t, "a kind pika does not have must not reach the ladder"),
+	})
+	if err == nil || !strings.Contains(err.Error(), `unknown work kind "refactor"`) {
+		t.Fatalf("error = %v, want the unknown-kind refusal naming it", err)
 	}
-	runs, err := workrec.List(repoRoot(t, root))
+	assertNoRunRecorded(t, root, result)
+}
+
+// A run interrupted anywhere short of its terminal outcome is resumable
+// from where it stopped, and a resume redoes only what the record cannot
+// prove. The queued ladder reports are that assertion: a case that hands
+// over one report and is asked for two has re-derived a baseline the
+// record already held — over the agent's edits, which is not the baseline
+// those edits came after.
+func TestResumeContinuesFromEachInterruptiblePhase(t *testing.T) {
+	const branch = "chore/pika-improve"
+	for _, tc := range []struct {
+		name      string
+		phase     string
+		agentRuns bool
+	}{
+		{name: "nothing recorded", phase: "", agentRuns: true},
+		{name: "baseline", phase: workrec.PhaseBaseline, agentRuns: true},
+		{name: "handoff", phase: workrec.PhaseHandoff, agentRuns: false},
+		{name: "recheck", phase: workrec.PhaseRecheck, agentRuns: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := fixtureRepository(t)
+			rec := workrec.Record{Kind: workrec.KindRepair, Phase: tc.phase}
+			if tc.phase != "" {
+				rec.Baseline = failingBaseline()
+			}
+			if tc.phase == workrec.PhaseRecheck {
+				rec.Recheck = passingLadder()
+			}
+			queued := []*verify.Report{passingLadder()}
+			if tc.phase == "" {
+				queued = []*verify.Report{failingBaseline(), passingLadder()}
+			}
+			var runner Runner = repairRunner{path: "fixed.txt", body: "verified fix\n"}
+			if !tc.agentRuns {
+				// The world the interrupted agent already left behind:
+				// the run's branch, and its edits uncommitted on it.
+				gitRun(t, root, "switch", "-c", branch)
+				if err := os.WriteFile(filepath.Join(root, "fixed.txt"), []byte("verified fix\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				rec.Branch = branch
+				runner = refusingRunner{t: t, why: "the record proves this run's agent already ran"}
+			}
+			workID := seedRun(t, root, rec)
+
+			result, err := Resume(context.Background(), root, workID, Config{
+				Branch: branch,
+				Check: func() (*verify.Report, error) {
+					if len(queued) == 0 {
+						t.Fatal("the ladder ran more times than the resumed run had phases to redo")
+					}
+					report := queued[0]
+					queued = queued[1:]
+					return report, nil
+				},
+				Runner: runner,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(queued) != 0 {
+				t.Fatalf("%d queued ladder runs never happened", len(queued))
+			}
+			if result.WorkID != workID || result.Branch != branch || result.Commit == "" {
+				t.Fatalf("result = %+v, want run %s committed on %s", result, workID, branch)
+			}
+			if got := gitOutput(t, root, "branch", "--show-current"); got != branch {
+				t.Fatalf("branch = %q, want %s", got, branch)
+			}
+			if got := gitOutput(t, root, "show", "--name-only", "--format=", "HEAD"); got != "fixed.txt" {
+				t.Fatalf("commit contents = %q, want the agent's file", got)
+			}
+			saved := runRecord(t, root, workID)
+			if saved.Outcome != workrec.OutcomeComplete || saved.Commit != result.Commit {
+				t.Fatalf("record = %+v, want a complete run at %s", saved, result.Commit)
+			}
+			if last := saved.Phases[len(saved.Phases)-1]; last.Phase != workrec.PhaseDeliver || last.Note != "resumed" {
+				t.Fatalf("last phase = %+v, want a deliver marked resumed", last)
+			}
+		})
+	}
+}
+
+// The deliver phase is the one the record cannot settle by itself. A
+// record stopping at deliver with no outcome is what a crash leaves — and
+// it is also, bit for bit, what a run leaves when it committed and then
+// failed to write its outcome. Git tells them apart: the branch holds the
+// commit the record names, so the work landed, and the only thing left to
+// redo is the write that failed. Re-running the lifecycle here would
+// branch again and redo work the repository already contains.
+func TestResumeRecordsTheOutcomeGitAlreadyProves(t *testing.T) {
+	const branch = "chore/pika-improve"
+	root := fixtureRepository(t)
+	base := gitOutput(t, root, "rev-parse", "HEAD")
+	commit := deliverOnBranch(t, root, branch)
+	workID := seedRun(t, root, workrec.Record{
+		Kind:       workrec.KindRepair,
+		Phase:      workrec.PhaseDeliver,
+		Branch:     branch,
+		BaseCommit: base,
+		Commit:     commit,
+		Baseline:   failingBaseline(),
+		Recheck:    passingLadder(),
+	})
+
+	result, err := Resume(context.Background(), root, workID, Config{
+		Branch: branch,
+		Check:  refusingCheck(t, "Git already proves this run's work landed"),
+		Runner: refusingRunner{t: t, why: "Git already proves this run's work landed"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runs) != 0 {
-		t.Fatalf("workrec.List = %+v, want no runs", runs)
+	if result.WorkID != workID || result.Branch != branch || result.Commit != commit {
+		t.Fatalf("result = %+v, want the delivered commit %s", result, commit)
+	}
+	if got := gitOutput(t, root, "rev-parse", branch); got != commit {
+		t.Fatalf("%s = %s, want the recorded commit %s untouched", branch, got, commit)
+	}
+	if got := gitOutput(t, root, "rev-list", "--count", branch); got != "2" {
+		t.Fatalf("%s holds %s commits, want 2: resume must not commit again", branch, got)
+	}
+	if got := gitOutput(t, root, "branch", "--format=%(refname:short)"); got != branch+"\nmain" {
+		t.Fatalf("branches = %q, want no second branch", got)
+	}
+	saved := runRecord(t, root, workID)
+	if saved.Outcome != workrec.OutcomeComplete {
+		t.Fatalf("outcome = %q, want complete", saved.Outcome)
+	}
+	if got := strings.Join(phaseNames(saved), ","); got != "baseline,handoff,recheck,deliver" {
+		t.Fatalf("phases = %q, want the record's own history, unchanged", got)
+	}
+}
+
+// The world a failed terminal save actually leaves: the record carries no
+// outcome, and the receipt is already on disk, because a run issues it
+// after recording the outcome and keeps going when that write fails.
+// Under the run's own work id a receipt that exists is this run's own, so
+// resume writes the outcome and lets the receipt stand. Refusing there
+// would make resume fail on precisely the case it exists to repair.
+func TestResumeToleratesTheReceiptAnUnsettledRunAlreadyIssued(t *testing.T) {
+	const branch = "chore/pika-improve"
+	root := fixtureRepository(t)
+	base := gitOutput(t, root, "rev-parse", "HEAD")
+	commit := deliverOnBranch(t, root, branch)
+	workID := seedRun(t, root, workrec.Record{
+		Kind:       workrec.KindRepair,
+		Phase:      workrec.PhaseDeliver,
+		Branch:     branch,
+		BaseCommit: base,
+		Commit:     commit,
+		Baseline:   failingBaseline(),
+		Recheck:    passingLadder(),
+	})
+	cfg := Config{
+		Branch: branch,
+		Check:  refusingCheck(t, "Git already proves this run's work landed"),
+		Runner: refusingRunner{t: t, why: "Git already proves this run's work landed"},
+	}
+	if _, err := Resume(context.Background(), root, workID, cfg); err != nil {
+		t.Fatal(err)
+	}
+	receipt := filepath.Join(root, ".project", "evidence", workID+".json")
+	if _, err := os.Stat(receipt); err != nil {
+		t.Fatalf("os.Stat(%q) = %v, want the receipt the resume issued", receipt, err)
+	}
+
+	// The outcome goes away again; the receipt stays. This is the record
+	// a run whose terminal save failed leaves behind.
+	handle, err := workrec.Open(repoRoot(t, root), workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsettled := handle.Record()
+	unsettled.Outcome = ""
+	if err := handle.Save(unsettled); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Resume(context.Background(), root, workID, cfg); err != nil {
+		t.Fatalf("Resume = %v, want the existing receipt tolerated as this run's own", err)
+	}
+	if saved := runRecord(t, root, workID); saved.Outcome != workrec.OutcomeComplete {
+		t.Fatalf("outcome = %q, want complete", saved.Outcome)
+	}
+}
+
+// The same record, and the opposite verdict from Git. The branch does not
+// hold the commit the record names, so the deliver phase never durably
+// completed and this is a genuine crash. The run is resumed; the agent is
+// not, because its work is already in the tree. Only the phases that make
+// a claim about that tree — the recheck and the commit — are redone.
+func TestResumeTreatsADeliverGitDisprovesAsACrash(t *testing.T) {
+	const branch = "chore/pika-improve"
+	root := fixtureRepository(t)
+	base := gitOutput(t, root, "rev-parse", "HEAD")
+	lost := deliverOnBranch(t, root, branch)
+	// The commit leaves the branch and its content returns to the working
+	// tree: the record now names a commit the branch cannot show.
+	gitRun(t, root, "reset", "--mixed", base)
+	workID := seedRun(t, root, workrec.Record{
+		Kind:       workrec.KindRepair,
+		Phase:      workrec.PhaseDeliver,
+		Branch:     branch,
+		BaseCommit: base,
+		Commit:     lost,
+		Baseline:   failingBaseline(),
+		Recheck:    passingLadder(),
+	})
+
+	ladder := 0
+	result, err := Resume(context.Background(), root, workID, Config{
+		Branch: branch,
+		Check: func() (*verify.Report, error) {
+			ladder++
+			return passingLadder(), nil
+		},
+		Runner: refusingRunner{t: t, why: "the record proves this run's agent already ran"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ladder != 1 {
+		t.Fatalf("the ladder ran %d times, want exactly one recheck", ladder)
+	}
+	if result.Commit == "" || result.Commit == lost {
+		t.Fatalf("result.Commit = %q, want a new commit: the recorded one is gone", result.Commit)
+	}
+	if got := gitOutput(t, root, "rev-parse", branch); got != result.Commit {
+		t.Fatalf("%s = %s, want the commit resume made, %s", branch, got, result.Commit)
+	}
+	if got := gitOutput(t, root, "show", "--name-only", "--format=", branch); got != "fixed.txt" {
+		t.Fatalf("commit contents = %q, want the agent's file", got)
+	}
+	saved := runRecord(t, root, workID)
+	if saved.Outcome != workrec.OutcomeComplete || saved.Commit != result.Commit {
+		t.Fatalf("record = %+v, want a complete run at %s", saved, result.Commit)
+	}
+	if got := strings.Join(phaseNames(saved), ","); got != "baseline,handoff,recheck,deliver,recheck,deliver" {
+		t.Fatalf("phases = %q, want the redone recheck and deliver appended", got)
+	}
+}
+
+// A run that recorded a terminal outcome is finished. Resume says so
+// rather than starting it over.
+func TestResumeRefusesTerminalOutcome(t *testing.T) {
+	root := fixtureRepository(t)
+	workID := seedRun(t, root, workrec.Record{
+		Kind:    workrec.KindRepair,
+		Phase:   workrec.PhaseDeliver,
+		Outcome: workrec.OutcomeComplete,
+	})
+	result, err := Resume(context.Background(), root, workID, Config{
+		Branch: "chore/pika-improve",
+		Check:  refusingCheck(t, "a finished run must not be re-verified"),
+		Runner: refusingRunner{t: t, why: "a finished run must not spawn an agent"},
+	})
+	assertRefusal(t, err, ErrRunFinished)
+	if !strings.Contains(err.Error(), workID) || !strings.Contains(err.Error(), workrec.OutcomeComplete) {
+		t.Fatalf("error = %v, want the run and the outcome it ended with", err)
+	}
+	if result.WorkID != "" {
+		t.Fatalf("result = %+v, want nothing: the run was refused", result)
+	}
+}
+
+// The recorded branch carried everything the run had done and not yet
+// committed. Without it there is nothing to rejoin, and recreating it
+// would produce an empty branch standing in for the run's work.
+func TestResumeRefusesMissingBranch(t *testing.T) {
+	const branch = "chore/pika-improve"
+	root := fixtureRepository(t)
+	workID := seedRun(t, root, workrec.Record{
+		Kind:     workrec.KindRepair,
+		Phase:    workrec.PhaseHandoff,
+		Branch:   branch,
+		Baseline: failingBaseline(),
+	})
+	result, err := Resume(context.Background(), root, workID, Config{
+		Branch: branch,
+		Check:  refusingCheck(t, "a run whose branch is gone must not be re-verified"),
+		Runner: refusingRunner{t: t, why: "a run whose branch is gone must not spawn an agent"},
+	})
+	assertRefusal(t, err, ErrBranchGone)
+	if !strings.Contains(err.Error(), branch) {
+		t.Fatalf("error = %v, want the branch it cannot find named", err)
+	}
+	if result.WorkID != "" {
+		t.Fatalf("result = %+v, want nothing: the run was refused", result)
+	}
+}
+
+// Every phase the record describes was observed against its base commit.
+// Rejoining on top of a different one would verify and commit against a
+// repository the run never saw.
+func TestResumeRefusesDivergedTree(t *testing.T) {
+	root := fixtureRepository(t)
+	base := gitOutput(t, root, "rev-parse", "HEAD")
+	workID := seedRun(t, root, workrec.Record{
+		Kind:       workrec.KindRepair,
+		Phase:      workrec.PhaseBaseline,
+		BaseCommit: base,
+		Baseline:   failingBaseline(),
+	})
+	// The repository moves on without the run.
+	if err := os.WriteFile(filepath.Join(root, "unrelated.txt"), []byte("someone else's work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, root, "add", "unrelated.txt")
+	gitRun(t, root, "commit", "-qm", "unrelated work")
+	head := gitOutput(t, root, "rev-parse", "HEAD")
+
+	result, err := Resume(context.Background(), root, workID, Config{
+		Branch: "chore/pika-improve",
+		Check:  refusingCheck(t, "a moved repository must not be re-verified"),
+		Runner: refusingRunner{t: t, why: "a moved repository must not spawn an agent"},
+	})
+	assertRefusal(t, err, ErrTreeDiverged)
+	if !strings.Contains(err.Error(), base) || !strings.Contains(err.Error(), head) {
+		t.Fatalf("error = %v, want both the run's base %s and the current HEAD %s", err, base, head)
+	}
+	if result.WorkID != "" {
+		t.Fatalf("result = %+v, want nothing: the run was refused", result)
 	}
 }
 
@@ -628,4 +976,128 @@ func (r repairRunner) Run(_ context.Context, root, _, outputPath string) error {
 		return err
 	}
 	return os.WriteFile(outputPath, []byte("repaired\n"), 0o600)
+}
+
+// assertRefusal holds a refusal to naming exactly one of the three worlds
+// resume can find itself in. Each leaves the operator with a different
+// decision, so a refusal matching two of these sentinels would be the
+// useless "cannot resume" wearing three names.
+func assertRefusal(t *testing.T, err, want error) {
+	t.Helper()
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+	for _, other := range []error{ErrRunFinished, ErrBranchGone, ErrTreeDiverged} {
+		if other != want && errors.Is(err, other) {
+			t.Fatalf("error = %v, want only %v and not also %v", err, want, other)
+		}
+	}
+}
+
+// assertNoRunRecorded is the shape every refusal that lands before
+// workrec.Create must leave: no work id to report, and no run directory
+// at all.
+func assertNoRunRecorded(t *testing.T, root string, result Result) {
+	t.Helper()
+	if result.WorkID != "" {
+		t.Fatalf("result.WorkID = %q, want none: the run never started", result.WorkID)
+	}
+	work := filepath.Join(root, ".project", "state", "work")
+	if _, err := os.Stat(work); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(%q) = %v, want not-exist", work, err)
+	}
+	runs, err := workrec.List(repoRoot(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("workrec.List = %+v, want no runs", runs)
+	}
+}
+
+// seedRun writes the record a crashed run leaves behind: phases stamped
+// up to the one that completed, and no terminal outcome unless the case
+// asks for one. It is built rather than produced by killing a real run
+// because those two are the same bytes on disk — which is the whole
+// reason Resume cannot decide from the record alone.
+func seedRun(t *testing.T, root string, rec workrec.Record) string {
+	t.Helper()
+	if rec.WorkID == "" {
+		id, err := evidence.NewWorkID(time.Now().UTC(), "repair")
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec.WorkID = id
+	}
+	if rec.BaseCommit == "" {
+		rec.BaseCommit = gitOutput(t, root, "rev-parse", "HEAD")
+	}
+	if rec.Phases == nil {
+		rec.Phases = phaseHistory(rec.Phase)
+	}
+	if _, err := workrec.Create(repoRoot(t, root), rec); err != nil {
+		t.Fatal(err)
+	}
+	return rec.WorkID
+}
+
+// phaseHistory is the stamp list a run that reached phase would have
+// written on its way there.
+func phaseHistory(phase string) []workrec.PhaseStamp {
+	var stamps []workrec.PhaseStamp
+	if phase == "" {
+		return stamps
+	}
+	for _, p := range []string{workrec.PhaseBaseline, workrec.PhaseHandoff, workrec.PhaseRecheck, workrec.PhaseDeliver} {
+		stamps = append(stamps, workrec.PhaseStamp{Phase: p, At: time.Now().UTC()})
+		if p == phase {
+			break
+		}
+	}
+	return stamps
+}
+
+// deliverOnBranch is a run's delivered work as Git holds it: the branch,
+// the agent's file, and the verified commit.
+func deliverOnBranch(t *testing.T, root, branch string) string {
+	t.Helper()
+	gitRun(t, root, "switch", "-c", branch)
+	if err := os.WriteFile(filepath.Join(root, "fixed.txt"), []byte("verified fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, root, "add", "fixed.txt")
+	gitRun(t, root, "commit", "-qm", "chore: improve verified findings")
+	return gitOutput(t, root, "rev-parse", "HEAD")
+}
+
+func failingBaseline() *verify.Report {
+	return &verify.Report{Pass: false, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail, OutputTail: "repair this"}}}
+}
+
+func passingLadder() *verify.Report {
+	return &verify.Report{Pass: true, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusPass}}}
+}
+
+// refusingCheck fails the test if the ladder runs at all.
+func refusingCheck(t *testing.T, why string) CheckFunc {
+	return func() (*verify.Report, error) {
+		t.Helper()
+		t.Fatalf("the ladder must not run: %s", why)
+		return nil, nil
+	}
+}
+
+// refusingRunner fails the test if an agent is spawned at all. It is how
+// "this did not re-run the lifecycle" is proved: the agent is the
+// expensive, non-idempotent half of a run, so a runner that fails the
+// test the moment it is invoked is the evidence that matters.
+type refusingRunner struct {
+	t   *testing.T
+	why string
+}
+
+func (r refusingRunner) Run(context.Context, string, string, string) error {
+	r.t.Helper()
+	r.t.Fatalf("the agent must not run: %s", r.why)
+	return nil
 }
