@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/Choaterboater/pika/internal/evidence"
+	"github.com/Choaterboater/pika/internal/lease"
 	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/verify"
 	"github.com/Choaterboater/pika/internal/workrec"
@@ -18,6 +20,18 @@ import (
 // ErrDirtyTree prevents Pika from mixing an automated repair with work the
 // caller has not committed yet.
 var ErrDirtyTree = errors.New("improve: working tree must be clean")
+
+// ErrRunInProgress refuses a second mutating run in a repository that
+// already has one.
+//
+// The two runs share one working tree and one HEAD, so the second does
+// not have to do anything unusual to corrupt the first — it only has to
+// start. On the default branch the pair collide non-deterministically at
+// `git switch -c`; given distinct branches nothing collides and both
+// proceed, committing each other's half-finished edits through the same
+// HEAD without either being told. The silent case is the one this
+// refusal exists for.
+var ErrRunInProgress = errors.New("improve: another run holds this repository")
 
 // ErrNoChanges prevents a misleading empty commit after an agent run.
 var ErrNoChanges = errors.New("improve: Codex made no changes to commit")
@@ -82,6 +96,26 @@ const privateStateDir = ".project/state"
 // package actually makes.
 const deliverMessage = "chore: improve verified findings"
 
+// runLeaseName is the file a mutating run holds for as long as it is in
+// progress. It sits beside the run records rather than in `.git`,
+// because what it excludes is a Pika run and not a Git operation.
+const runLeaseName = "run.lock"
+
+// RunLease locates the whole-repository run lease.
+//
+// It is exported because `pika recover` is the one remedy for a lease
+// whose run died holding it, and a recover that spelled the path itself
+// would be a second definition of where the lease lives — free to drift
+// from this one the first time it moves, and silently, since a recover
+// looking in the wrong place reports a repository that is already clean.
+//
+// The lease covers the whole repository because the hazard does: both
+// runs write one working tree and move one HEAD. Path-scoped leases
+// would serve parallel writers, which pika does not have.
+func RunLease(root *repopath.Root) (dir, name string) {
+	return root.StateDir(), runLeaseName
+}
+
 // CheckFunc runs Pika's deterministic ladder and returns its full report.
 // The command layer supplies the same in-process check engine used by
 // `pika check`; tests provide real, controlled reports.
@@ -140,7 +174,7 @@ type Result struct {
 // exactly one decision: a green ladder means repair work is already done,
 // while it says nothing about whether a goal has been met, so feature
 // work goes on to the agent.
-func Run(ctx context.Context, cfg Config) (Result, error) {
+func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	if strings.TrimSpace(cfg.Root) == "" {
 		return Result{}, errors.New("improve: repository root is required")
 	}
@@ -164,10 +198,11 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, fmt.Errorf("improve: unknown work kind %q", kind)
 	}
 
-	// Everything above this line, and the dirty-tree refusal below it,
-	// happens before the run exists on disk. A run refused before it has
-	// done anything must leave no record behind: a directory of empty
-	// runs is noise that makes the real records harder to trust.
+	// Everything above this line, the dirty-tree refusal below it and
+	// the lease after that happen before the run exists on disk. A run
+	// refused before it has done anything must leave no record behind: a
+	// directory of empty runs is noise that makes the real records
+	// harder to trust.
 	if dirty, err := runGit(ctx, cfg.Root, "status", "--porcelain"); err != nil {
 		return Result{}, err
 	} else if strings.TrimSpace(dirty) != "" {
@@ -186,6 +221,18 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// The exclusion. It is taken after the dirty-tree gate — a run
+	// refused for uncommitted work never needed the repository — and
+	// before the first thing that writes to it, which is the branch the
+	// lifecycle creates. It carries the run id so a refusal can name a
+	// run `pika status` can look up, and it is held until settle has
+	// recorded a terminal outcome.
+	held, err := TakeRunLease(root, workID)
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() { err = errors.Join(err, held.Release()) }()
+
 	handle, err := workrec.Create(root, workrec.Record{
 		WorkID:     workID,
 		Goal:       cfg.Goal,
@@ -205,6 +252,87 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	// that is there anyway is a collision, so settle reports it rather
 	// than writing over it.
 	return settle(ctx, root, handle, result, runErr, false)
+}
+
+// TakeRunLease claims the repository for one run, refusing rather than
+// waiting or stealing when another already holds it.
+//
+// Neither alternative is available. Waiting would make a run that has
+// stopped for a reason indistinguishable from one that hung, and an
+// operator staring at a silent terminal has no way to tell which they
+// have. Stealing is the defect itself: the lease's whole content is the
+// promise that one process is in the tree, and a second that takes it
+// anyway has only added a lock file to the corruption.
+//
+// It is exported because `pika handoff` drives one phase of this
+// lifecycle without going through Run: it writes a bundle into the
+// repository and spawns an agent in the working tree, which is the
+// hazard this lease exists to exclude, reached through a second door.
+//
+// lease.Acquire does not create its directory, so this does. A
+// repository that has never held a run has no state directory at all,
+// and the run about to be recorded needs one regardless.
+func TakeRunLease(root *repopath.Root, workID string) (*lease.Handle, error) {
+	dir, name := RunLease(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("improve: create %s: %w", dir, err)
+	}
+	handle, err := lease.Acquire(dir, name, lease.Info{ID: workID})
+	var busy *lease.HeldError
+	if errors.As(err, &busy) {
+		return nil, refuseHeld(busy)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return handle, nil
+}
+
+// refuseHeld turns a lost race into a refusal an operator can act on.
+// The states lease.Inspect distinguishes leave three different decisions
+// to make, and a single "already running" would tell them none of it:
+//
+//   - Held is a live run on this machine. Whether to wait for it or
+//     stop it is that operator's call, and both are things they can go
+//     and do with the pid in front of them.
+//   - Stale is a lease that outlived the run that took it: the holder's
+//     process is gone and its host is this one, so `pika recover` is
+//     the remedy. It is still not taken automatically — recovering is a
+//     decision, not a retry.
+//   - Unverifiable is a holder this machine cannot judge. A pid that is
+//     dead here can be very much alive on the host that recorded it, so
+//     this is never called stale: that word is exactly what would
+//     invite an operator to clear a lock a live writer still holds.
+func refuseHeld(busy *lease.HeldError) error {
+	if busy.Info == nil {
+		return fmt.Errorf("%w: %s is claimed but names no readable holder (%v); `pika recover` clears a lease no run is behind",
+			ErrRunInProgress, busy.Path, busy.Err)
+	}
+	who := fmt.Sprintf("run %s (pid %d on %s, started %s)", busy.Info.ID, busy.Info.PID,
+		busy.Info.Host, busy.Info.StartedAt.Format(time.RFC3339Nano))
+	switch busy.State {
+	case lease.StateStale:
+		return fmt.Errorf("%w: %s is no longer running and never released its lease; `pika recover` clears it",
+			ErrRunInProgress, who)
+	case lease.StateUnverifiable:
+		return fmt.Errorf("%w: %s, and %s, so whether that process is still running cannot be decided here; run `pika recover` only once you know it stopped",
+			ErrRunInProgress, who, unverifiableBecause(busy.Err))
+	default:
+		return fmt.Errorf("%w: %s is in progress; one repository runs one run at a time, because both would commit through the same working tree",
+			ErrRunInProgress, who)
+	}
+}
+
+// unverifiableBecause names why a holder could not be judged. Almost
+// always it is a foreign host; the other way to get here is this machine
+// failing to say what it is called, and an operator told "a different
+// host" when the truth is "no host could be resolved" would go looking
+// for a machine that does not exist.
+func unverifiableBecause(err error) string {
+	if err != nil {
+		return fmt.Sprintf("this host could not be resolved (%v)", err)
+	}
+	return "that is not this host"
 }
 
 // stage names a point in the lifecycle a run can be entered at. Run
@@ -252,7 +380,7 @@ const resumedNote = "resumed"
 // branch name for a run interrupted before it ever had one. Taking the
 // kind or the goal from the caller would let a resume quietly turn a
 // repair into a feature, or hand the agent a goal the run never had.
-func Resume(ctx context.Context, root, workID string, cfg Config) (Result, error) {
+func Resume(ctx context.Context, root, workID string, cfg Config) (result Result, err error) {
 	if strings.TrimSpace(root) == "" {
 		return Result{}, errors.New("improve: repository root is required")
 	}
@@ -285,6 +413,22 @@ func Resume(ctx context.Context, root, workID string, cfg Config) (Result, error
 	if strings.TrimSpace(cfg.Branch) == "" {
 		return Result{}, errors.New("improve: branch is required")
 	}
+
+	// A resumed run walks into the same working tree a fresh one does,
+	// so it takes the same exclusion, and takes it before it asks Git
+	// anything at all.
+	//
+	// The crashed run's own lease is not inherited. A lease this process
+	// did not take is one it cannot prove nobody is behind — the record
+	// that says "interrupted" is bit for bit what a run still working
+	// leaves — and picking it up on the strength of a matching work id
+	// is how a resume joins a run that never stopped. `pika recover` is
+	// where that judgement belongs, with an operator behind it.
+	held, err := TakeRunLease(repo, workID)
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() { err = errors.Join(err, held.Release()) }()
 
 	if rec.Branch != "" {
 		branchHead, exists, err := branchCommit(ctx, root, rec.Branch)
@@ -671,8 +815,17 @@ func deliveredCommit(ctx context.Context, root string, rec workrec.Record, branc
 // commitShape reads the two facts that identify a run's own delivery: the
 // commit's parents and its subject. Both come from one Git call so they
 // describe the same object even if the repository moves underneath.
+//
+// The commit is passed after `--end-of-options` rather than after `--`.
+// `git show` is a revision command: `--` there means "paths follow", and
+// `git show --format=... -- <commit>` reads the commit as a pathspec,
+// prints nothing and exits zero — a silent wrong answer where a refusal
+// belongs. `--end-of-options` is the separator that says "operands
+// follow" without saying they are paths, so an argument beginning with
+// `-` is read as a revision. Unguarded it is read as an option, and
+// `git show --output=<path>` writes a file and exits zero.
 func commitShape(ctx context.Context, root, commit string) ([]string, string, error) {
-	shown, err := runGit(ctx, root, "show", "--no-patch", "--format=%P%n%s", commit)
+	shown, err := runGit(ctx, root, "show", "--no-patch", "--format=%P%n%s", "--end-of-options", commit)
 	if err != nil {
 		return nil, "", err
 	}
@@ -685,6 +838,13 @@ func commitShape(ctx context.Context, root, commit string) ([]string, string, er
 // needed is a question only Git can answer — a run interrupted between
 // creating its branch and recording it leaves a branch the record cannot
 // name — so it is asked rather than assumed.
+//
+// Only the switch to an existing branch takes a separator, and it is the
+// bare `--`: `git switch` has no pathspec, so `--` unambiguously ends the
+// options. The creating form needs none and must not have one — `-c`
+// takes the next argument as its value whatever it starts with, so
+// `git switch -c -- <branch>` would name the branch `--` and then read
+// <branch> as options.
 func enterBranch(ctx context.Context, root, branch string) error {
 	state, err := currentGitState(ctx, root)
 	if err != nil {
@@ -696,7 +856,7 @@ func enterBranch(ctx context.Context, root, branch string) error {
 	if _, exists, err := branchCommit(ctx, root, branch); err != nil {
 		return err
 	} else if exists {
-		_, err = runGit(ctx, root, "switch", branch)
+		_, err = runGit(ctx, root, "switch", "--", branch)
 		return err
 	}
 	_, err = runGit(ctx, root, "switch", "-c", branch)

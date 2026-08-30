@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/lease"
 )
 
 const (
@@ -51,15 +52,6 @@ type Report struct {
 	Notes   []string `json:"notes,omitempty"`
 }
 
-// lockInfo is the diagnostic payload of the recovery lock file. The lock
-// is advisory only in reporting: it is never stolen automatically; a
-// stale lock must be removed by the operator.
-type lockInfo struct {
-	TxID      string `json:"txId"`
-	PID       int    `json:"pid"`
-	StartedAt string `json:"startedAt"` // RFC3339Nano, UTC
-}
-
 // newTxID is sortable by creation time and unique within it.
 func newTxID() (string, error) {
 	var b [4]byte
@@ -69,74 +61,38 @@ func newTxID() (string, error) {
 	return fmt.Sprintf("%016x-%s", time.Now().UnixNano(), hex.EncodeToString(b[:])), nil
 }
 
-// acquireLock creates the O_EXCL lock file. An existing lock is reported
+// acquireLock takes the recovery lease. An existing lock is reported
 // with its holder diagnostics, never stolen — even when the holder looks
 // dead.
-func acquireLock(recDir, txid string) error {
-	lockPath := filepath.Join(recDir, lockName)
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if errors.Is(err, os.ErrExist) {
-		return leaseError(lockPath)
+func acquireLock(recDir, txid string) (*lease.Handle, error) {
+	h, err := lease.Acquire(recDir, lockName, lease.Info{ID: txid})
+	var busy *lease.HeldError
+	if errors.As(err, &busy) {
+		return nil, leaseError(busy.Path, busy.Info, busy.State, busy.Err)
 	}
 	if err != nil {
-		return fmt.Errorf("txn: create lock: %w", err)
+		return nil, fmt.Errorf("txn: %w", err)
 	}
-	info := lockInfo{TxID: txid, PID: os.Getpid(), StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	bs, err := json.Marshal(info)
-	if err == nil {
-		_, err = f.Write(append(bs, '\n'))
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		// Persist the lock's directory entry; a crash right after
-		// acquiring the lock must not lose it.
-		err = syncDir(recDir)
-	}
-	if err != nil {
-		os.Remove(lockPath)
-		return fmt.Errorf("txn: write lock: %w", err)
-	}
-	return nil
+	return h, nil
 }
 
 // leaseError reports a held lock with everything an operator needs to
-// decide it is stale: path, holder pid, start time, and tx id.
-func leaseError(lockPath string) error {
-	info, err := readLockInfo(lockPath)
-	if err != nil {
-		return fmt.Errorf("txn: %w: recovery lock present at %s but unreadable (%v); remove it if no transaction is active", ErrLeaseRequired, lockPath, err)
+// decide it is stale: path, holder pid, start time, and tx id. A holder
+// on another machine is never called stale: this host cannot see that
+// process, and an operator told "stale" clears the lock.
+func leaseError(lockPath string, info *lease.Info, state lease.State, cause error) error {
+	if info == nil {
+		return fmt.Errorf("txn: %w: recovery lock present at %s but unreadable (%v); remove it if no transaction is active", ErrLeaseRequired, lockPath, cause)
 	}
-	wrapped := fmt.Errorf("txn: %w: recovery lock at %s held by pid %d since %s (tx %s)", ErrLeaseRequired, lockPath, info.PID, info.StartedAt, info.TxID)
-	if !processAlive(info.PID) {
+	wrapped := fmt.Errorf("txn: %w: recovery lock at %s held by pid %d since %s (tx %s)",
+		ErrLeaseRequired, lockPath, info.PID, info.StartedAt.Format(time.RFC3339Nano), info.ID)
+	switch state {
+	case lease.StateStale:
 		return fmt.Errorf("%w; holder process is not running, so the lock appears stale — remove the lock file to proceed", wrapped)
+	case lease.StateUnverifiable:
+		return fmt.Errorf("%w; this machine cannot prove the holder on host %s is gone — check there before removing the lock file", wrapped, info.Host)
 	}
 	return wrapped
-}
-
-func readLockInfo(lockPath string) (lockInfo, error) {
-	var info lockInfo
-	bs, err := os.ReadFile(lockPath)
-	if err != nil {
-		return info, err
-	}
-	if err := json.Unmarshal(bytes.TrimSpace(bs), &info); err != nil {
-		return info, err
-	}
-	return info, nil
-}
-
-// releaseLock removes the recovery lock file, ignoring absence.
-func releaseLock(recDir string) error {
-	err := os.Remove(filepath.Join(recDir, lockName))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
 }
 
 // backup copies the current file into the transaction's backup directory
@@ -416,10 +372,10 @@ func recoverOne(root, recDir, journalPath string) (*Report, error) {
 		return nil, fmt.Errorf("txn: recover %s: %w", txid, err)
 	}
 
-	lockPath := filepath.Join(recDir, lockName)
+	lockPath := lease.Path(recDir, lockName)
 	rep := &Report{TxID: txid}
-	if info, err := readLockInfo(lockPath); err == nil && info.TxID == txid && processAlive(info.PID) {
-		rep.Notes = append(rep.Notes, fmt.Sprintf("transaction %s appears active (lock held by running pid %d since %s); not recovered", txid, info.PID, info.StartedAt))
+	if info, state, _ := lease.Inspect(recDir, lockName); info != nil && info.ID == txid && state != lease.StateStale {
+		rep.Notes = append(rep.Notes, fmt.Sprintf("transaction %s appears active (lock held by running pid %d since %s); not recovered", txid, info.PID, info.StartedAt.Format(time.RFC3339Nano)))
 		return rep, nil
 	}
 
@@ -439,7 +395,7 @@ func recoverOne(root, recDir, journalPath string) (*Report, error) {
 	}
 	// The holder crashed; completing its recovery includes releasing the
 	// lock it can no longer release itself.
-	if info, err := readLockInfo(lockPath); err == nil && info.TxID == txid {
+	if info, _, _ := lease.Inspect(recDir, lockName); info != nil && info.ID == txid {
 		if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			rep.Notes = append(rep.Notes, fmt.Sprintf("stale recovery lock remains at %s: %v; remove it to start new transactions", lockPath, err))
 		}

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1036,6 +1037,98 @@ func TestAcquireScopeBadPath(t *testing.T) {
 
 	resp := s.callTool(1, "acquire_scope", map[string]any{"path": "../outside"})
 	wantToolError(t, resp, "invalid_params")
+}
+
+// TestSecondAcquireOfAConflictingScopeIsRefused pins the promise
+// acquire_scope makes in tools/list. Through M3 it made an envelope
+// check, appended one board line and answered granted:true, so two
+// acquires of the same path both "succeeded" and an agent that believed
+// the description wrote inside a scope somebody else was holding.
+func TestSecondAcquireOfAConflictingScopeIsRefused(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project", "src"))
+	first := startServer(t, root)
+	first.initialize()
+	wantResult(t, first.callTool(1, "acquire_scope", map[string]any{"path": "src"}))
+
+	// A second session is a second holder as far as the mechanism is
+	// concerned, and it is refused the same path.
+	second := startServer(t, root)
+	second.initialize()
+	errObj := wantToolError(t, second.callTool(1, "acquire_scope", map[string]any{"path": "src"}), "scope_conflict")
+	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "src") {
+		t.Errorf("refusal does not name the scope: %q", msg)
+	}
+
+	// Exclusive over a path is exclusive over what is under it, or the
+	// exclusion is one subdirectory away from meaningless.
+	wantToolError(t, second.callTool(2, "acquire_scope", map[string]any{"path": "src/pkg"}), "scope_conflict")
+
+	// The holder is refused too: a lease it already holds is not a
+	// second lease it may take.
+	wantToolError(t, first.callTool(2, "acquire_scope", map[string]any{"path": "src"}), "scope_conflict")
+
+	// Every refusal left the first session's lease exactly where it was.
+	wantResult(t, first.callTool(3, "release_scope", map[string]any{"path": "src"}))
+}
+
+// TestReleaseWithoutAcquireIsRefused: release_scope used to append a
+// board line and answer released:true whether or not a lease existed, so
+// an agent could be told it had released a lease another session was
+// still holding.
+func TestReleaseWithoutAcquireIsRefused(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project", "src"))
+	s := startServer(t, root)
+	s.initialize()
+	wantToolError(t, s.callTool(1, "release_scope", map[string]any{"path": "src"}), "scope_conflict")
+
+	// Nor may a session give back a lease somebody else holds, and the
+	// refusal must leave that lease intact.
+	holder := startServer(t, root)
+	holder.initialize()
+	wantResult(t, holder.callTool(1, "acquire_scope", map[string]any{"path": "src"}))
+	wantToolError(t, s.callTool(2, "release_scope", map[string]any{"path": "src"}), "scope_conflict")
+	if _, err := os.Stat(filepath.Join(root, ".project", "state", "locks", "src.lock")); err != nil {
+		t.Fatalf("refused release removed another session's lease: %v", err)
+	}
+	wantResult(t, holder.callTool(2, "release_scope", map[string]any{"path": "src"}))
+}
+
+func TestAcquireThenReleaseThenAcquireSucceeds(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project", "src"))
+	s := startServer(t, root)
+	s.initialize()
+	wantResult(t, s.callTool(1, "acquire_scope", map[string]any{"path": "src"}))
+	wantResult(t, s.callTool(2, "release_scope", map[string]any{"path": "src"}))
+	wantResult(t, s.callTool(3, "acquire_scope", map[string]any{"path": "src"}))
+
+	// A released lease is free for anybody, not only for the session
+	// that held it last.
+	other := startServer(t, root)
+	other.initialize()
+	wantToolError(t, other.callTool(1, "acquire_scope", map[string]any{"path": "src"}), "scope_conflict")
+	wantResult(t, s.callTool(4, "release_scope", map[string]any{"path": "src"}))
+	wantResult(t, other.callTool(2, "acquire_scope", map[string]any{"path": "src"}))
+	wantResult(t, other.callTool(3, "release_scope", map[string]any{"path": "src"}))
+}
+
+// TestSessionShutdownReleasesItsScopeLeases: a clean EOF gives back what
+// this session took. Handing back a lease this process holds is not
+// stealing one, and a session that leaves its leases behind would wedge
+// the next session on every ordinary exit.
+func TestSessionShutdownReleasesItsScopeLeases(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project", "src"))
+	req := mustJSON(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "acquire_scope", "arguments": map[string]any{"path": "src"}}})
+	var out bytes.Buffer
+	if err := Serve(root, strings.NewReader(req+"\n"), &out, io.Discard); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	if !strings.Contains(out.String(), `"granted":true`) {
+		t.Fatalf("acquire_scope did not grant: %s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, ".project", "state", "locks", "src.lock")); !os.IsNotExist(err) {
+		t.Fatalf("session shutdown left its scope lease behind (stat err %v)", err)
+	}
 }
 
 func TestCleanShutdownOnEOF(t *testing.T) {

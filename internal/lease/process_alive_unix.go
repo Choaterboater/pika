@@ -1,6 +1,6 @@
 //go:build unix
 
-package txn
+package lease
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 // processAlive reports whether a process with pid exists. EPERM means
 // the process exists but belongs to another user — still alive for our
 // purposes. A reused pid can make a dead holder look alive, which only
-// makes recovery more conservative.
+// makes the report more conservative.
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false

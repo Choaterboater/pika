@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -385,14 +386,30 @@ func TestE2EWorkDeliversAVerifiedCommitAndAReceipt(t *testing.T) {
 // terminal outcome, a branch holding uncommitted work — and no fixture
 // pretending to be one.
 //
-// What has to be true afterwards is that an operator can find the run and
-// finish it: `pika status` shows it, and `pika resume` carries that same
-// run to a verified commit and a receipt under its own work id. A resume
-// that started a second run would leave the first one stranded forever,
-// so the run count is asserted as carefully as the outcome.
+// What has to be true afterwards is that an operator can find the run,
+// clear what the crash left behind, and finish it: `pika status` shows
+// it, `pika recover` releases the lease the killed process never gave
+// back, and `pika resume` carries that same run to a verified commit
+// and a receipt under its own work id. A resume that started a second
+// run would leave the first one stranded forever, so the run count is
+// asserted as carefully as the outcome.
+//
+// The recover step is not bookkeeping the test invented to get past a
+// refusal. `pika resume` will not take a lease it did not take itself —
+// a record saying "interrupted" is bit for bit what a run still working
+// leaves behind — so clearing it is a decision, made by an operator,
+// with one command. That is the real workflow after a crash, and this
+// is what it costs.
 func TestE2EInterruptedRunIsVisibleInStatusAndResumable(t *testing.T) {
 	if why := gitAbsent(); why != "" {
 		t.Skip(why)
+	}
+	if runtime.GOOS == "windows" {
+		// The crashed run's lease can only be cleared once its holder is
+		// proved gone, and processAlive reports every positive pid as
+		// alive on Windows. There the operator removes the file by hand,
+		// which is a documented gap rather than a failure here.
+		t.Skip("a killed run's lease cannot be proved stale on Windows")
 	}
 	dir := workRepo(t)
 	side := t.TempDir()
@@ -437,6 +454,26 @@ func TestE2EInterruptedRunIsVisibleInStatusAndResumable(t *testing.T) {
 	// crash runs `pika status`, not `pika status --json`.
 	if listing := runCLI(t, dir, 0, "status"); !strings.Contains(listing, interrupted.WorkID) {
 		t.Errorf("the human listing does not show the interrupted run:\n%s", listing)
+	}
+
+	// Refused first, so what recover is for is stated rather than
+	// assumed: the killed run never gave its lease back, and resume
+	// takes no lease it did not take itself.
+	refused := runCLIEnv(t, dir, codexEnv(), 1, "resume", interrupted.WorkID, "--json")
+	if why := refusalMessage(t, refused, "resume"); !strings.Contains(why, interrupted.WorkID) {
+		t.Errorf("the refusal does not name the holder: %q", why)
+	}
+
+	// And cleared, by the one command that clears it. This is the whole
+	// cost of a crash: a lease is never stolen, so an operator decides.
+	cleared := runCLI(t, dir, 0, "recover", "--apply")
+	if !strings.Contains(cleared, "cleared the run lease") {
+		t.Fatalf("recover did not clear the interrupted run's lease:\n%s", cleared)
+	}
+	// Clearing the lease is not abandoning the run: the record recover
+	// left alone is the one resume is about to rejoin.
+	if runs := statusRuns(t, dir); len(runs) != 1 {
+		t.Fatalf("recover left %d runs, want the interrupted one untouched:\n%+v", len(runs), runs)
 	}
 
 	// Resumable, under the same work id.

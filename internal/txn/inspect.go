@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/Choaterboater/pika/internal/lease"
 )
 
 // The operator-facing half of recovery: everything needed to look at a
@@ -87,7 +90,7 @@ func Inspect(root string) (*Pending, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &Pending{Dir: recDir, Lock: inspectLock(filepath.Join(recDir, lockName))}
+	p := &Pending{Dir: recDir, Lock: inspectLock(recDir)}
 	journalPaths, err := filepath.Glob(filepath.Join(recDir, "*.jsonl"))
 	if err != nil {
 		return nil, fmt.Errorf("txn: scan recovery dir: %w", err)
@@ -117,16 +120,15 @@ func ReleaseStaleLock(root string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	path := filepath.Join(recDir, lockName)
-	info, err := readLockInfo(path)
-	if errors.Is(err, os.ErrNotExist) {
+	path := lease.Path(recDir, lockName)
+	info, state, err := lease.Inspect(recDir, lockName)
+	switch {
+	case state == lease.StateFree:
 		return false, nil
-	}
-	if err != nil {
+	case info == nil:
 		return false, fmt.Errorf("txn: %w: recovery lock at %s names no holder (%v), so it cannot be proved stale; remove the file once you have confirmed no transaction is running", ErrLeaseRequired, path, err)
-	}
-	if processAlive(info.PID) {
-		return false, leaseError(path)
+	case state != lease.StateStale:
+		return false, leaseError(path, info, state, err)
 	}
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -151,20 +153,23 @@ func recoveryDir(root string) (string, string, error) {
 	return abs, filepath.Join(abs, filepath.FromSlash(recoveryRelPath)), nil
 }
 
-func inspectLock(path string) *Lock {
-	info, err := readLockInfo(path)
-	if errors.Is(err, os.ErrNotExist) {
+func inspectLock(recDir string) *Lock {
+	path := lease.Path(recDir, lockName)
+	info, state, err := lease.Inspect(recDir, lockName)
+	if state == lease.StateFree {
 		return nil
 	}
-	if err != nil {
+	if info == nil {
 		return &Lock{Path: path, Unreadable: err.Error()}
 	}
 	return &Lock{
 		Path:      path,
-		TxID:      info.TxID,
+		TxID:      info.ID,
 		PID:       info.PID,
-		StartedAt: info.StartedAt,
-		Alive:     processAlive(info.PID),
+		StartedAt: info.StartedAt.Format(time.RFC3339Nano),
+		// A holder this machine cannot see is assumed to be running:
+		// only a holder proved gone is reported as not alive.
+		Alive: state != lease.StateStale,
 	}
 }
 

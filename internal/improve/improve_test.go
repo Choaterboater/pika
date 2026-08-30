@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Choaterboater/pika/internal/evidence"
+	"github.com/Choaterboater/pika/internal/lease"
 	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/verify"
 	"github.com/Choaterboater/pika/internal/workrec"
@@ -827,6 +828,266 @@ func TestUnknownWorkKindWritesNoRecord(t *testing.T) {
 		t.Fatalf("error = %v, want the unknown-kind refusal naming it", err)
 	}
 	assertNoRunRecorded(t, root, result)
+}
+
+// The milestone M4 exists for. Two runs in one repository share one
+// working tree and one HEAD, so the second does not need to do anything
+// unusual to corrupt the first — it only needs to start.
+//
+// Every case here holds the first run genuinely open: past the lease,
+// on the branch it created, with its record on disk, parked inside the
+// agent handoff until the test lets it out. A hand-placed lock file
+// would prove the guard can read a file and nothing about the race it
+// exists to lose.
+func TestSecondConcurrentRunIsRefused(t *testing.T) {
+	root := fixtureRepository(t)
+	first := startBlockedRun(t, root, "chore/pika-improve")
+	holder := soleRunID(t, root)
+
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check:  refusingCheck(t, "a second concurrent run must not reach the ladder"),
+		Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"},
+	})
+	if !errors.Is(err, ErrRunInProgress) {
+		t.Fatalf("error = %v, want ErrRunInProgress", err)
+	}
+	if result.WorkID != "" {
+		t.Fatalf("result = %+v, want nothing: the run was refused", result)
+	}
+	assertOnlyRunRecorded(t, root, holder)
+	first.finish(t)
+}
+
+// The headline. Given distinct branches the two runs do not collide at
+// `git switch -c`, so nothing stopped them: both walked into the same
+// working tree and committed through the same HEAD, and neither was ever
+// told. That silence is the defect — a refusal is the whole fix.
+//
+// The second run's branch must not exist afterwards. That is the proof
+// the refusal landed before the working tree was touched rather than
+// after: `git switch -c` is the lifecycle's first write, and a branch
+// left behind would mean the guard fired too late to matter.
+func TestSecondConcurrentRunWithADifferentBranchIsAlsoRefused(t *testing.T) {
+	root := fixtureRepository(t)
+	first := startBlockedRun(t, root, "chore/pika-improve")
+	holder := soleRunID(t, root)
+
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-other",
+		Check:  refusingCheck(t, "a second concurrent run must not reach the ladder"),
+		Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"},
+	})
+	if !errors.Is(err, ErrRunInProgress) {
+		t.Fatalf("error = %v, want ErrRunInProgress", err)
+	}
+	if result.WorkID != "" {
+		t.Fatalf("result = %+v, want nothing: the run was refused", result)
+	}
+	if _, exists, err := branchCommit(context.Background(), root, "chore/pika-other"); err != nil {
+		t.Fatal(err)
+	} else if exists {
+		t.Fatal("the refused run created chore/pika-other: it reached the working tree before it was stopped")
+	}
+	if head := gitOutput(t, root, "branch", "--show-current"); head != "chore/pika-improve" {
+		t.Fatalf("HEAD = %q, want the holder's branch chore/pika-improve: the refused run moved HEAD", head)
+	}
+	assertOnlyRunRecorded(t, root, holder)
+	first.finish(t)
+}
+
+// A refusal an operator cannot act on is a refusal that gets worked
+// around. The message carries the four facts a person needs to decide
+// what to do next: which run holds the repository, what process it is,
+// which machine that process is on, and how long it has been there.
+func TestRefusalNamesTheHolder(t *testing.T) {
+	root := fixtureRepository(t)
+	first := startBlockedRun(t, root, "chore/pika-improve")
+	holder := soleRunID(t, root)
+
+	dir, name := RunLease(repoRoot(t, root))
+	info, state, err := lease.Inspect(dir, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info == nil || state != lease.StateHeld {
+		t.Fatalf("lease = %+v state = %v, want a live holder", info, state)
+	}
+	// The lease names the run, not some identity of its own: a refusal
+	// quoting an id `pika status` cannot look up tells the operator
+	// nothing they can follow.
+	if info.ID != holder {
+		t.Fatalf("lease holder = %q, want the run id %q", info.ID, holder)
+	}
+
+	_, err = Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check:  refusingCheck(t, "a second concurrent run must not reach the ladder"),
+		Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"},
+	})
+	if !errors.Is(err, ErrRunInProgress) {
+		t.Fatalf("error = %v, want ErrRunInProgress", err)
+	}
+	for _, want := range []string{
+		holder,
+		fmt.Sprintf("%d", info.PID),
+		info.Host,
+		info.StartedAt.Format(time.RFC3339Nano),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want it to name %q", err, want)
+		}
+	}
+	// "Stale" is what invites an operator to clear a lock a live writer
+	// still holds, so a running holder must never be described as one.
+	if strings.Contains(err.Error(), "stale") {
+		t.Fatalf("error = %v, want a live holder never described as stale", err)
+	}
+	first.finish(t)
+}
+
+// The refusal is only worth having if the run it protects survives it.
+// The first run finishes the lifecycle it was in the middle of, commits,
+// records its terminal outcome, and hands the repository back — and the
+// refused one leaves nothing behind at all.
+func TestTheFirstRunIsUnaffectedByTheRefusal(t *testing.T) {
+	root := fixtureRepository(t)
+	first := startBlockedRun(t, root, "chore/pika-improve")
+	holder := soleRunID(t, root)
+
+	if _, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-other",
+		Check:  refusingCheck(t, "a second concurrent run must not reach the ladder"),
+		Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"},
+	}); !errors.Is(err, ErrRunInProgress) {
+		t.Fatalf("error = %v, want ErrRunInProgress", err)
+	}
+
+	result := first.finish(t)
+	if result.WorkID != holder {
+		t.Fatalf("result.WorkID = %q, want the holder %q", result.WorkID, holder)
+	}
+	if result.Commit == "" || result.ChecksAfter == nil || !result.ChecksAfter.Pass {
+		t.Fatalf("result = %+v, want a verified commit", result)
+	}
+	rec := runRecord(t, root, holder)
+	if rec.Outcome != workrec.OutcomeComplete || rec.Commit != result.Commit {
+		t.Fatalf("record = %+v, want outcome complete on commit %s", rec, result.Commit)
+	}
+	assertOnlyRunRecorded(t, root, holder)
+	// The repository is usable again. A lease held past its run is the
+	// wedge `pika recover` exists to clear, and a run that reached a
+	// terminal outcome must never need it.
+	dir, name := RunLease(repoRoot(t, root))
+	if info, state, err := lease.Inspect(dir, name); err != nil || state != lease.StateFree {
+		t.Fatalf("lease = %+v state = %v err = %v, want free once the run settled", info, state, err)
+	}
+}
+
+// blockedRun is a run genuinely in progress. Nothing about it is
+// simulated: it took the real lease, created its real branch and wrote
+// its real record, and it is parked where a run spends nearly all of its
+// wall clock — waiting on the agent.
+type blockedRun struct {
+	runner *blockingRunner
+	done   chan struct{}
+	result Result
+	err    error
+}
+
+func startBlockedRun(t *testing.T, root, branch string) *blockedRun {
+	t.Helper()
+	runner := &blockingRunner{entered: make(chan struct{}), release: make(chan struct{})}
+	run := &blockedRun{runner: runner, done: make(chan struct{})}
+	checks := []*verify.Report{failingBaseline(), passingLadder()}
+	go func() {
+		defer close(run.done)
+		run.result, run.err = Run(context.Background(), Config{
+			Root:   root,
+			Branch: branch,
+			Check: func() (*verify.Report, error) {
+				report := checks[0]
+				checks = checks[1:]
+				return report, nil
+			},
+			Runner: runner,
+		})
+	}()
+	select {
+	case <-runner.entered:
+	case <-run.done:
+		t.Fatalf("the first run ended before it reached the agent: %+v, %v", run.result, run.err)
+	case <-time.After(time.Minute):
+		t.Fatal("the first run never reached the agent")
+	}
+	return run
+}
+
+// finish lets the held run out of the handoff and returns what it
+// produced, so a case can assert the refusal cost it nothing.
+func (r *blockedRun) finish(t *testing.T) Result {
+	t.Helper()
+	close(r.runner.release)
+	select {
+	case <-r.done:
+	case <-time.After(time.Minute):
+		t.Fatal("the first run never finished")
+	}
+	if r.err != nil {
+		t.Fatalf("the first run failed: %v", r.err)
+	}
+	return r.result
+}
+
+// blockingRunner parks the lifecycle inside the handoff until the test
+// releases it, and only then does the repair it was asked for. It waits
+// before it writes so the tree it holds stays clean: a second run turned
+// away by the dirty-tree gate would prove nothing about the lease.
+type blockingRunner struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingRunner) Run(_ context.Context, root, _, outputPath string) error {
+	close(r.entered)
+	<-r.release
+	if err := os.WriteFile(filepath.Join(root, "fixed.txt"), []byte("verified fix\n"), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(outputPath, []byte("repaired\n"), 0o600)
+}
+
+// soleRunID names the one run the repository has recorded, read back
+// from disk rather than taken from the run's own return value — the
+// holder is still in flight and has returned nothing yet.
+func soleRunID(t *testing.T, root string) string {
+	t.Helper()
+	runs, err := workrec.List(repoRoot(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("workrec.List = %+v, want exactly one run", runs)
+	}
+	return runs[0].WorkID
+}
+
+// assertOnlyRunRecorded is assertNoRunRecorded for a repository that
+// legitimately holds one run already: the refused run must still have
+// left nothing, and the holder's record must be the only one there.
+func assertOnlyRunRecorded(t *testing.T, root, holder string) {
+	t.Helper()
+	runs, err := workrec.List(repoRoot(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].WorkID != holder {
+		t.Fatalf("workrec.List = %+v, want only the holder %s: a refused run must write no record", runs, holder)
+	}
 }
 
 // A run interrupted anywhere short of its terminal outcome is resumable
@@ -1655,4 +1916,39 @@ func (r refusingRunner) Run(context.Context, string, string, string) error {
 	r.t.Helper()
 	r.t.Fatalf("the agent must not run: %s", r.why)
 	return nil
+}
+
+// A branch name is a value. Git reads a leading `-` as the start of an
+// option unless it is told where the options stop, so a branch called
+// `-weird` is either switched to or mistaken for a bundle of short
+// flags. Such a branch is unusual but reachable — `git update-ref`
+// creates one — and the day a branch name reaches Pika from anywhere but
+// an operator's own flag, the difference between those two readings is
+// the difference between a refusal and an argument Pika did not write.
+func TestLeadingDashBranchIsSwitchedToAsAValue(t *testing.T) {
+	root := newFixture(t, "")
+	gitRun(t, root, "update-ref", "refs/heads/-weird", "HEAD")
+
+	if err := enterBranch(context.Background(), root, "-weird"); err != nil {
+		t.Fatalf("enterBranch on a branch named %q: %v", "-weird", err)
+	}
+	if head := gitOutput(t, root, "symbolic-ref", "--short", "HEAD"); head != "-weird" {
+		t.Fatalf("HEAD = %q, want %q", head, "-weird")
+	}
+}
+
+// The same reading applied to a commit is worse than a wrong branch:
+// `git show --output=<path>` writes a file and exits zero, so an
+// argument read as an option acts on the filesystem and reports success.
+// The refusal is the point — the file must not appear.
+func TestLeadingDashCommitIsNotReadAsAnOption(t *testing.T) {
+	root := newFixture(t, "")
+	written := filepath.Join(t.TempDir(), "written")
+
+	if _, _, err := commitShape(context.Background(), root, "--output="+written); err == nil {
+		t.Fatal("commitShape accepted an option-shaped commit, want a refusal")
+	}
+	if _, err := os.Stat(written); !os.IsNotExist(err) {
+		t.Fatalf("git wrote %s: the commit argument was executed as an option", written)
+	}
 }

@@ -35,6 +35,7 @@ import (
 	"github.com/Choaterboater/pika/internal/discover"
 	"github.com/Choaterboater/pika/internal/envelope"
 	"github.com/Choaterboater/pika/internal/evidence"
+	"github.com/Choaterboater/pika/internal/lease"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/redact"
 	"github.com/Choaterboater/pika/internal/verify"
@@ -62,6 +63,7 @@ const (
 	errEnvelopeDenied  = "envelope_denied"
 	errContractInvalid = "contract_invalid"
 	errAlreadyAdopted  = "already_adopted"
+	errScopeConflict   = "scope_conflict"
 	errUnavailable     = "unavailable"
 	errInternal        = "internal"
 )
@@ -72,6 +74,7 @@ const (
 	envelopePath  = ".project/state/envelope.yaml"
 	contractPath  = ".project/contract.yaml"
 	boardPath     = ".project/state/board.jsonl"
+	scopeLocksDir = ".project/state/locks"
 	evidenceDir   = ".project/evidence"
 	contractDraft = ".project/contract.yaml.draft"
 	lockDraft     = ".project/profiles.lock.draft"
@@ -175,7 +178,7 @@ var tools = []tool{
 	},
 	{
 		name:        "acquire_scope",
-		description: "Acquire an exclusive write lease on a repository-relative path. The capability envelope is the authority: only paths declared under allow.fs_write are granted.",
+		description: "Take an exclusive lease on a repository-relative path for this session. The capability envelope authorizes the request (only paths declared under allow.fs_write); the lease is what makes it exclusive. While it is held, acquiring that path — or any path inside or containing it, from this session or another process — is refused with scope_conflict. Leases never expire and are never stolen: the holding session releases it, or the session ends.",
 		inputSchema: schemaObj(map[string]any{
 			"path": map[string]any{"type": "string", "description": "repository-relative path to lease"},
 		}, "path"),
@@ -183,7 +186,7 @@ var tools = []tool{
 	},
 	{
 		name:        "release_scope",
-		description: "Release a previously acquired write lease on a repository-relative path.",
+		description: "Give back a scope lease this session acquired. Only the session holding a lease can release it; a path this session does not hold is refused with scope_conflict.",
 		inputSchema: schemaObj(map[string]any{
 			"path": map[string]any{"type": "string"},
 		}, "path"),
@@ -235,10 +238,16 @@ func schemaObj(properties map[string]any, required ...string) map[string]any {
 	return map[string]any{"type": "object", "properties": properties, "required": required}
 }
 
-// server is one stdio session's configuration. Requests are processed
-// sequentially, so the server carries no mutable state.
+// server is one stdio session's configuration and the scope leases that
+// session holds. Requests are processed sequentially — one goroutine,
+// no concurrent access to scopes.
 type server struct {
 	repoRoot string
+	// scopes are the leases this session took, keyed by the normalized
+	// repository-relative path. The handle is the proof of holding:
+	// release_scope refuses a path that is not in here, because a lease
+	// this session did not take is not this session's to give back.
+	scopes map[string]*lease.Handle
 }
 
 // Serve runs the MCP stdio JSON-RPC loop against repoRoot until stdin EOF
@@ -247,7 +256,13 @@ type server struct {
 // and never terminates the session. Only JSON-RPC messages are written to
 // out; diagnostics belong on errOut.
 func Serve(repoRoot string, in io.Reader, out, errOut io.Writer) error {
-	s := &server{repoRoot: repoRoot}
+	s := &server{repoRoot: repoRoot, scopes: map[string]*lease.Handle{}}
+	// A clean shutdown gives back what this session took. Releasing a
+	// lease this process holds is not stealing one — Release still
+	// checks the file names this handle — and a session that kept its
+	// leases past its own exit would wedge the next session every time
+	// an agent disconnected normally.
+	defer s.releaseHeldScopes(errOut)
 	r := bufio.NewReader(in)
 	w := bufio.NewWriter(out)
 	for {
@@ -563,10 +578,18 @@ func (s *server) toolRunChecks(args json.RawMessage) (map[string]any, *toolError
 	return map[string]any{"report": report}, nil
 }
 
-// toolAcquireScope implements acquire_scope: an envelope-backed lease over
-// one declared path. The envelope is the authority — the lease is granted
-// exactly when the envelope declares fs_write for the path; a denial is the
-// stable envelope_denied code, never a policy decision made here.
+// toolAcquireScope implements acquire_scope: an exclusive lease over one
+// declared path, held by this session. The envelope authorizes the
+// request and the lease enforces it — the envelope says this agent may
+// write there, the lease says nobody else is writing there right now,
+// and only the first of those is a policy decision.
+//
+// The lease is claimed before the overlap scan, never after. Claiming
+// first means two sessions racing for overlapping paths each see the
+// other's file and both refuse; scanning first would let both pass the
+// scan and both be granted. A refusal that could have been a grant is
+// fixed by retrying; two overlapping leases are the bug this tool
+// exists to prevent.
 func (s *server) toolAcquireScope(args json.RawMessage) (map[string]any, *toolError) {
 	var params struct {
 		Path string `json:"path"`
@@ -581,13 +604,49 @@ func (s *server) toolAcquireScope(args json.RawMessage) (map[string]any, *toolEr
 	if terr := s.authorize(envelope.KindFSWrite, rel); terr != nil {
 		return nil, terr
 	}
+	name, terr := scopeLockName(rel)
+	if terr != nil {
+		return nil, terr
+	}
+	dir := ScopeLocksDir(s.repoRoot)
+	// lease.Acquire does not create its directory; the caller does.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, toolErrf(errInternal, "acquire_scope: create %s: %v", scopeLocksDir, err)
+	}
+	h, err := lease.Acquire(dir, name, lease.Info{ID: scopeLeaseID(rel)})
+	var busy *lease.HeldError
+	if errors.As(err, &busy) {
+		return nil, toolErrf(errScopeConflict, "acquire_scope: %s is already leased (%s)",
+			rel, holderOf(busy.Info, busy.State, busy.Err))
+	}
+	if err != nil {
+		return nil, toolErrf(errInternal, "acquire_scope: %v", err)
+	}
+	conflict, err := conflictingScope(dir, rel, name)
+	if err != nil {
+		_ = h.Release()
+		return nil, toolErrf(errInternal, "acquire_scope: %v", err)
+	}
+	if conflict != "" {
+		// Giving the claim straight back: this call is refusing, so it
+		// must not leave a lease behind for a scope nobody was granted.
+		_ = h.Release()
+		return nil, toolErrf(errScopeConflict, "acquire_scope: %s overlaps %s", rel, conflict)
+	}
 	if err := s.appendBoard(map[string]any{"type": "scope_lease", "action": "acquire", "path": rel}); err != nil {
+		_ = h.Release()
 		return nil, toolErrf(errInternal, "append board: %v", err)
 	}
+	s.scopes[rel] = h
 	return map[string]any{"path": rel, "granted": true}, nil
 }
 
-// toolReleaseScope implements release_scope; the same envelope gate applies.
+// toolReleaseScope implements release_scope; the same envelope gate
+// applies. Only the session that took a lease can give it back: this
+// server holds the handle Acquire returned, and Release refuses to
+// remove a file that no longer names it. A release of a path this
+// session never acquired is a refusal rather than a no-op — an agent
+// told it released somebody else's lease would go on to write under it.
 func (s *server) toolReleaseScope(args json.RawMessage) (map[string]any, *toolError) {
 	var params struct {
 		Path string `json:"path"`
@@ -602,10 +661,178 @@ func (s *server) toolReleaseScope(args json.RawMessage) (map[string]any, *toolEr
 	if terr := s.authorize(envelope.KindFSWrite, rel); terr != nil {
 		return nil, terr
 	}
+	h, held := s.scopes[rel]
+	if !held {
+		return nil, toolErrf(errScopeConflict, "release_scope: this session holds no lease on %s", rel)
+	}
+	if err := h.Release(); err != nil {
+		return nil, toolErrf(errScopeConflict, "release_scope: %v", err)
+	}
+	delete(s.scopes, rel)
 	if err := s.appendBoard(map[string]any{"type": "scope_lease", "action": "release", "path": rel}); err != nil {
 		return nil, toolErrf(errInternal, "append board: %v", err)
 	}
 	return map[string]any{"path": rel, "released": true}, nil
+}
+
+// releaseHeldScopes gives back every lease this session still holds.
+// A release that fails is reported on the diagnostic stream and the
+// lease is left alone: the file has stopped naming this handle, and the
+// one thing this package will not do is remove a lease it cannot prove
+// is its own.
+func (s *server) releaseHeldScopes(errOut io.Writer) {
+	for rel, h := range s.scopes {
+		if err := h.Release(); err != nil {
+			fmt.Fprintf(errOut, "pika mcp: scope lease on %s not released: %v\n", rel, err)
+		}
+		delete(s.scopes, rel)
+	}
+}
+
+// ScopeLocksDir is the directory scope leases live in beneath repoRoot.
+//
+// It is exported for the same reason improve.RunLease is: `pika recover`
+// is the one remedy for a lease whose session died holding it, and a
+// recover that spelled this path itself would be a second definition of
+// where scope leases live — free to drift from this one the first time
+// it moves, and silently, since a recover looking in the wrong place
+// reports a repository that is already clean.
+func ScopeLocksDir(repoRoot string) string {
+	return filepath.Join(repoRoot, filepath.FromSlash(scopeLocksDir))
+}
+
+// ScopeFromLockName reads the repository-relative path a lock file name
+// stands for, reporting false for any name this package did not write.
+// The lock directory is an ordinary directory and a stray file in it
+// names no scope.
+func ScopeFromLockName(name string) (string, bool) {
+	if !strings.HasSuffix(name, scopeLockSuffix) {
+		return "", false
+	}
+	return decodeScopeLockName(name)
+}
+
+// scopeLockSuffix marks the lease files this package owns, so a stray
+// file in the lock directory is not read as somebody's scope.
+const scopeLockSuffix = ".lock"
+
+// maxScopeLockName keeps the encoded name inside the shortest filename
+// limit of the supported platforms. Refusing an over-long path is
+// invalid_params — the argument cannot be served — rather than the
+// internal error the operating system's own complaint would become.
+const maxScopeLockName = 200
+
+// scopeLockName encodes a repository-relative path as one lock file
+// name. Every byte outside the unreserved set is percent-encoded, which
+// makes the name legal on every supported platform — a repository path
+// may legally contain characters Windows rejects in a filename — and
+// keeps the encoding reversible, which the overlap scan needs to read
+// the leased paths back out of a directory listing.
+func scopeLockName(rel string) (string, *toolError) {
+	var b strings.Builder
+	b.Grow(len(rel) + len(scopeLockSuffix))
+	// Byte indices, not runes: this encodes bytes, and ranging a string
+	// would decode UTF-8 and skip every continuation byte.
+	for i := range len(rel) {
+		switch c := rel[i]; {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '-', c == '_':
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	b.WriteString(scopeLockSuffix)
+	if name := b.String(); len(name) <= maxScopeLockName {
+		return name, nil
+	}
+	return "", toolErrf(errInvalidParams, "acquire_scope: %s is too long to lease (its lock name exceeds %d bytes); lease a shorter path", rel, maxScopeLockName)
+}
+
+// decodeScopeLockName reverses scopeLockName. A name that does not
+// decode was not written by scopeLockName and names no scope.
+func decodeScopeLockName(name string) (string, bool) {
+	body := strings.TrimSuffix(name, scopeLockSuffix)
+	var b strings.Builder
+	b.Grow(len(body))
+	// Classic form: the body advances i past a percent escape, which a
+	// range loop's per-iteration variable would not carry.
+	for i := 0; i < len(body); i++ {
+		if body[i] != '%' {
+			b.WriteByte(body[i])
+			continue
+		}
+		if i+2 >= len(body) {
+			return "", false
+		}
+		v, err := strconv.ParseUint(body[i+1:i+3], 16, 8)
+		if err != nil {
+			return "", false
+		}
+		b.WriteByte(byte(v))
+		i += 2
+	}
+	return b.String(), true
+}
+
+// conflictingScope describes a live lease overlapping rel, or "" if
+// there is none. self is the caller's own lock name, already claimed.
+//
+// Exclusive over a path means exclusive over everything under it: a
+// lease on src conflicts with one on src/pkg in both directions. An
+// exclusion an agent could sidestep by naming a subdirectory would not
+// be one.
+func conflictingScope(dir, rel, self string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", scopeLocksDir, err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name == self || !strings.HasSuffix(name, scopeLockSuffix) {
+			continue
+		}
+		other, ok := decodeScopeLockName(name)
+		if !ok || !scopesOverlap(rel, other) {
+			continue
+		}
+		info, state, err := lease.Inspect(dir, name)
+		if info == nil && state == lease.StateFree {
+			continue // released between the directory read and this look
+		}
+		return fmt.Sprintf("%s, which is leased (%s)", other, holderOf(info, state, err)), nil
+	}
+	return "", nil
+}
+
+// scopesOverlap reports whether two repository-relative paths cannot be
+// leased at the same time.
+func scopesOverlap(a, b string) bool {
+	return a == b || covers(a, b) || covers(b, a)
+}
+
+// covers reports whether parent's subtree contains child. "." is the
+// repository root, which contains everything.
+func covers(parent, child string) bool {
+	return parent == "." || strings.HasPrefix(child, parent+"/")
+}
+
+// scopeLeaseID identifies one acquisition. The scope is in it so a
+// refusal names something a human recognizes; the timestamp makes it
+// unique per lease taken, which is what Release checks before it removes
+// anything.
+func scopeLeaseID(rel string) string {
+	return "scope:" + rel + "#" + strconv.FormatInt(time.Now().UnixNano(), 10)
+}
+
+// holderOf renders what is known about a lease's holder. A refusal that
+// does not say who holds the thing leaves the agent nothing to do but
+// retry blindly.
+func holderOf(info *lease.Info, state lease.State, err error) string {
+	if info == nil {
+		return fmt.Sprintf("%s, no readable holder: %v", state, err)
+	}
+	return fmt.Sprintf("%s by %s, pid %d on %s since %s",
+		state, info.ID, info.PID, info.Host, info.StartedAt.UTC().Format(time.RFC3339))
 }
 
 // receiptJSON mirrors evidence.ReceiptInput with snake_case JSON keys — the

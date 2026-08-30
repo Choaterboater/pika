@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 
 	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/lease"
 )
 
 // Kind is one journalable file operation.
@@ -115,6 +116,7 @@ type Tx struct {
 	recDir      string
 	journalPath string
 	backupsDir  string
+	lock        *lease.Handle
 	journal     *os.File
 	seq         int
 	finished    bool
@@ -156,21 +158,22 @@ func Begin(root string) (*Tx, error) {
 	if err != nil {
 		return nil, fmt.Errorf("txn: generate tx id: %w", err)
 	}
-	if err := acquireLock(recDir, txid); err != nil {
+	lock, err := acquireLock(recDir, txid)
+	if err != nil {
 		return nil, err
 	}
 
 	journalPath := filepath.Join(recDir, txid+".jsonl")
 	jf, err := os.OpenFile(journalPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		releaseLock(recDir)
+		lock.Release()
 		return nil, fmt.Errorf("txn: open journal: %w", err)
 	}
 	// Persist the journal's directory entry: a crash before the first
 	// entry is fsynced must not lose the file itself.
 	if err := syncDir(recDir); err != nil {
 		jf.Close()
-		releaseLock(recDir)
+		lock.Release()
 		return nil, fmt.Errorf("txn: sync recovery dir: %w", err)
 	}
 	return &Tx{
@@ -179,6 +182,7 @@ func Begin(root string) (*Tx, error) {
 		recDir:      recDir,
 		journalPath: journalPath,
 		backupsDir:  filepath.Join(recDir, txid),
+		lock:        lock,
 		journal:     jf,
 	}, nil
 }
@@ -361,8 +365,18 @@ func (tx *Tx) finish() error {
 		tx.journal.Close(),
 		os.Remove(tx.journalPath),
 		os.RemoveAll(tx.backupsDir),
-		releaseLock(tx.recDir),
+		tx.releaseLease(),
 	)
+}
+
+// releaseLease drops the recovery lock this transaction took. Only a Tx
+// from Begin holds one: the Tx values recovery builds to classify a
+// journal never took the lock and never finish.
+func (tx *Tx) releaseLease() error {
+	if tx.lock == nil {
+		return nil
+	}
+	return tx.lock.Release()
 }
 
 func (tx *Tx) abs(rel string) string {
