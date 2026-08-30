@@ -111,6 +111,37 @@ func TestInitScaffoldsIntoExplicitRoot(t *testing.T) {
 	}
 }
 
+// init CREATES a project where the caller is standing; there is nothing
+// to discover yet. Discovery would be actively wrong here: repopath.Find
+// stops at the enclosing repository's .git, so the workflow
+// docs/guides/usage.md §1 documents verbatim —
+// `mkdir my-service && cd my-service && pika init --profile go` — would
+// scaffold at the git root and still exit 0, leaving my-service empty.
+func TestInitScaffoldsInTheWorkingDirectoryNotAnEnclosingRepository(t *testing.T) {
+	gitRoot := t.TempDir()
+	// The .git marker is exactly what repopath.Find keys on; creating it
+	// directly keeps the test hermetic (no git binary required).
+	if err := os.MkdirAll(filepath.Join(gitRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	service := filepath.Join(gitRoot, "my-service")
+	if err := os.MkdirAll(service, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(service)
+
+	var out, errb bytes.Buffer
+	if code := runInit([]string{"--profile", "go", "--name", "my-service"}, strings.NewReader(""), &out, &errb); code != 0 {
+		t.Fatalf("init exit = %d; stderr: %s", code, errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(service, ".project", "contract.yaml")); err != nil {
+		t.Errorf("init did not scaffold into the working directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(gitRoot, ".project", "contract.yaml")); !os.IsNotExist(err) {
+		t.Errorf("init scaffolded into the enclosing repository root: %v", err)
+	}
+}
+
 // The whole point of Task 1: check must work from a subdirectory.
 func TestCheckRunsFromSubdirectory(t *testing.T) {
 	root := t.TempDir()
