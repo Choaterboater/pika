@@ -27,6 +27,13 @@ type langCase struct {
 	// command a fresh scaffold can actually run, so both directions are
 	// asserted.
 	autofill []string
+	// failOnOutput lists the slots whose command reports by printing
+	// while exiting 0, so silence is the success criterion. Asserted in
+	// both directions: a checking form that already exits nonzero on
+	// drift (`cargo fmt -- --check`, `ruff format --check .`) must NOT
+	// carry the flag, because a flag that never decides anything is
+	// noise a later reader has to re-derive.
+	failOnOutput []string
 	// layoutTerm must appear in the language pack's §6.1 layout
 	// expectations.
 	layoutTerm string
@@ -39,14 +46,15 @@ var langCases = map[string]langCase{
 		ref:      "go@1",
 		cmds:     map[string][]string{"test": {"go", "test", "./..."}},
 		hints: map[string][]string{
-			"format": {"gofmt", "-l", "-w", "."},
+			"format": {"gofmt", "-l", "."},
 			"lint":   {"go", "vet", "./..."},
 			// -o /dev/null keeps the gate from linking a binary into the
 			// repository root on every run.
 			"typecheck": {"go", "build", "-o", "/dev/null", "./..."},
 		},
-		autofill:   []string{"format", "lint", "typecheck"},
-		layoutTerm: "cmd/",
+		autofill:     []string{"format", "lint", "typecheck"},
+		failOnOutput: []string{"format"},
+		layoutTerm:   "cmd/",
 	},
 	"typescript": {
 		fixture:  "ts-single",
@@ -70,7 +78,7 @@ var langCases = map[string]langCase{
 		ref:      "python@1",
 		cmds:     map[string][]string{"test": {"python", "-m", "pytest"}},
 		hints: map[string][]string{
-			"format":    {"ruff", "format", "."},
+			"format":    {"ruff", "format", "--check", "."},
 			"lint":      {"ruff", "check", "."},
 			"typecheck": {"mypy", "."},
 		},
@@ -212,6 +220,10 @@ func TestLanguageProfileResolve(t *testing.T) {
 				want := slices.Contains(tc.autofill, id)
 				if c.Autofill != want {
 					t.Errorf("check %s autofill = %v, want %v; only a hint measured to run in a fresh scaffold may be adopted unattended", id, c.Autofill, want)
+				}
+				wantFail := slices.Contains(tc.failOnOutput, id)
+				if c.FailOnOutput != wantFail {
+					t.Errorf("check %s fail-on-output = %v, want %v; the flag belongs only to a command that reports by printing while exiting 0", id, c.FailOnOutput, wantFail)
 				}
 			}
 			smoke := checks["smoke"]

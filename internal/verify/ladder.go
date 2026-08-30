@@ -19,6 +19,15 @@ var slotOrder = []string{"format", "lint", "typecheck", "test", "smoke"}
 // commands into the ordered gate list M1's check runs. A contract command
 // overrides a discovery sentinel; a discovery sentinel with no discovered
 // command becomes a skip with a recorded reason, not a failure.
+//
+// A slot's FailOnOutput rides onto its gate whatever the command turned
+// out to be, including a contract override. The flag is the pack's
+// statement about the slot's success criterion for this stack — in Go, a
+// format gate that has anything to say has found drift — and a contract
+// that adopts the slot adopts that criterion. Dropping it on override
+// would silently restore the gate that cannot fail, which is the whole
+// defect: `pika init` writes the pack's own hint into contract.commands,
+// so the override path is the ordinary path, not the exotic one.
 func FromProfiles(cs profiles.CheckSet, commands map[string]string) (CheckSet, error) {
 	slots := map[string]profiles.Check{
 		"format":    cs.Format,
@@ -35,12 +44,12 @@ func FromProfiles(cs profiles.CheckSet, commands map[string]string) (CheckSet, e
 			if err != nil {
 				return nil, err
 			}
-			gates = append(gates, Gate{ID: id, Cmd: argv})
+			gates = append(gates, Gate{ID: id, Cmd: argv, FailOnOutput: slot.FailOnOutput})
 			continue
 		}
 		switch {
 		case len(slot.Cmd) > 0:
-			gates = append(gates, Gate{ID: id, Cmd: slot.Cmd})
+			gates = append(gates, Gate{ID: id, Cmd: slot.Cmd, FailOnOutput: slot.FailOnOutput})
 		case slot.Discovery:
 			gates = append(gates, Gate{
 				ID:         id,

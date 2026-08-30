@@ -317,7 +317,7 @@ func TestUnknownProfileRejected(t *testing.T) {
 // preinstalled on GitHub runners) regressed silently once already.
 func TestCISetupCoversContractCommands(t *testing.T) {
 	required := map[string][]string{
-		// contract commands `gofmt -l -w .`, `go vet ./...`,
+		// contract commands `gofmt -l .`, `go vet ./...`,
 		// `go build -o /dev/null ./...`, `go test ./...`: setup-go
 		// installs the whole toolchain.
 		"go": []string{"actions/setup-go@v5"},
@@ -325,7 +325,7 @@ func TestCISetupCoversContractCommands(t *testing.T) {
 		// command; node 24 setup keeps the hinted commands runnable once
 		// the user adds the scripts and installs dependencies.
 		"typescript": []string{"actions/setup-node@v4", "node-version: \"24\""},
-		// contract commands `python -m pytest`, `ruff format .`,
+		// contract commands `python -m pytest`, `ruff format --check .`,
 		// `ruff check .`, `mypy .`: runners ship a bare interpreter, so
 		// all three packages are installed explicitly.
 		"python": []string{"actions/setup-python@v5", "python -m pip install pytest ruff mypy"},
@@ -449,7 +449,7 @@ func TestCommandsPopulatedFromAutofillableHints(t *testing.T) {
 
 	got := commandsFromChecks(resolved.Checks, present)
 	want := map[string]string{
-		"format":    "gofmt -l -w .",
+		"format":    "gofmt -l .",
 		"lint":      "go vet ./...",
 		"typecheck": "go build -o /dev/null ./...",
 	}

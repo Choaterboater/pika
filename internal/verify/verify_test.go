@@ -605,3 +605,110 @@ func TestFuncGateNeedsNoMarker(t *testing.T) {
 			LadderEnvVar, seen, before)
 	}
 }
+
+// The tests below pin the whole of fail-on-output: a checking tool that
+// reports by printing while exiting 0 — `gofmt -l .` is the one that
+// forced the flag — must fail the gate, silence must pass it, and a gate
+// without the flag must go on ignoring output entirely. The last two
+// matter as much as the first: a flag that failed every chatty gate, or
+// that changed behaviour when unset, would be a new defect rather than a
+// fix.
+
+func TestFailOnOutputFailsAGateThatPrintsAndExitsZero(t *testing.T) {
+	cs := CheckSet{
+		{ID: "format", Cmd: []string{"echo", "internal/verify/verify.go"}, FailOnOutput: true},
+		{ID: "lint", Cmd: []string{"true"}},
+	}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Pass {
+		t.Fatalf("report = %+v, want fail: the gate printed a misformatted file", rep)
+	}
+	got := rep.Gates[0]
+	if got.Status != StatusFail {
+		t.Fatalf("format status = %q, want fail", got.Status)
+	}
+	if got.Exit != 0 {
+		t.Errorf("format exit = %d, want the real 0: the flag changes the verdict, not the recorded status", got.Exit)
+	}
+	if got.Reason == "" {
+		t.Error("format failed without a reason; a gate that fails on output must say so")
+	}
+	if !strings.Contains(got.OutputTail, "verify.go") {
+		t.Errorf("format output tail = %q, want the offending file", got.OutputTail)
+	}
+	if len(rep.Regressions) != 1 || rep.Regressions[0].Gate != "format" {
+		t.Errorf("regressions = %+v, want one for format", rep.Regressions)
+	}
+	// A fail-on-output failure stops the ladder like any other.
+	if rep.Gates[1].Status != StatusSkip {
+		t.Errorf("lint status = %q, want skip after format failed", rep.Gates[1].Status)
+	}
+}
+
+func TestFailOnOutputPassesASilentGate(t *testing.T) {
+	cs := CheckSet{{ID: "format", Cmd: []string{"true"}, FailOnOutput: true}}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Pass {
+		t.Fatalf("report = %+v, want pass: a silent gate found nothing", rep)
+	}
+	if rep.Gates[0].Status != StatusPass {
+		t.Fatalf("format status = %q, want pass", rep.Gates[0].Status)
+	}
+}
+
+func TestFailOnOutputTreatsWhitespaceAsSilence(t *testing.T) {
+	// A tool that ends its (empty) report with a newline has said
+	// nothing. Reading that as drift would fail every clean run.
+	cs := CheckSet{{ID: "format", Cmd: []string{"echo", ""}, FailOnOutput: true}}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Pass {
+		t.Fatalf("report = %+v, want pass: a lone newline is not a report", rep)
+	}
+}
+
+func TestFailOnOutputUnsetIgnoresOutput(t *testing.T) {
+	cs := CheckSet{{ID: "test", Cmd: []string{"echo", "ok 42 tests passed"}}}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Pass {
+		t.Fatalf("report = %+v, want pass: without the flag, output is not a verdict", rep)
+	}
+	if rep.Gates[0].Status != StatusPass {
+		t.Fatalf("test status = %q, want pass", rep.Gates[0].Status)
+	}
+	if !strings.Contains(rep.Gates[0].OutputTail, "42 tests passed") {
+		t.Errorf("output tail = %q, want the gate's output still captured", rep.Gates[0].OutputTail)
+	}
+}
+
+// A gate that both fails on its exit status and prints keeps the reason
+// that names the exit status: that is the more specific diagnosis, and
+// overwriting it would make a compiler error read as a formatting one.
+func TestFailOnOutputKeepsTheExitStatusReason(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no sh to print and exit nonzero in one command")
+	}
+	cs := CheckSet{{ID: "format", Cmd: []string{"sh", "-c", "echo boom; exit 3"}, FailOnOutput: true}}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rep.Gates[0]
+	if got.Status != StatusFail || got.Exit != 3 {
+		t.Fatalf("gate = %+v, want fail with exit 3", got)
+	}
+	if !strings.Contains(got.Reason, "status 3") {
+		t.Errorf("reason = %q, want the exit-status diagnosis preserved", got.Reason)
+	}
+}

@@ -34,7 +34,12 @@ verification:
     - id: format
       discovery: true
       autofill: true
-      hint: [ruff, format, .]
+      # --check, deliberately: a verification gate must not rewrite the
+      # artifact it verifies, and `ruff format .` reformatted the working
+      # tree and exited 0 whatever it had done. --check reports instead
+      # of writing and exits nonzero on drift, so the exit status alone
+      # already fails the gate and no fail-on-output is needed here.
+      hint: [ruff, format, --check, .]
     - id: lint
       discovery: true
       autofill: true

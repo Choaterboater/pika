@@ -34,7 +34,14 @@ verification:
     - id: format
       discovery: true
       autofill: true
-      hint: [gofmt, -l, -w, .]
+      # -l without -w, deliberately: a verification gate must not rewrite
+      # the artifact it verifies. `gofmt -l -w .` reformatted the working
+      # tree and then exited 0 whatever it had done, so the gate could
+      # neither fail nor leave the repository as it found it. `-l` only
+      # lists the misformatted files — and still exits 0, which is why
+      # this slot needs fail-on-output to read that list as a failure.
+      fail-on-output: true
+      hint: [gofmt, -l, .]
     - id: lint
       discovery: true
       autofill: true

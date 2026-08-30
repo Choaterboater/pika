@@ -116,6 +116,18 @@ type Gate struct {
 	// When Func is set, Cmd is informational only.
 	Func func(ctx context.Context) (exit int, output string)
 
+	// FailOnOutput inverts the success criterion for a command gate that
+	// reports by printing rather than by exiting: when set, a gate that
+	// exits 0 but produced output fails anyway. `gofmt -l .` forces it —
+	// it lists every misformatted file and exits 0, and the argv that
+	// would fail is a shell pipeline the kernel deliberately cannot
+	// express (gate argv goes to exec verbatim, spec §16). It is judged
+	// on the captured combined output: a gate reporting drift on stderr
+	// has reported drift. A gate that already failed keeps its
+	// exit-status reason, which says more. Func gates decide their own
+	// status and are never pack-declared, so this governs command gates.
+	FailOnOutput bool
+
 	// SkipReason, when non-empty, records the gate as skipped with this
 	// reason without executing it. A skip does not stop the ladder.
 	SkipReason string
@@ -325,6 +337,14 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 			res.Exit = -1
 			res.Reason = err.Error()
 		}
+	}
+	// After the exit-status branch, never before it: a gate that already
+	// failed keeps the reason that names its exit status. Whitespace
+	// alone is not a report — a gate that printed only a newline has
+	// said nothing.
+	if g.FailOnOutput && res.Status == StatusPass && strings.TrimSpace(string(output)) != "" {
+		res.Status = StatusFail
+		res.Reason = "gate exited 0 but produced output, which this gate reports as failure"
 	}
 	return res, nil
 }

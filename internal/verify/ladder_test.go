@@ -98,3 +98,32 @@ func TestFromProfilesRejectsUndeclaredSlot(t *testing.T) {
 		t.Fatal("expected error for slot with neither command nor discovery")
 	}
 }
+
+// The slot's fail-on-output must reach the gate on every path the
+// command can arrive by, above all the contract override: `pika init`
+// writes the pack's own hint into contract.commands, so for a scaffolded
+// repository the override IS the pack's command, and dropping the flag
+// there would restore the format gate that cannot fail. Slots without
+// the flag must not acquire it.
+func TestFromProfilesCarriesFailOnOutputOntoEveryCommandPath(t *testing.T) {
+	cs := profiles.CheckSet{
+		Format:    profiles.Check{ID: "format", Discovery: true, Hint: []string{"gofmt", "-l", "."}, FailOnOutput: true},
+		Lint:      profiles.Check{ID: "lint", Cmd: []string{"go", "vet", "./..."}},
+		Typecheck: profiles.Check{ID: "typecheck", Cmd: []string{"swift", "format", "lint"}, FailOnOutput: true},
+		Test:      profiles.Check{ID: "test", Discovery: true},
+		Smoke:     profiles.Check{ID: "smoke", Discovery: true},
+	}
+	gates, err := FromProfiles(cs, map[string]string{"format": "gofmt -l ."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gates[0].FailOnOutput {
+		t.Error("contract-overridden format gate lost the slot's fail-on-output")
+	}
+	if gates[1].FailOnOutput {
+		t.Error("lint gate acquired fail-on-output its slot never declared")
+	}
+	if !gates[2].FailOnOutput {
+		t.Error("pack-command typecheck gate lost the slot's fail-on-output")
+	}
+}
