@@ -84,13 +84,28 @@ func TestVersionIsNotHijackedFromFlagPosition(t *testing.T) {
 // printed the version and exited 0, silently doing nothing while
 // reporting success. improve's --branch and --agent are the binary's
 // first free-form string flags, which is what made the argv scan
-// exploitable. This test must not assert improve's own exit code (it
-// depends on git state and the Codex toolchain) — only that dispatch
-// reached improve instead of short-circuiting to the version.
+// exploitable.
+//
+// The test runs in an empty temp directory, and that is not incidental.
+// improve mutates whatever repository it resolves: without the chdir it
+// resolved the pika checkout the test binary was compiled from, created
+// a branch named "version" in it, and ran the contract's own test gate —
+// which is `go test ./...`, so the suite re-entered itself once pika
+// began governing pika. Standing in a directory that is not a project
+// makes the outcome depend on dispatch alone: improve cannot succeed
+// there, it names itself in its own output, and the version is never
+// printed.
 func TestImproveIsNotHijackedByAFlagValuedVersion(t *testing.T) {
-	_, out, _ := dispatchArgs(t, "improve", "--branch", "version")
+	t.Chdir(t.TempDir())
+	code, out, errb := dispatchArgs(t, "improve", "--branch", "version")
+	if code == 0 {
+		t.Fatalf("improve reported success in a directory with no project:\n%s", out)
+	}
 	if strings.TrimSpace(out) == version.String() {
 		t.Fatalf("dispatch printed the version instead of running improve: %q", out)
+	}
+	if !strings.Contains(out+errb, "improve") {
+		t.Fatalf("dispatch never reached improve; stdout %q stderr %q", out, errb)
 	}
 }
 

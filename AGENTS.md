@@ -63,6 +63,19 @@ fifteenth, prefer renaming.
 never fails a gate, and those warnings are deliberately left visible rather
 than excepted away.
 
+### Tests must be hermetic, and now it is enforced by consequence
+
+pika's contract runs `go test ./... -count=1` as its `test` gate. A test that
+resolves a repository root by discovery — no `--root`, no `t.Chdir` into a
+fixture — resolves **this** checkout, and any command it then runs re-enters
+the suite through the gate that started it. `TestImproveIsNotHijackedByAFlagValuedVersion`
+did exactly that: it created a branch named `version` in the working
+checkout and spawned the test gate recursively.
+
+Every test that invokes a command MUST pin its root: `t.Chdir(t.TempDir())`
+for in-process dispatch, or `cmd.Dir = <fixture>` / `--root <fixture>` for a
+spawned binary.
+
 ## Milestone delta
 
 `docs/reference/m1-5-delta.md` records what changed underneath users in
