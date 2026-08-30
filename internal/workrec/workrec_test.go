@@ -532,3 +532,79 @@ func TestRecordDoesNotShareItsPhaseSliceWithTheHandle(t *testing.T) {
 		t.Errorf("appends changed the handle's own record: len(Phases) = %d, want 1", n)
 	}
 }
+
+// TestSaveDoesNotAliasTheCallersPhaseSlice is the inbound half of the
+// invariant TestRecordDoesNotShareItsPhaseSliceWithTheHandle pins on the
+// way out. The lifecycle's read-modify-save loop keeps the record it
+// handed to Save in a local variable; if Save stored that value as-is,
+// the local would still share its Phases backing array with the handle's
+// cache. An in-place element write through that local — no reallocating
+// append to hide it — would then edit the handle's record without
+// touching record.json, and Record() would report the phantom edit as
+// durable with no error anywhere.
+func TestSaveDoesNotAliasTheCallersPhaseSlice(t *testing.T) {
+	root := testRoot(t)
+	const id = "20260830-durable-work-7f3a"
+	h := mustCreate(t, root, id)
+
+	rec := h.Record()
+	rec.Phases = append(rec.Phases, PhaseStamp{Phase: PhaseBaseline, At: time.Unix(1, 0).UTC()})
+	if err := h.Save(rec); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// The caller still holds rec. Editing an element in place must not
+	// reach the handle, which now speaks for what is on disk.
+	rec.Phases[0].Note = "scribbled after Save"
+	if got := h.Record().Phases[0].Note; got != "" {
+		t.Errorf("post-Save caller write reached the handle's cache: Phases[0].Note = %q, want empty", got)
+	}
+
+	// And the cache must still agree with record.json, which never saw
+	// the note.
+	reopened, err := Open(root, id)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if got := reopened.Record().Phases[0].Note; got != "" {
+		t.Errorf("on-disk record changed without a Save: Phases[0].Note = %q, want empty", got)
+	}
+}
+
+// TestSaveAdoptsCacheEvenWhenDirectorySyncFails pins the ordering inside
+// Save: the cache is adopted between the rename and the directory fsync.
+// The rename is the instant record.json becomes the new content, so once
+// it succeeds the cache must speak for the new record even if the fsync
+// then fails — that error says the rename may not survive a crash, not
+// that it did not happen. Moving the assignment after the fsync would
+// leave Record() reporting a phase the file has already moved past.
+func TestSaveAdoptsCacheEvenWhenDirectorySyncFails(t *testing.T) {
+	root := testRoot(t)
+	const id = "20260830-durable-work-7f3a"
+	h := mustCreate(t, root, id)
+
+	boom := errors.New("simulated fsync failure")
+	orig := syncDir
+	syncDir = func(string) error { return boom }
+	next := sampleRecord(id)
+	next.Phase = PhaseDeliver
+	next.Outcome = OutcomeComplete
+	err := h.Save(next)
+	syncDir = orig
+
+	if !errors.Is(err, boom) {
+		t.Fatalf("Save error = %v, want the directory fsync failure", err)
+	}
+	if got := h.Record(); got.Phase != PhaseDeliver || got.Outcome != OutcomeComplete {
+		t.Errorf("cache is stale after a committed rename: Phase = %q, Outcome = %q, want %q/%q",
+			got.Phase, got.Outcome, PhaseDeliver, OutcomeComplete)
+	}
+	// The rename did commit, so disk must agree with the cache.
+	reopened, err := Open(root, id)
+	if err != nil {
+		t.Fatalf("Open after failed fsync: %v", err)
+	}
+	if got := reopened.Record(); got.Phase != PhaseDeliver || got.Outcome != OutcomeComplete {
+		t.Errorf("record.json did not take the rename: %+v", got)
+	}
+}

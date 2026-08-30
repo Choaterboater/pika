@@ -253,7 +253,16 @@ func (h *Handle) Save(rec Record) error {
 	// still reported the previous phase — disagreeing with a file that has
 	// already moved on. The fsync error is still returned: it says the
 	// rename may not survive a crash, not that it did not happen.
+	// Phases is cloned on the way in, mirroring Record()'s clone on the
+	// way out. The caller of a read-modify-save loop keeps the record it
+	// passed here; without this copy that local would still share the
+	// backing array, and an in-place element write through it would edit
+	// the handle's record without touching record.json — a phantom edit
+	// Record() would then report as durable, with no error anywhere. One
+	// allocation per save buys an invariant that is otherwise invisible
+	// until it has already desynced the cache from disk.
 	h.rec = rec
+	h.rec.Phases = append([]PhaseStamp(nil), rec.Phases...)
 	if err := syncDir(h.dir); err != nil {
 		return fmt.Errorf("workrec: fsync run directory: %w", err)
 	}
