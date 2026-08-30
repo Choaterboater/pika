@@ -433,3 +433,274 @@ func TestApplyCommitFailureReportsRollbackFailure(t *testing.T) {
 		t.Errorf("applied contract is invalid: %v", err)
 	}
 }
+
+// The two kernel-owned core files, seeded with content the current pack
+// does not render: the state an operator lands in when their repository
+// was scaffolded by an older kernel whose template has since been
+// corrected.
+const (
+	staleCI = "# stale workflow from an older kernel\n"
+	stalePR = "## stale PR template from an older kernel\n"
+)
+
+func seedStaleKernelFiles(t *testing.T, root string) {
+	t.Helper()
+	writeFile(t, root, ".github/workflows/ci.yml", staleCI)
+	writeFile(t, root, ".github/pull_request_template.md", stalePR)
+}
+
+// appliedOp returns the reported operation kind for rel, or "" when the
+// report does not mention it.
+func appliedOp(rep Report, rel string) string {
+	for _, a := range rep.Applied {
+		if a.Path == rel {
+			return a.Op
+		}
+	}
+	return ""
+}
+
+// treeSnapshot maps every repository-relative path under root to a
+// digest of its content, so two snapshots name exactly which files a run
+// changed rather than only that something changed.
+func treeSnapshot(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(data)
+		out[filepath.ToSlash(rel)] = hex.EncodeToString(sum[:])
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// bookkeeping is the state apply maintains outside the operation plan:
+// the visible review bundle it rewrites after the commit, and the txn
+// journal and backups. Neither is a repository file the report is
+// accounting for.
+func bookkeeping(rel string) bool {
+	return rel == adopt.ReviewPath || strings.HasPrefix(rel, ".project/state/")
+}
+
+// renderedCore renders the core files exactly as init would for the
+// fixture's draft contract, which is what a refreshed kernel-owned file
+// must equal byte-for-byte.
+func renderedCore(t *testing.T, root string) map[string][]byte {
+	t.Helper()
+	draft, err := contract.Load(filepath.Join(root, ".project", "contract.yaml.draft"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	core, err := initcmd.CoreFiles("go", draft.Project.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return core
+}
+
+// TestApplyRefreshesAStaleKernelOwnedFile pins the kernel's half of the
+// ownership split: the PR template and the CI workflow encode how the
+// kernel wants to be run, so a copy left behind by an older kernel is a
+// defect the kernel corrects. Without this, a repository whose
+// scaffolded CI predates a template fix is told its lock is stale and
+// given no supported remedy.
+func TestApplyRefreshesAStaleKernelOwnedFile(t *testing.T) {
+	root := adoptionFixture(t)
+	seedStaleKernelFiles(t, root)
+
+	rep, err := Run(RunOptions{Dir: root})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	core := renderedCore(t, root)
+
+	for _, rel := range []string{".github/workflows/ci.yml", ".github/pull_request_template.md"} {
+		if got := readBytes(t, root, rel); !bytes.Equal(got, core[rel]) {
+			t.Errorf("%s was not refreshed:\ngot  %q\nwant %q", rel, got, core[rel])
+		}
+		if op := appliedOp(rep, rel); op != "write" {
+			t.Errorf("applied op for %s = %q, want %q", rel, op, "write")
+		}
+		if slices.Contains(skippedPaths(rep), rel) {
+			t.Errorf("%s reported as skipped although it was rewritten", rel)
+		}
+	}
+
+	// A refresh is a correction, not a reason to fail: the applied
+	// state still passes gate 1.
+	if !rep.Gate1.Pass {
+		t.Errorf("gate 1 failed after a refresh: %s", rep.Gate1.Output)
+	}
+}
+
+// TestApplyKernelOwnedFileAlreadyCurrentIsNotRewritten pins the other
+// half: a kernel-owned file that already matches the rendered template
+// is left alone and reported as such. A refresh the operator can see is
+// the point; a write op for identical bytes is noise.
+func TestApplyKernelOwnedFileAlreadyCurrentIsNotRewritten(t *testing.T) {
+	root := adoptionFixture(t)
+	// Seed both kernel-owned files with exactly what the pack renders.
+	core, err := initcmd.CoreFiles("go", "happy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{".github/workflows/ci.yml", ".github/pull_request_template.md"} {
+		writeFile(t, root, rel, string(core[rel]))
+	}
+
+	rep, err := Run(RunOptions{Dir: root})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	for _, rel := range []string{".github/workflows/ci.yml", ".github/pull_request_template.md"} {
+		if slices.Contains(appliedPaths(rep), rel) {
+			t.Errorf("%s reported as applied although it already matched the template", rel)
+		}
+		if !slices.Contains(skippedPaths(rep), rel) {
+			t.Errorf("skipped = %v, want %s reported as already current", rep.Skipped, rel)
+		}
+	}
+}
+
+// TestApplyNeverTouchesAnOperatorOwnedFile is the guard on the refresh:
+// README.md, AGENTS.md, CONTRIBUTING.md and go.mod are the operator's
+// the moment they exist. go.mod in particular carries the repository's
+// dependency graph, and the kernel must never rewrite it.
+func TestApplyNeverTouchesAnOperatorOwnedFile(t *testing.T) {
+	root := adoptionFixture(t)
+	operator := map[string]string{
+		"README.md":       "# happy\n\nMy own words, nothing like the scaffold.\n",
+		"AGENTS.md":       "# my own agent notes\n",
+		"CONTRIBUTING.md": "# how we actually contribute\n",
+		"go.mod":          "module example.com/happy\n\ngo 1.26\n\nrequire example.com/dep v1.2.3\n",
+	}
+	for rel, content := range operator {
+		writeFile(t, root, rel, content)
+	}
+	// Stale kernel-owned files too: the refresh must not become a
+	// licence to rewrite the neighbours.
+	seedStaleKernelFiles(t, root)
+
+	rep, err := Run(RunOptions{Dir: root})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	for rel, want := range operator {
+		if got := string(readBytes(t, root, rel)); got != want {
+			t.Errorf("%s was rewritten:\ngot  %q\nwant %q", rel, got, want)
+		}
+		if slices.Contains(appliedPaths(rep), rel) {
+			t.Errorf("%s reported as applied; operator-owned files are create-if-missing", rel)
+		}
+	}
+	for _, rel := range []string{"README.md", "AGENTS.md", "CONTRIBUTING.md"} {
+		if !slices.Contains(skippedPaths(rep), rel) {
+			t.Errorf("skipped = %v, want %s kept and reported", rep.Skipped, rel)
+		}
+	}
+}
+
+// TestApplyReportsEveryRefresh pins the visibility contract by
+// construction rather than by enumeration: every repository file apply
+// changed, added or removed must appear in the report. A silent kernel
+// rewrite is indistinguishable from an operator's own edit.
+func TestApplyReportsEveryRefresh(t *testing.T) {
+	root := adoptionFixture(t)
+	seedStaleKernelFiles(t, root)
+	before := treeSnapshot(t, root)
+
+	rep, err := Run(RunOptions{Dir: root})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	after := treeSnapshot(t, root)
+
+	reported := map[string]bool{}
+	for _, a := range rep.Applied {
+		reported[a.Path] = true
+	}
+	for rel, sum := range after {
+		if bookkeeping(rel) || before[rel] == sum {
+			continue
+		}
+		if !reported[rel] {
+			t.Errorf("apply changed %s without reporting it: applied = %v", rel, rep.Applied)
+		}
+	}
+	for rel := range before {
+		if bookkeeping(rel) {
+			continue
+		}
+		if _, ok := after[rel]; !ok && !reported[rel] {
+			t.Errorf("apply removed %s without reporting it: applied = %v", rel, rep.Applied)
+		}
+	}
+	// The refreshes are genuinely in there — the loops above would also
+	// pass on a run that changed nothing.
+	for _, rel := range []string{".github/workflows/ci.yml", ".github/pull_request_template.md"} {
+		if !reported[rel] {
+			t.Errorf("report is missing the refresh of %s: applied = %v", rel, rep.Applied)
+		}
+	}
+}
+
+// TestApplyRefreshRollsBackWithTheTransaction pins that a refresh goes
+// through the transactional path rather than around it: an injected
+// failure after the whole plan has been applied must restore the stale
+// bytes the refresh overwrote. A rewrite that cannot roll back is a
+// worse failure than a stale template.
+func TestApplyRefreshRollsBackWithTheTransaction(t *testing.T) {
+	root := adoptionFixture(t)
+	seedStaleKernelFiles(t, root)
+	before := treeDigest(t, root)
+
+	// failAfter past the end of the plan applies every operation — both
+	// kernel-owned refreshes included — and then fails, so the undo has
+	// to restore what the writes overwrote, not merely remove creates.
+	rep, err := Run(RunOptions{Dir: root, failAfter: 99})
+	if err == nil {
+		t.Fatal("injected failure: want error, got nil")
+	}
+	if !rep.Rollback {
+		t.Errorf("report.Rollback = false, want true (err = %v)", err)
+	}
+	if got := string(readBytes(t, root, ".github/workflows/ci.yml")); got != staleCI {
+		t.Errorf("ci.yml after rollback = %q, want the stale pre-state %q", got, staleCI)
+	}
+	if got := string(readBytes(t, root, ".github/pull_request_template.md")); got != stalePR {
+		t.Errorf("PR template after rollback = %q, want the stale pre-state %q", got, stalePR)
+	}
+	if after := treeDigest(t, root); after != before {
+		t.Error("rollback did not restore the byte-identical pre-state")
+	}
+
+	// The assertions above would also hold if the refresh had never
+	// entered the plan, so prove it did: with the pre-state restored,
+	// the same drafts apply cleanly and the writes happen for real.
+	rep, err = Run(RunOptions{Dir: root})
+	if err != nil {
+		t.Fatalf("apply after rollback: %v", err)
+	}
+	for _, rel := range []string{".github/workflows/ci.yml", ".github/pull_request_template.md"} {
+		if op := appliedOp(rep, rel); op != "write" {
+			t.Errorf("applied op for %s = %q, want %q — the rolled-back run had nothing to undo", rel, op, "write")
+		}
+	}
+}

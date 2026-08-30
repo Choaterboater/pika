@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/Choaterboater/pika/internal/authorize"
+	"github.com/Choaterboater/pika/internal/checks"
+	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/repopath"
 )
@@ -341,7 +344,7 @@ func TestInitializeToolsListAndRoundtrip(t *testing.T) {
 		}
 	}
 
-	// tools/call inspect_repo — fail-open read tool.
+	// tools/call inspect_repo — a read, authorized by the fixture's envelope.
 	res = wantResult(t, s.callTool(3, "inspect_repo", nil))
 	inv, ok := res["data"].(map[string]any)["inventory"].(map[string]any)
 	if !ok {
@@ -452,24 +455,24 @@ func TestPublishEvidenceRefusesToOverwriteAnExistingReceipt(t *testing.T) {
 	}
 }
 
-func TestFailOpenReadsFailClosedMutations(t *testing.T) {
-	// No envelope file at all, but a valid contract for the read tools.
+// TestEveryToolIsFailClosedWithoutAnEnvelope pins the whole MCP surface,
+// reads included, as deny-by-default. Reads were fail-open through M2;
+// they are not any more. An agent enumerating a repository before the
+// operator has authorized anything is a capability, not a neutral act,
+// and "reads are exempt when no policy exists" is what makes an envelope
+// feel optional. The remedy is one command: `pika authorize --scope read`.
+func TestEveryToolIsFailClosedWithoutAnEnvelope(t *testing.T) {
+	// No envelope file at all, but a valid contract, so nothing but the
+	// missing envelope can explain a denial.
 	root := fixtureRepo(t, minContract, "")
 	s := startServer(t, root)
 	s.initialize()
 
-	// Fail-open reads: these touch nothing outside the repository.
-	if resp := s.callTool(1, "inspect_repo", nil); resp["result"] == nil {
-		t.Fatalf("inspect_repo must work without an envelope, got %v", resp)
-	}
-	if resp := s.callTool(2, "read_contract", nil); resp["result"] == nil {
-		t.Fatalf("read_contract must work without an envelope, got %v", resp)
-	}
-
-	// Fail-closed effects. run_checks belongs here, not above: it reads
-	// the repository but spawns the contract's commands, and this
-	// contract's test gate is a real argv.
-	for i, name := range []string{"preview_plan", "run_checks", "acquire_scope", "release_scope", "publish_evidence", "propose_decision", "record_sources"} {
+	for i, name := range []string{
+		"inspect_repo", "read_contract",
+		"preview_plan", "run_checks", "acquire_scope", "release_scope",
+		"publish_evidence", "propose_decision", "record_sources",
+	} {
 		resp := s.callTool(10+i, name, toolArgs(name))
 		wantToolError(t, resp, "envelope_denied")
 	}
@@ -803,7 +806,7 @@ func TestRunChecksNeedsNoExecGrantForInProcessGates(t *testing.T) {
 
 func TestReadContractIncludesResolvedProfiles(t *testing.T) {
 	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\nextensions: {}\n"
-	root := fixtureRepo(t, contract, "")
+	root := fixtureRepo(t, contract, envelopeYAML(".project"))
 	s := startServer(t, root)
 	s.initialize()
 
@@ -823,18 +826,35 @@ func TestReadContractIncludesResolvedProfiles(t *testing.T) {
 	}
 }
 
+// TestReadContractRejectsPathTraversal keeps the guarantee that no
+// argument can pull content from outside the repository back through the
+// tool. The stable code for those paths is now envelope_denied rather
+// than invalid_params: since M3 the envelope is asked about the target
+// the caller named, and an out-of-repo read is a denial, not a malformed
+// argument. The last case is the one that is still invalid_params — an
+// absolute path *inside* the repository is a permitted read that this
+// tool nonetheless cannot resolve, because it joins repo-relative paths
+// onto repoRoot and nothing else.
 func TestReadContractRejectsPathTraversal(t *testing.T) {
 	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\nextensions: {}\n"
-	root := fixtureRepo(t, contract, "")
+	root := fixtureRepo(t, contract, envelopeYAML(".project"))
 	// A secret outside any contract location: even if the tool read it, no
 	// content may come back through a path argument.
 	writeFile(t, root, ".ssh/id_rsa", "SECRET-KEY-MATERIAL")
 	s := startServer(t, root)
 	s.initialize()
 
-	for _, path := range []string{"../../.ssh/id_rsa", ".contracts/../../etc/passwd", "/etc/passwd"} {
-		resp := s.callTool(1, "read_contract", map[string]any{"path": path})
-		errObj := wantToolError(t, resp, "invalid_params")
+	cases := map[string]string{
+		"../../.ssh/id_rsa":                              "envelope_denied",
+		".contracts/../../etc/passwd":                    "envelope_denied",
+		"/etc/passwd":                                    "envelope_denied",
+		filepath.Join(root, ".project", "contract.yaml"): "invalid_params",
+	}
+	id := 0
+	for path, wantCode := range cases {
+		id++
+		resp := s.callTool(id, "read_contract", map[string]any{"path": path})
+		errObj := wantToolError(t, resp, wantCode)
 		if msg, _ := errObj["message"].(string); strings.Contains(msg, "SECRET-KEY-MATERIAL") {
 			t.Fatalf("path %q leaked file contents", path)
 		}
@@ -842,12 +862,101 @@ func TestReadContractRejectsPathTraversal(t *testing.T) {
 }
 
 func TestReadContractMissingContractCode(t *testing.T) {
-	root := fixtureRepo(t, "", "")
+	root := fixtureRepo(t, "", envelopeYAML(".project"))
 	s := startServer(t, root)
 	s.initialize()
 
 	resp := s.callTool(1, "read_contract", nil)
 	wantToolError(t, resp, "contract_invalid")
+}
+
+// TestReadPathsAreAuthorized pins the M3 fs_read call sites: inspect_repo
+// walks the tree, read_contract loads a caller-supplied path, and both
+// ask the envelope first.
+//
+// What this does NOT do is narrow which reads are permitted.
+// envelope.Allow has no fs_read field and allowsRead implements a
+// repo-inside default, so any valid envelope permits any in-repo read.
+// The new failure mode is the absence of an envelope, and a target
+// outside the repository. That is a requirement to declare policy, not a
+// tightening of read scope, and the assertions below say exactly that.
+func TestReadPathsAreAuthorized(t *testing.T) {
+	root := fixtureRepo(t, minContract, "")
+	// A secret outside any contract location; nothing may return it.
+	writeFile(t, root, ".ssh/id_rsa", "SECRET-KEY-MATERIAL")
+	// The real artifact `pika authorize --scope read` writes: the
+	// operator remedy has to be the thing that actually unblocks reads,
+	// not a fixture invented to satisfy the assertion. It grants no
+	// fs_write and no exec at all.
+	writeGeneratedEnvelope(t, root, authorize.ScopeRead)
+	s := startServer(t, root)
+	s.initialize()
+
+	// Permitted reads still succeed under the narrowest real envelope.
+	if res := wantResult(t, s.callTool(1, "inspect_repo", nil)); res["data"] == nil {
+		t.Fatalf("inspect_repo under a read-scope envelope: %v", res)
+	}
+	if res := wantResult(t, s.callTool(2, "read_contract", nil)); res["data"] == nil {
+		t.Fatalf("read_contract under a read-scope envelope: %v", res)
+	}
+	// An in-repo path the caller names explicitly is still permitted:
+	// the grant is the repository, not one blessed filename.
+	if res := wantResult(t, s.callTool(3, "read_contract", map[string]any{"path": ".project/contract.yaml"})); res["data"] == nil {
+		t.Fatalf("read_contract of an explicit in-repo path: %v", res)
+	}
+
+	// A read outside the granted scope is denied, and denied by the
+	// envelope rather than by a later argument check.
+	for id, path := range map[int]string{4: "../../.ssh/id_rsa", 5: "/etc/passwd"} {
+		errObj := wantToolError(t, s.callTool(id, "read_contract", map[string]any{"path": path}), "envelope_denied")
+		msg, _ := errObj["message"].(string)
+		if !strings.Contains(msg, "fs_read") {
+			t.Errorf("denial for %q does not name the kind: %q", path, msg)
+		}
+		if strings.Contains(msg, "SECRET-KEY-MATERIAL") {
+			t.Fatalf("path %q leaked file contents", path)
+		}
+	}
+
+	// Same repository, envelope removed: the reads that just succeeded
+	// are now denied. Nothing else changed.
+	if err := os.Remove(filepath.Join(root, ".project", "state", "envelope.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	wantToolError(t, s.callTool(6, "inspect_repo", nil), "envelope_denied")
+	wantToolError(t, s.callTool(7, "read_contract", nil), "envelope_denied")
+}
+
+// TestHumanCLIStillNeedsNoEnvelope pins the other half of the asymmetry.
+// M3 made the MCP read path fail-closed; the human path must not have
+// moved with it. `pika check` runs its own gates in the operator's own
+// shell and consults no envelope — the operator authorized themselves by
+// typing the command. Both directions are asserted against one
+// repository, with no envelope on disk, so neither can drift alone.
+func TestHumanCLIStillNeedsNoEnvelope(t *testing.T) {
+	root := fixtureRepo(t, minContract, "")
+	if _, err := os.Stat(filepath.Join(root, ".project", "state", "envelope.yaml")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("fixture must have no envelope: stat err %v", err)
+	}
+
+	// Agent path: denied.
+	s := startServer(t, root)
+	s.initialize()
+	wantToolError(t, s.callTool(1, "read_contract", nil), "envelope_denied")
+
+	// Human path: rung 1 of the same ladder `pika check` runs, over the
+	// same contract and lock, with no envelope anywhere in the call.
+	c, err := contract.Load(filepath.Join(root, ".project", "contract.yaml"))
+	if err != nil {
+		t.Fatalf("contract.Load: %v", err)
+	}
+	resolved, err := profiles.Resolve(c.Profiles)
+	if err != nil {
+		t.Fatalf("profiles.Resolve: %v", err)
+	}
+	if exit, output, _ := checks.Gate1(root, c, resolved); exit != 0 {
+		t.Fatalf("pika check's contract gate needs no envelope, got exit %d:\n%s", exit, output)
+	}
 }
 
 func TestStableProtocolErrorCodes(t *testing.T) {
@@ -934,6 +1043,55 @@ func TestCleanShutdownOnEOF(t *testing.T) {
 	s := startServer(t, root)
 	s.initialize()
 	// Closing stdin (session cleanup) must make Serve return nil.
+}
+
+// TestBoardAppendsAreRedacted pins that the state board is redacted at
+// the instant it is written. Every string on it came from an agent, and
+// an agent pastes what it was looking at — a failing command line, an
+// environment dump. board.jsonl is append-only local state, so a secret
+// that lands there stays there.
+func TestBoardAppendsAreRedacted(t *testing.T) {
+	const (
+		oauthKey  = "sk-ant-api03-abcdefghij0123456789ABCDE"
+		githubPAT = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+		pemHeader = "-----BEGIN RSA PRIVATE KEY-----"
+	)
+	root := fixtureRepo(t, "", envelopeYAML(".project", "src"))
+	s := startServer(t, root)
+	s.initialize()
+
+	wantResult(t, s.callTool(1, "propose_decision", map[string]any{
+		"title":     "rotate the deploy key " + githubPAT,
+		"rationale": "the old one leaked:\n" + pemHeader,
+	}))
+	wantResult(t, s.callTool(2, "record_sources", map[string]any{
+		"sources": []any{"vault entry " + oauthKey, "docs/keys.md"},
+	}))
+	wantResult(t, s.callTool(3, "acquire_scope", map[string]any{"path": "src"}))
+
+	bs, err := os.ReadFile(filepath.Join(root, ".project", "state", "board.jsonl"))
+	if err != nil {
+		t.Fatalf("board.jsonl: %v", err)
+	}
+	board := string(bs)
+	for _, secret := range []string{oauthKey, githubPAT, pemHeader} {
+		if strings.Contains(board, secret) {
+			t.Errorf("board.jsonl still carries %q:\n%s", secret, board)
+		}
+	}
+	// Redacted, not gutted: the board is what a later agent reads to
+	// learn what was decided, so the prose around the placeholder has to
+	// survive.
+	for _, keep := range []string{"rotate the deploy key ", "docs/keys.md", `"path":"src"`} {
+		if !strings.Contains(board, keep) {
+			t.Errorf("board.jsonl lost %q:\n%s", keep, board)
+		}
+	}
+	for _, kind := range []string{"<redacted:oauth>", "<redacted:github-token>", "<redacted:pem-header>"} {
+		if !strings.Contains(board, kind) {
+			t.Errorf("board.jsonl is missing %s:\n%s", kind, board)
+		}
+	}
 }
 
 // toolArgs returns minimal valid arguments per tool for the fail-closed test.

@@ -1,8 +1,9 @@
 // Package authorize generates a capability envelope from a declared
 // intent. Before it, an operator had to hand-author
-// .project/state/envelope.yaml or every mutating MCP tool returned
+// .project/state/envelope.yaml or every MCP tool returned
 // envelope_denied — the single largest barrier to handing pika to an
-// agent.
+// agent. Since M3 that includes the read tools, so `authorize --scope
+// read` is the smallest envelope that makes an MCP session usable.
 //
 // The generated document is deliberately narrow. A scope grants writes
 // and nothing else; network, credential, and GitHub access are granted

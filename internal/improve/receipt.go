@@ -197,6 +197,12 @@ func loadProfileLock(root *repopath.Root) (evidence.ProfileLockInput, error) {
 // run produced. They are read back from Git rather than carried over
 // from the run's own bookkeeping: the receipt states what the repository
 // contains, not what the run believed it committed.
+//
+// The name list is NUL-delimited for the same reason the status is:
+// without `-z`, Git C-quotes any path holding a non-ASCII byte,
+// whitespace or a control character, and the receipt would attest
+// `"src/caf\303\251.go"` — a path that is not in the commit and does not
+// exist — as a file the agent changed.
 func delivered(ctx context.Context, root, commit string) (string, []evidence.ChangedFileInput, error) {
 	if commit == "" {
 		return "", nil, nil
@@ -205,13 +211,13 @@ func delivered(ctx context.Context, root, commit string) (string, []evidence.Cha
 	if err != nil {
 		return "", nil, err
 	}
-	names, err := gitValue(ctx, root, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit)
+	names, err := gitPorcelain(ctx, root, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", commit)
 	if err != nil {
 		return "", nil, err
 	}
 	var changed []evidence.ChangedFileInput
-	for _, name := range strings.Split(names, "\n") {
-		if name = strings.TrimSpace(name); name != "" {
+	for _, name := range strings.Split(names, "\x00") {
+		if name != "" {
 			changed = append(changed, evidence.ChangedFileInput{Path: name, Ownership: receiptOwnership})
 		}
 	}

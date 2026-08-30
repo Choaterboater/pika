@@ -7,16 +7,16 @@
 // Tool results use the {ok, data?, error?{code,message}} envelope with
 // stable error codes. tools/call failures keep the protocol layer healthy:
 // the stable envelope rides in error.data, never as a process exit. Every
-// tool that mutates the filesystem or spawns a process checks the
-// capability envelope (.project/state/envelope.yaml) first — a missing or
-// invalid envelope denies (fail-closed). Tools that only read the
-// repository stay fail-open. The asymmetry with `pika check`, which a
-// human runs in their own shell and which therefore needs no envelope, is
+// tool checks the capability envelope (.project/state/envelope.yaml)
+// before it acts — reads included — so a missing or invalid envelope
+// denies (fail-closed). The asymmetry with `pika check`, which a human
+// runs in their own shell and which therefore needs no envelope, is
 // deliberate: an agent is authorized, an operator authorizes.
 package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,6 +36,7 @@ import (
 	"github.com/Choaterboater/pika/internal/envelope"
 	"github.com/Choaterboater/pika/internal/evidence"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/redact"
 	"github.com/Choaterboater/pika/internal/verify"
 	"github.com/Choaterboater/pika/internal/version"
 )
@@ -354,9 +355,13 @@ func paramsError(format string, args ...any) *rpcError {
 
 // --- tool handlers ---
 
-// toolInspectRepo implements inspect_repo: the discovery inventory.
-// Read-only and fail-open without an envelope.
+// toolInspectRepo implements inspect_repo: the discovery inventory. The
+// walk covers the whole tree, so it is authorized as one fs_read of the
+// repository root before discovery starts.
 func (s *server) toolInspectRepo(_ json.RawMessage) (map[string]any, *toolError) {
+	if terr := s.authorize(envelope.KindFSRead, "."); terr != nil {
+		return nil, terr
+	}
 	inv, err := discover.Discover(s.repoRoot)
 	if err != nil {
 		return nil, toolErrf(errInternal, "discover: %v", err)
@@ -375,15 +380,25 @@ func (s *server) toolReadContract(args json.RawMessage) (map[string]any, *toolEr
 	}
 	path := contractPath
 	if params.Path != "" {
-		// The path argument must name a file inside the repository: reads
-		// stay inside the repo root, so no argument can exfiltrate files
-		// from outside it.
-		rel, err := contract.NormalizeRepoPath(params.Path)
-		if err != nil {
-			return nil, toolErrf(errInvalidParams, "read_contract path: %v", err)
-		}
-		path = rel
+		path = params.Path
 	}
+	// The envelope is asked about the path the caller named, before any
+	// normalization. Normalizing first would hand allowsRead a target
+	// already proved repo-inside, and the check could then never deny
+	// anything — an authorization that cannot fail is decoration.
+	if terr := s.authorize(envelope.KindFSRead, path); terr != nil {
+		return nil, terr
+	}
+	// Both bounds are kept. allowsRead answers the policy question and
+	// NormalizeRepoPath answers the shape question, and they do not
+	// overlap completely: an absolute path *inside* the repository
+	// satisfies allowsRead and is still rejected here, because the tool
+	// joins repo-relative paths onto repoRoot and nothing else.
+	rel, err := contract.NormalizeRepoPath(path)
+	if err != nil {
+		return nil, toolErrf(errInvalidParams, "read_contract path: %v", err)
+	}
+	path = rel
 	c, err := contract.Load(filepath.Join(s.repoRoot, filepath.FromSlash(path)))
 	if err != nil {
 		return nil, toolErrf(errContractInvalid, "%v", err)
@@ -853,8 +868,30 @@ func (s *server) authorize(kind, target string) *toolError {
 // single-writer — the MCP server processes requests sequentially — so the
 // append is an unlocked file append; the M2 coordination board replaces
 // this file.
+//
+// Every value is redacted on the way in, the same treatment evidence.Build
+// gives every string it emits. Board records are assembled from agent-
+// supplied arguments — a decision title, a rationale, a list of sources —
+// and an agent writes down what it was looking at, which is sometimes a
+// failing command line or an environment dump. The board is append-only,
+// so a credential that lands on it stays on it.
+//
+// This is defence in depth on purpose. board.jsonl lives under
+// .project/state/, which is gitignored and filtered out of anything the
+// kernel publishes — but that guarantee is one prefix test against a
+// path, and that test has already been wrong twice. Redacting at the
+// point of writing means the next filter bug leaks placeholders. Do not
+// remove this because the filter already covers it; the filter is what
+// this is insurance against.
 func (s *server) appendBoard(record map[string]any) error {
-	record["ts"] = time.Now().UTC().Format(time.RFC3339)
+	// Keys are kernel literals ("type", "title", …), never agent input,
+	// so only values are redacted; a placeholder in a key would change
+	// the record's shape rather than protect anything.
+	redacted := make(map[string]any, len(record)+1)
+	for k, v := range record {
+		redacted[k] = redactValue(v)
+	}
+	redacted["ts"] = time.Now().UTC().Format(time.RFC3339)
 	path := filepath.Join(s.repoRoot, filepath.FromSlash(boardPath))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -864,12 +901,52 @@ func (s *server) appendBoard(record map[string]any) error {
 		return err
 	}
 	defer f.Close()
-	line, err := json.Marshal(record)
-	if err != nil {
+	// HTML escaping is off: json.Marshal would write the redaction
+	// placeholders as "\u003credacted:oauth\u003e", which parses the same
+	// but is unreadable on a board a human or an agent reads back as
+	// text. Nothing here is ever interpolated into HTML. The line is
+	// built in memory first, so a marshal failure cannot leave a partial
+	// record on an append-only file.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	// Encode already terminates the line with a newline.
+	if err := enc.Encode(redacted); err != nil {
 		return err
 	}
-	_, err = f.Write(append(line, '\n'))
+	_, err = f.Write(buf.Bytes())
 	return err
+}
+
+// redactValue returns v with every string it contains, at any depth, run
+// through redact.Apply. It recurses so a record added later cannot slip
+// an unredacted string past appendBoard by nesting it; non-string leaves
+// (numbers, bools) are returned as they are.
+func redactValue(v any) any {
+	switch t := v.(type) {
+	case string:
+		return redact.Apply(t)
+	case []string:
+		out := make([]string, len(t))
+		for i, s := range t {
+			out[i] = redact.Apply(s)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = redactValue(e)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			out[k] = redactValue(e)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // respond writes exactly one JSON-RPC response line. A response that cannot

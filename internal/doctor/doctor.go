@@ -149,9 +149,11 @@ func checkEnvelope(rep *Report, root *repopath.Root) *envelope.Envelope {
 	path := root.Envelope()
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		// A warning, not an error: `pika check` never needs an envelope.
-		// Only the mutating MCP tools do.
+		// The MCP surface always does — every tool, reads included since
+		// M3, so an agent cannot even inventory the repository until the
+		// operator has declared a policy.
 		rep.add("envelope", SeverityWarn, "no capability envelope at "+path,
-			"run \"pika authorize --scope project\"; without it every mutating MCP tool is denied")
+			"run \"pika authorize --scope project\"; without it every MCP tool is denied, reads included")
 		return nil
 	}
 	env, err := envelope.Load(root.Dir(), path)

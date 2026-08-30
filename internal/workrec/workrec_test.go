@@ -608,3 +608,138 @@ func TestSaveAdoptsCacheEvenWhenDirectorySyncFails(t *testing.T) {
 		t.Errorf("record.json did not take the rename: %+v", got)
 	}
 }
+
+// Credential-shaped literals used by the redaction tests. Each one is
+// long enough to satisfy its rule's minimum, so a test that stops
+// failing because a pattern was loosened is not silently passing on a
+// string that never matched.
+const (
+	fakeOAuthKey  = "sk-ant-api03-abcdefghij0123456789ABCDE"
+	fakeGitHubPAT = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	fakePEMHeader = "-----BEGIN RSA PRIVATE KEY-----"
+)
+
+// diskBytes returns the raw record.json bytes for a run. The redaction
+// tests assert on these and never on a returned struct: the threat is a
+// secret at rest in .project/state, so the file is the only witness that
+// settles it.
+func diskBytes(t *testing.T, h *Handle) string {
+	t.Helper()
+	bs, err := os.ReadFile(filepath.Join(h.Dir(), "record.json"))
+	if err != nil {
+		t.Fatalf("read record.json: %v", err)
+	}
+	return string(bs)
+}
+
+func assertNoSecrets(t *testing.T, what, got string) {
+	t.Helper()
+	for _, secret := range []string{fakeOAuthKey, fakeGitHubPAT, fakePEMHeader} {
+		if strings.Contains(got, secret) {
+			t.Errorf("%s still carries %q:\n%s", what, secret, got)
+		}
+	}
+}
+
+// TestRecordRedactsTheGoal pins that the operator's goal is redacted at
+// the instant it is written. The goal is free text an operator typed or
+// pasted, and record.json lives in .project/state — local, but one
+// filter bug away from a bundle or a history file.
+func TestRecordRedactsTheGoal(t *testing.T) {
+	root := testRoot(t)
+	const id = "20260830-durable-work-7f3a"
+	rec := sampleRecord(id)
+	rec.Goal = "rotate " + fakeOAuthKey + " and " + fakeGitHubPAT + "\n" + fakePEMHeader
+	rec.Reason = "blocked on " + fakeGitHubPAT
+	rec.Phases = []PhaseStamp{{Phase: PhaseBaseline, At: time.Now().UTC(), Note: "saw " + fakeOAuthKey}}
+
+	h, err := Create(root, rec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	on := diskBytes(t, h)
+	assertNoSecrets(t, "record.json", on)
+	if !strings.Contains(on, "<redacted:oauth>") || !strings.Contains(on, "<redacted:github-token>") || !strings.Contains(on, "<redacted:pem-header>") {
+		t.Errorf("record.json is missing the placeholders that replace the secrets:\n%s", on)
+	}
+}
+
+// TestRecordRedactsGateOutput covers the larger surface: the baseline and
+// recheck reports carry every gate's captured stdout/stderr, which is
+// whatever a build or test process happened to print — the one field in
+// the record that no human reviewed before it was written.
+func TestRecordRedactsGateOutput(t *testing.T) {
+	root := testRoot(t)
+	const id = "20260830-durable-work-7f3a"
+	h := mustCreate(t, root, id)
+
+	rec := sampleRecord(id)
+	rec.Phase = PhaseRecheck
+	rec.Baseline = &verify.Report{
+		Gates: []verify.GateResult{{
+			ID:         "test",
+			Cmd:        []string{"curl", "-H", "Authorization: Bearer " + fakeGitHubPAT},
+			Exit:       1,
+			OutputTail: "FAIL: config had " + fakeOAuthKey + "\n" + fakePEMHeader + "\n",
+			Status:     verify.StatusFail,
+			Reason:     "exited with " + fakeGitHubPAT,
+		}},
+		Baseline:    []verify.Failure{{Gate: "test", Detail: "output:\n" + fakeOAuthKey}},
+		Regressions: []verify.Failure{{Gate: "test", Detail: fakePEMHeader}},
+		Warnings:    []string{"stray token " + fakeGitHubPAT},
+	}
+	rec.Recheck = &verify.Report{
+		Gates: []verify.GateResult{{ID: "test", OutputTail: "ok " + fakeOAuthKey, Status: verify.StatusPass}},
+	}
+	if err := h.Save(rec); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	assertNoSecrets(t, "record.json", diskBytes(t, h))
+
+	// Redaction must not reach back into the caller's report: the
+	// lifecycle holds the same *verify.Report it just rendered to the
+	// terminal, and a save is not allowed to rewrite it.
+	if got := rec.Baseline.Gates[0].OutputTail; !strings.Contains(got, fakeOAuthKey) {
+		t.Errorf("Save mutated the caller's report: OutputTail = %q", got)
+	}
+}
+
+// TestRedactedRecordIsStillUsable is the other half of the contract.
+// Redaction that ate the record would be a safe way to break `pika
+// status` and `pika resume`: the record must still parse, still name the
+// world the run belongs to, and still read as the operator's sentence
+// with only the credential-shaped span replaced.
+func TestRedactedRecordIsStillUsable(t *testing.T) {
+	root := testRoot(t)
+	const id = "20260830-durable-work-7f3a"
+	rec := sampleRecord(id)
+	rec.Goal = "make the ladder green after rotating " + fakeOAuthKey
+	rec.Baseline = &verify.Report{
+		Gates: []verify.GateResult{{ID: "test", OutputTail: "--- FAIL: TestThing (0.01s)\n    thing_test.go:12: want 3, got 4\n", Status: verify.StatusFail}},
+	}
+
+	h, err := Create(root, rec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	reopened, err := Open(root, id)
+	if err != nil {
+		t.Fatalf("Open a redacted record: %v", err)
+	}
+	got := reopened.Record()
+	if got.WorkID != id || got.Branch != rec.Branch || got.Kind != rec.Kind || got.Phase != rec.Phase {
+		t.Fatalf("redaction damaged the record's identity: %+v", got)
+	}
+	if want := "make the ladder green after rotating <redacted:oauth>"; got.Goal != want {
+		t.Errorf("goal = %q, want %q", got.Goal, want)
+	}
+	if len(got.Baseline.Gates) != 1 || !strings.Contains(got.Baseline.Gates[0].OutputTail, "want 3, got 4") {
+		t.Errorf("gate output stopped being readable: %+v", got.Baseline)
+	}
+	// The handle's cache is what `pika status` reads inside the process
+	// that wrote the record; it must be the same text the next process
+	// will read back off disk.
+	if cached := h.Record(); cached.Goal != got.Goal {
+		t.Errorf("cached goal %q disagrees with record.json %q", cached.Goal, got.Goal)
+	}
+}

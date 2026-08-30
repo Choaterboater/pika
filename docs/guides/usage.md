@@ -262,7 +262,7 @@ ok    contract       schema 1, profiles [core@1 go@1]
 ok    lock           pinned digests match the embedded registry
 ok    exceptions     exceptions record loads
 warn  envelope       no capability envelope at /home/you/pika/.project/state/envelope.yaml
-                     → run "pika authorize --scope project"; without it every mutating MCP tool is denied
+                     → run "pika authorize --scope project"; without it every MCP tool is denied, reads included
 ok    recovery       no interrupted transaction
 ok    gate.format    gofmt -l .
 ok    gate.lint      go vet ./...
@@ -394,7 +394,7 @@ rollback_boundary: repository
 
 `.project/state/envelope.yaml` is **written at mode 0600, lives under the gitignored `.project/state/`, and is never committed.** It records what *you* have authorized on *this* machine; it is not a project-level policy others inherit. Re-running `authorize` on an existing envelope tightens the file back to 0600 and, unless `--force` is given, prints the delta and refuses rather than silently widening or narrowing what an agent may do.
 
-`budget` is deliberately never written. No code in the binary compares spend against a ceiling, and a ceiling nothing enforces is a lie in a file whose entire job is to be true. `network`, `credential`, `github` and `fs_read` are written when you ask for them but have no enforcement call site yet — see [../reference/m1-5-delta.md](../reference/m1-5-delta.md). M2 did not change this; the table is restated in [../reference/m2-delta.md](../reference/m2-delta.md#6-still-true-from-m15-envelope-enforcement-did-not-move) so nothing that milestone added is read as having widened it.
+`budget` is deliberately never written. No code in the binary compares spend against a ceiling, and a ceiling nothing enforces is a lie in a file whose entire job is to be true. `network`, `credential` and `github` are written when you ask for them but have no enforcement call site — and cannot get one, because pika performs no operation of any of those classes; see [../reference/m3-delta.md](../reference/m3-delta.md). `fs_read` **is** enforced as of M3, at the MCP read tools. Note what that does and does not mean: the envelope has no `fs_read` list, and any in-repo read is permitted by any valid envelope, so the requirement is to *have* an envelope, not a narrowing of which reads are allowed.
 
 Only the **MCP surface** authorizes. `pika check` from your shell runs its gates directly and needs no envelope: the envelope exists to bound what an agent may do on your behalf, not to make you ask permission to run your own tests.
 
@@ -420,7 +420,11 @@ cd /path/to/project
 pika mcp
 ```
 
-Serves the kernel over stdio JSON-RPC. Point any MCP-compatible agent harness at the command `pika mcp`. Read tools (inspect repo, read contract, preview plan, run checks) work immediately; mutating tools require a capability envelope at `.project/state/envelope.yaml` — deny-by-default, so an agent cannot touch anything you have not explicitly authorized.
+Serves the kernel over stdio JSON-RPC. Point any MCP-compatible agent harness at the command `pika mcp`. **Every tool requires a capability envelope at `.project/state/envelope.yaml`, reads included** — deny-by-default, so an agent cannot inventory, read, run or write anything you have not explicitly authorized. Until M2 the read tools worked without one; they no longer do, because enumerating your repository is a capability an agent is granted, not a neutral act it may perform unasked. The remedy is one command, and the smallest envelope is enough to read:
+
+```sh
+pika authorize --scope read     # grants no writes and no exec at all
+```
 
 ---
 

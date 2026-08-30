@@ -3,9 +3,21 @@
 // adoption loop opened by `pika adopt`: the drafts under .project/ are
 // durable state, and apply derives everything it does from them — never
 // from session memory — promotes them, writes the exceptions record and
-// the core files the repository is still missing (create-if-missing:
-// files the user already has are kept), and rewrites the visible review
-// bundle as APPLIED.
+// the core files the repository is still missing, and rewrites the
+// visible review bundle as APPLIED.
+//
+// Core files are split by ownership, the same split `pika init --force`
+// honours. Operator-owned files (README.md, AGENTS.md, CONTRIBUTING.md
+// and the language scaffold) are create-if-missing: a file the user
+// already has is kept, always. The two kernel-owned files — the GitHub
+// PR template and the CI workflow — encode how the kernel wants to be
+// run, so apply compares them against the rendered template and
+// refreshes a stale one. That refresh is the supported remedy for a
+// repository scaffolded by an older kernel whose template has since
+// been corrected; without it, a rotated pack digest fails gate 1 with
+// no way to fix itself. Every refresh is reported as a `write`,
+// because a silent kernel rewrite is indistinguishable from an
+// operator's own edit.
 //
 // Every mutation runs inside a txn transaction: a failure at any point
 // after Begin rolls the repository back to its exact pre-state — and
@@ -20,6 +32,7 @@
 package apply
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -61,8 +74,9 @@ type Applied struct {
 	Path string `json:"path"`
 }
 
-// Skipped is one proposed file apply left untouched because a file
-// already exists at its path; the user's version is kept.
+// Skipped is one proposed file apply left on disk as it found it:
+// an operator-owned file the user already has, or a kernel-owned file
+// that already matches the rendered template. Reason says which.
 type Skipped struct {
 	Path   string `json:"path"`
 	Reason string `json:"reason"`
@@ -299,11 +313,30 @@ func fillMissingCommands(c *contract.Contract, hints map[string]string) bool {
 	return added
 }
 
+// kernelOwnedCore is the set of rendered core files whose content the
+// kernel alone determines. The GitHub PR template and the CI workflow
+// encode how the kernel wants to be run, so a copy left behind by an
+// older kernel is the kernel's defect to correct. Everything else the
+// core pack renders — README.md, AGENTS.md, CONTRIBUTING.md — plus
+// go.mod and the whole language scaffold belongs to the operator the
+// moment it exists, and is only ever created when missing. The split
+// mirrors the `kernel` column of initcmd's coreTemplateTargets, which
+// is where `pika init --force` reads the same boundary; the state
+// files are deliberately absent, because apply refuses outright on an
+// already-adopted repository.
+var kernelOwnedCore = map[string]bool{
+	".github/pull_request_template.md": true,
+	".github/workflows/ci.yml":         true,
+}
+
 // buildPlan assembles the ordered operation plan: promote the drafts,
-// write the exceptions record, then create every required core file the
-// repository is still missing. Proposed files that already exist on
-// disk — the user may have created them between adopt and apply — are
-// skipped with a note, never overwritten.
+// write the exceptions record, then reconcile every required core file.
+// A missing file is created. An existing operator-owned file — the user
+// may have written it themselves, or kept it since an earlier scaffold
+// — is skipped with a note, never overwritten. An existing kernel-owned
+// file is compared against the rendered template and rewritten when it
+// differs, as a journalled write so the refresh rolls back with the
+// rest of the transaction; when it already matches, it is skipped.
 func buildPlan(root string, resolved *profiles.Resolved, core map[string][]byte, contractYAML, lockYAML, exceptionsYAMLBytes []byte) (txn.Plan, []Skipped, error) {
 	var plan txn.Plan
 	var skipped []Skipped
@@ -314,13 +347,33 @@ func buildPlan(root string, resolved *profiles.Resolved, core map[string][]byte,
 		}
 		seen[rel] = true
 		full := filepath.Join(root, filepath.FromSlash(rel))
-		if _, err := os.Lstat(full); err == nil {
+		info, err := os.Lstat(full)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			plan = append(plan, txn.Op{Kind: txn.OpCreate, Path: rel, Content: content})
+			return nil
+		case err != nil:
+			return fmt.Errorf("apply: stat %s: %w", rel, err)
+		case !kernelOwnedCore[rel]:
 			skipped = append(skipped, Skipped{Path: rel, Reason: "already exists; kept the existing file"})
 			return nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("apply: stat %s: %w", rel, err)
+		case !info.Mode().IsRegular():
+			// A symlink or a directory at a kernel-owned path is not
+			// something a content comparison can speak to, and
+			// replacing it would destroy whatever it points at. Keep
+			// it and say so.
+			skipped = append(skipped, Skipped{Path: rel, Reason: "already exists and is not a regular file; kept it"})
+			return nil
 		}
-		plan = append(plan, txn.Op{Kind: txn.OpCreate, Path: rel, Content: content})
+		current, err := os.ReadFile(full)
+		if err != nil {
+			return fmt.Errorf("apply: read %s: %w", rel, err)
+		}
+		if bytes.Equal(current, content) {
+			skipped = append(skipped, Skipped{Path: rel, Reason: "kernel-owned and already matches the rendered template"})
+			return nil
+		}
+		plan = append(plan, txn.Op{Kind: txn.OpWrite, Path: rel, Content: content})
 		return nil
 	}
 	for _, item := range []struct {

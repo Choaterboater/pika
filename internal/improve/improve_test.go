@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -315,14 +316,202 @@ func TestRunRefusesPrivateStateRenamedOutOfTheSubtree(t *testing.T) {
 	}
 }
 
-// The lifecycle above never sees the `R ` line itself: Pika resets the
+// The same rename, on a file Git has to quote.
+//
+// `core.quotePath` is on by default, so any path holding a non-ASCII
+// byte, whitespace or a control character reaches the parser C-quoted:
+// `.project/state/work/seed/wéird.json` arrives as the literal
+// `".project/state/work/seed/w\303\251ird.json"`, leading ASCII
+// double-quote included. `isPrivateState` is a prefix test against
+// `.project/state`, which that literal does not satisfy, so
+// privateStateMoved does not refuse and changePaths does not drop: both
+// guards fail open on the one input that was shaped to defeat them.
+//
+// The path is not exotic. Any repository whose state directory holds an
+// accented, spaced or otherwise non-ASCII filename has one, and a guard
+// that protects only the paths an operator happened to name in ASCII is
+// not a guard. The fixture proves Git really quotes before it asserts
+// anything, so a pass here can never come from an ASCII path that was
+// never the hole.
+func TestPrivateStateWithANonASCIINameIsRefused(t *testing.T) {
+	const secret = "UNREDACTED-TRANSCRIPT-c0ffee"
+	const private = ".project/state/work/seed/wéird.json"
+	root := fixtureRepositoryWithTrackedPrivateState(t, private, secret+"\n")
+	if listed := gitOutput(t, root, "ls-files", "--", ".project"); !strings.HasPrefix(listed, `"`) {
+		t.Fatalf("git lists %s as %s, unquoted: this fixture does not reproduce the quoting hole", private, listed)
+	}
+
+	checks := []*verify.Report{
+		{Pass: false, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}},
+		{Pass: true},
+	}
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check: func() (*verify.Report, error) {
+			report := checks[0]
+			checks = checks[1:]
+			return report, nil
+		},
+		Runner: renamingRunner{from: private, to: "leaked.json"},
+	})
+	if !errors.Is(err, ErrPrivateStateMoved) {
+		t.Fatalf("error = %v, want ErrPrivateStateMoved\nstatus after the run:\n%s",
+			err, gitOutput(t, root, "status", "--porcelain", "--untracked-files=all"))
+	}
+	if !strings.Contains(err.Error(), private) {
+		t.Errorf("refusal = %v, want it to name %s verbatim, unquoted", err, private)
+	}
+	if result.Commit != "" {
+		t.Errorf("result.Commit = %q, want no commit", result.Commit)
+	}
+	for _, path := range result.ChangedFiles {
+		if strings.Contains(path, `\303`) || strings.HasPrefix(path, `"`) {
+			t.Errorf("changed files = %v, want verbatim paths, not Git's quoting", result.ChangedFiles)
+		}
+	}
+
+	head := gitOutput(t, root, "rev-parse", "--abbrev-ref", "HEAD")
+	tracked := gitOutput(t, root, "ls-tree", "-r", "--name-only", "HEAD")
+	for _, path := range strings.Split(tracked, "\n") {
+		if path == "" || strings.HasPrefix(strings.Trim(path, `"`), ".project/state/") {
+			continue
+		}
+		if body := gitOutput(t, root, "show", "HEAD:"+strings.Trim(path, `"`)); strings.Contains(body, secret) {
+			t.Fatalf("%s on branch %s committed Pika's private state", path, head)
+		}
+	}
+	if strings.Contains(tracked, "leaked.json") {
+		t.Fatalf("committed tree = %q, want the rename destination uncommitted", tracked)
+	}
+}
+
+// Refusing a quoted path is only half of it: the ordinary non-ASCII file
+// an agent legitimately repairs has to reach the commit. A path read
+// back quoted is not a path — `git add` matches nothing against the
+// literal `"caf\303\251 fix.txt"` — so a filter that let it through
+// would trade a silent leak for a run that dies on its own pathspec, and
+// the receipt would attest a file the commit does not contain.
+func TestRunCommitsANonASCIIPathVerbatim(t *testing.T) {
+	const repaired = "café fix.txt"
+	root := fixtureRepository(t)
+	checks := []*verify.Report{
+		{Pass: false, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}},
+		{Pass: true},
+	}
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check: func() (*verify.Report, error) {
+			report := checks[0]
+			checks = checks[1:]
+			return report, nil
+		},
+		Runner: repairRunner{path: repaired, body: "verified fix\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(result.ChangedFiles, ",") != repaired {
+		t.Fatalf("ChangedFiles = %q, want exactly [%q]", result.ChangedFiles, repaired)
+	}
+	// `git show` quotes on the way out too, so the assertion reads the
+	// commit with quoting off rather than comparing against Git's escape
+	// of the name this run is about.
+	if got := gitOutput(t, root, "-c", "core.quotePath=false", "show", "--format=", "--name-only", "HEAD"); got != repaired {
+		t.Fatalf("committed files = %q, want %q", got, repaired)
+	}
+	// The receipt reads its own file list back out of Git, so it is the
+	// second reader of a quotable path and is asserted separately.
+	receipt, _ := readReceipt(t, root, result.WorkID)
+	if len(receipt.ChangedFiles) != 1 || receipt.ChangedFiles[0].Path != repaired {
+		t.Fatalf("receipt changed files = %+v, want exactly %q", receipt.ChangedFiles, repaired)
+	}
+}
+
+// A verbatim path still is not a literal one. `git add` reads what it is
+// handed as PATHSPECS, so the last gate before `git commit` is pattern
+// matching rather than naming, and in a pathspec `*` matches `/` as well
+// as everything else. A file an agent leaves behind named
+// `.project/stat*` is therefore a pattern covering the whole of
+// `.project/state` — the run record, the handoff bundle inside it, the
+// envelope, the board — and every one of those is a path changePaths had
+// already dropped from this commit. The filter runs, and the command
+// meant to enforce it puts them back.
+//
+// It is the defect `-z` closed in the status parser, one line later and
+// in the other direction: there Git handed Pika a quoted string where it
+// expected a path, here Pika hands Git a path where Git expects a
+// pattern. It lands on the one commit whose entire promise is that it
+// contains only what the ladder verified, built out of a working tree an
+// agent has just been editing.
+//
+// Windows cannot hold this filename at all — `*` is not a legal
+// character there — so on Windows the input is unreachable rather than
+// unguarded.
+func TestRunStagesGlobMetacharacterPathsLiterally(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a Windows filename cannot contain `*`, so this pathspec cannot exist there")
+	}
+	// The fixture does not ignore `.project/state`, for the reason
+	// TestRunDoesNotCommitAgentStagedPrivateState gives: once Git ignores
+	// it, Git never offers those paths to a commit and this test would
+	// pass however the pathspec were matched.
+	const repaired = ".project/stat*"
+	root := fixtureRepositoryWithoutStateIgnore(t)
+	checks := []*verify.Report{
+		{Pass: false, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}},
+		{Pass: true},
+	}
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check: func() (*verify.Report, error) {
+			report := checks[0]
+			checks = checks[1:]
+			return report, nil
+		},
+		Runner: repairRunner{path: repaired, body: "verified fix\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Excluding private state proves nothing if there was none to
+	// exclude: the record is what the over-matching pathspec reaches.
+	record := filepath.Join(root, filepath.FromSlash(privateStateDir), "work", result.WorkID, "record.json")
+	if _, err := os.Stat(record); err != nil {
+		t.Fatalf("run record: %v: the pathspec had nothing to over-match", err)
+	}
+	if strings.Join(result.ChangedFiles, ",") != repaired {
+		t.Fatalf("ChangedFiles = %q, want exactly [%q]", result.ChangedFiles, repaired)
+	}
+	committed := gitOutput(t, root, "-c", "core.quotePath=false", "show", "--format=", "--name-only", "HEAD")
+	if committed != repaired {
+		t.Fatalf("committed files = %q, want exactly %q: the pathspec matched more than it named", committed, repaired)
+	}
+}
+
+// The lifecycle above never sees the `R ` record itself: Pika resets the
 // index before it reads status, which turns a staged rename into a
-// worktree deletion plus an untracked destination. The rename line is
+// worktree deletion plus an untracked destination. The rename record is
 // still what Git reports for a staged rename anywhere else, and the two
-// shapes are one event, so both are pinned here against the literal
-// porcelain output — including the line the reproduction produced:
+// shapes are one event, so both are pinned here against literal `-z`
+// porcelain — including the record the reproduction produced.
+//
+// `-z` inverts what a rename looks like. Where the human-readable format
+// writes
 //
 //	R  .project/state/work/x/record.json -> tracked/leaked.json
+//
+// `-z` drops the arrow, reverses the two fields and NUL-terminates each
+// one, so the same rename is
+//
+//	R  tracked/leaked.json\0.project/state/work/x/record.json\0
+//
+// with the origin arriving after the destination it moved to. The
+// fixtures below are the real bytes, not arrow-joined strings, because
+// an arrow-joined string is exactly the input this parser no longer
+// accepts.
 func TestPrivateStateMovedReadsBothSidesOfARename(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -330,23 +519,30 @@ func TestPrivateStateMovedReadsBothSidesOfARename(t *testing.T) {
 		want   string
 	}{
 		{"staged rename out of the subtree",
-			"R  .project/state/work/x/record.json -> tracked/leaked.json",
+			"R  tracked/leaked.json\x00.project/state/work/x/record.json\x00",
 			".project/state/work/x/record.json"},
 		{"the same rename after the index reset",
-			" D .project/state/work/x/record.json\n?? tracked/leaked.json",
+			" D .project/state/work/x/record.json\x00?? tracked/leaked.json\x00",
 			".project/state/work/x/record.json"},
 		{"staged rename into the subtree",
-			"R  src/app.go -> .project/state/hidden.go",
+			"R  .project/state/hidden.go\x00src/app.go\x00",
 			".project/state/hidden.go"},
 		{"a rename Pika has no business refusing",
-			"R  src/old.go -> src/new.go\n?? fixed.txt",
+			"R  src/new.go\x00src/old.go\x00?? fixed.txt\x00",
 			""},
 		{"private state merely present is dropped, not refused",
-			"?? .project/state/work/x/record.json\n M README.md",
+			"?? .project/state/work/x/record.json\x00 M README.md\x00",
 			""},
+		{"a path Git would have quoted arrives verbatim and is refused",
+			" D .project/state/work/x/wéird.json\x00?? tracked/leaked.json\x00",
+			".project/state/work/x/wéird.json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := privateStateMoved(statusEntries(tc.status)); got != tc.want {
+			entries, err := statusEntries(tc.status)
+			if err != nil {
+				t.Fatalf("statusEntries(%q): %v", tc.status, err)
+			}
+			if got := privateStateMoved(entries); got != tc.want {
 				t.Fatalf("privateStateMoved(%q) = %q, want %q", tc.status, got, tc.want)
 			}
 		})
@@ -355,12 +551,55 @@ func TestPrivateStateMovedReadsBothSidesOfARename(t *testing.T) {
 
 // A rename Pika does allow has to commit as a rename. Staging only the
 // destination leaves the origin behind, so the commit would carry the
-// file's content at both paths.
+// file's content at both paths. Both are staged in the order `-z`
+// reports them — destination, then origin.
 func TestChangePathsStagesBothSidesOfAnAllowedRename(t *testing.T) {
-	got := changePaths(statusEntries("R  src/old.go -> src/new.go\n?? fixed.txt\n?? .project/state/work/x/record.json"))
-	want := []string{"src/old.go", "src/new.go", "fixed.txt"}
+	entries, err := statusEntries("R  src/new.go\x00src/old.go\x00?? fixed.txt\x00?? .project/state/work/x/record.json\x00")
+	if err != nil {
+		t.Fatalf("statusEntries: %v", err)
+	}
+	got := changePaths(entries)
+	want := []string{"src/new.go", "src/old.go", "fixed.txt"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("changePaths = %v, want %v", got, want)
+	}
+}
+
+// A record the parser cannot read refuses the run. Skipping it is how
+// the quoting hole leaked in the first place: every caller of this
+// parser is a guard, and a guard that drops what it did not understand
+// opens on exactly the input that confused it.
+func TestStatusEntriesRefuseAMalformedRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status string
+	}{
+		{"truncated record", "?? \x00"},
+		{"no separator after the status columns", "??x.project/state/work/x/record.json\x00"},
+		{"a rename whose origin field never arrived", "R  tracked/leaked.json\x00"},
+		{"a rename whose origin field is empty", "R  tracked/leaked.json\x00\x00"},
+		{"a stray diagnostic between records", "?? fixed.txt\x00warning: something\x00"},
+		{"an empty record", "\x00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entries, err := statusEntries(tc.status)
+			if err == nil {
+				t.Fatalf("statusEntries(%q) = %v, want a refusal", tc.status, entries)
+			}
+		})
+	}
+}
+
+// A clean tree is not a malformed one: `git status -z` prints nothing at
+// all for it, and the terminator of a real output's last record must not
+// be read as a truncated field either.
+func TestStatusEntriesAcceptACleanTree(t *testing.T) {
+	entries, err := statusEntries("")
+	if err != nil {
+		t.Fatalf("statusEntries(\"\"): %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("statusEntries(\"\") = %v, want no entries", entries)
 	}
 }
 
