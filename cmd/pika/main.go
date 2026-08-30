@@ -62,6 +62,12 @@ var commands = []command{
 		run:     runExplain,
 	},
 	{
+		name:    "authorize",
+		summary: "generate the capability envelope agents need",
+		usage:   "pika authorize [--scope read|project|repo] [--network <host>]... [--credential <name>]... [--github <scope>]... [--force] [--json] [--root <dir>]",
+		run:     runAuthorize,
+	},
+	{
 		name:    "mcp",
 		summary: "serve the kernel to agents over stdio JSON-RPC",
 		usage:   "pika mcp [--root <dir>]",

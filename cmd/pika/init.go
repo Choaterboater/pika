@@ -9,13 +9,16 @@ import (
 	"github.com/Choaterboater/pika/internal/initcmd"
 )
 
-// profileFlags collects repeated --profile values.
-type profileFlags []string
+// stringList collects a repeatable string flag's values in the order
+// they were given. init's --profile and authorize's --network,
+// --credential, and --github all need exactly this, so it lives here
+// once rather than being retyped per command.
+type stringList []string
 
-func (p *profileFlags) String() string { return strings.Join(*p, ",") }
+func (s *stringList) String() string { return strings.Join(*s, ",") }
 
-func (p *profileFlags) Set(v string) error {
-	*p = append(*p, v)
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
 	return nil
 }
 
@@ -29,7 +32,7 @@ func (p *profileFlags) Set(v string) error {
 func runInit(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	var profilesFlag profileFlags
+	var profilesFlag stringList
 	fs.Var(&profilesFlag, "profile", "language profile to scaffold (repeatable: go, typescript, python, swift, rust)")
 	name := fs.String("name", "", "project name (default: directory name, kebab-cased)")
 	module := fs.String("module", "", "go module path (default: derived from the project name)")
