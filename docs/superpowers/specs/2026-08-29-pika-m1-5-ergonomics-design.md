@@ -31,7 +31,7 @@ The kernel never calls a model. This ratifies design spec §4.3 ("AI decides; th
 
 - No HTTP client, no provider SDK, and no new module dependency enters `go.mod`. The binary keeps its two direct dependencies.
 - `pika check --ci` remains provably free of model calls (design spec §16) because no code path capable of one exists.
-- `contract.agents` gains its first reader in M3, not here. M1.5 must not repurpose those fields.
+- `contract.agents` already has its first reader: `pika improve` resolves the builder role's runtime to spawn Codex (`cmd/pika/improve.go:127-140`, merged in `3431434`). That is adapter orchestration, exactly the model this section ratifies, so it confirms the decision rather than contradicting it. M1.5 must not repurpose those fields for anything else.
 
 ## 4. Non-goals
 
@@ -55,8 +55,9 @@ Every claim below was verified against the tree at commit `716fc48`.
 | No repo-root discovery exists; all five commands hardcode `repoRoot := "."` | `cmd/pika/check.go:65`, `adopt.go:31`, `apply.go:30`, `mcp.go:23`, `init.go:41` |
 | `.project/contract.yaml` is re-declared in four packages; `.project/profiles.lock` in three | `cmd/pika/check.go:18`, `initcmd/init.go:93,96`, `apply/apply.go:44,47`, `adopt/adopt.go:57`, `checks/gate1.go:18` |
 | `--version` is matched against **every** argument, not `args[0]` | `cmd/pika/main.go:13-18` |
+| **Live bug:** `pika improve --branch version` and `--agent version` print the version and exit **0**, doing nothing while reporting success. `improve` introduced the binary's first free-form string flags, so the hijack above is no longer theoretical | reproduced against `2f0c5c9` |
 | Help is one hand-maintained stderr string; no `help` subcommand, no top-level `-h` | `cmd/pika/main.go:34` |
-| `check` emits compact JSON; `adopt`/`apply`/`init` emit indented JSON; `init`'s JSON is built inside its internal package | `check.go:117-123`, `adopt.go:36-38`, `apply.go:47-49`, `initcmd/init.go:564-580` |
+| `check` emits compact JSON; `adopt`/`apply`/`init` emit indented JSON; `init`'s JSON is built inside its internal package; `improve`/`handoff` add a sixth private writer | `check.go:117-123`, `adopt.go:36-38`, `apply.go:47-49`, `initcmd/init.go:564-580`, `improve.go:164-171` |
 | `Check.Hint` is parsed and resolved but read by no consumer | `profiles/registry.go:119-124,174-179`; `verify/ladder.go:41-51` branches only on `Cmd`/`Discovery` |
 | `--changed` is aliased to `--all` with a warning | `verify/verify.go:139-142`, flag help at `cmd/pika/check.go:34` |
 | `envelope.Load` infers the repo root by three `filepath.Dir` calls | `envelope/envelope.go:238` |
@@ -65,6 +66,8 @@ Every claim below was verified against the tree at commit `716fc48`.
 | `typescript@1` declares all five slots discovery-only, so a fresh TS repo passes `check` with every gate skipped | `profiles/packs/typescript@1.yaml:30-44` |
 | The registry digest hashes all packs together, so adding or editing any pack rotates every repository's lock digest | `profiles/registry.go:385-398` |
 | `checkLock` compares per-pack digests only; the top-level `digest` field is written and never verified | `profiles/registry.go:457-489` writes it; `checks/gate1.go:66-103` does not read it |
+| `handoff` and `improve` are CWD-bound and use the pre-M1.5 three-argument command signature | `cmd/pika/improve.go:23,73`, `main.go:34-39` |
+| **A fresh TypeScript repo makes `pika improve` a no-op**: every slot is discovery-only, nothing is discovered, all gates skip, the report passes, and `hasFailedGate` returns false — so improve reports a green baseline and repairs nothing | `profiles/packs/typescript@1.yaml:30-44`; `verify/ladder.go:44-48`; `cmd/pika/improve.go:155-162` |
 | pika has no `.project/`, no `AGENTS.md`, and no CI workflow of its own | repository root |
 
 ## 6. Architecture
@@ -119,7 +122,7 @@ type command struct {
 
 `pika` with no arguments and `pika help` render the table. `pika help <name>` prints that command's usage. Unknown command exits 2 with the table. Help text cannot drift from the registered set because it is generated from it.
 
-`--version`, `-version`, and `version` are honored **only** as `args[0]`. This is a behavior change: `pika check --version` previously printed the version and now fails flag parsing, which is correct and is required before any command takes a free-form string argument.
+`--version`, `-version`, and `version` are honored **only** as `args[0]`. This is a behavior change: `pika check --version` previously printed the version and now fails flag parsing. It is also a bug fix, not a refactor — `pika improve --branch version` currently exits 0 without improving anything, and `improve`'s free-form flags are why this must land before any further command grows one.
 
 Dispatch stays stdlib `flag`. No CLI framework is added.
 
@@ -247,7 +250,7 @@ M1.5 is complete when:
 
 1. every command runs correctly from a nested subdirectory and honors `--root`;
 2. `pika`, `pika help`, and `pika help <command>` describe the real command set, generated from the dispatch table;
-3. `pika check --version` exits 2;
+3. `pika check --version` exits 2, and `pika improve --branch version` runs improve instead of printing the version;
 4. every `--json` payload shares the `cliout` envelope;
 5. `pika doctor` reports root, contract, lock, exceptions, envelope, per-gate command or hint, toolchain presence, and git, with correct severities;
 6. `pika explain` resolves every `core@1` rule id with rationale and remediation, and every gate id and MCP error code;
@@ -258,3 +261,21 @@ M1.5 is complete when:
 11. pika's own contract, lock, exceptions, `AGENTS.md`, and CI workflow are committed, and `pika check --ci` passes on this repository in GitHub Actions;
 12. `go test ./... -count=1` passes and `CGO_ENABLED=0 go build ./...` succeeds;
 13. `go.mod` still declares exactly two direct dependencies.
+14. `handoff` and `improve` honor `--root`, share the `cliout` envelope, and are registered in the dispatch table like every other command.
+
+## 11. Execution order
+
+The tasks are ordered to serve `pika improve`, which merged in `3431434` after this spec was drafted. `improve` is the milestone's real automation payload; every task below makes it more trustworthy. The order is:
+
+| Order | Unit | Why here |
+|---|---|---|
+| 1 | §6.1 `repopath` | Dependency of `--root`. Already landed. |
+| 2 | §6.2 dispatcher and argv fix | Removes a silent exit-0 from shipped code. Smallest change, largest safety delta. |
+| 3 | §6.9 hint population | Without it `improve` has nothing to repair on a fresh repo, because every gate skips and the baseline reads green. |
+| 4 | §6.1 `--root` threading | `handoff` and `improve` stop being bound to the working directory. |
+| 5 | §6.4 `doctor` | Turns every `improve` refusal — dirty tree, missing builder config, absent toolchain — into an explanation. |
+| 6 | §6.8 real `--changed` | Makes the improve loop fast enough to run habitually. |
+| 7 | §6.6 `authorize`, §6.7 exec enforcement | Governs the external agent process `improve` spawns. |
+| 8 | §6.3 `cliout`, §6.5 `explain`, §6.10 self-adoption | Consolidation and evidence. |
+
+Dependencies still bind: `--root` needs `repopath`, `authorize` precedes exec enforcement, and self-adoption is last.

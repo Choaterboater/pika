@@ -330,6 +330,8 @@ git commit -m "feat: repository root discovery and centralized .project path tab
 - Create: `internal/cliout/cliout.go`
 - Test: `internal/cliout/cliout_test.go`
 
+Scope note: `cmd/pika/improve.go:164-171` added a sixth private JSON writer (`writeJSON`) in commit `3431434`. Task 2 only creates the shared package; the migration of `check`, `adopt`, `apply`, `init`, `handoff` and `improve` onto it happens where each command is already being edited, and `writeJSON` is deleted once `handoff` and `improve` use `cliout`.
+
 **Interfaces:**
 - Consumes: nothing.
 - Produces: `cliout.Write(w io.Writer, command string, ok bool, result any) error`, `cliout.WriteError(w io.Writer, command, code, message string) error`, and `type Envelope struct { Schema int; Command string; OK bool; Result json.RawMessage; Error *ErrorBody }` with `ErrorBody{Code, Message string}`. Tasks 3, 5, 6, 7 and 9 consume `Write`; Task 4 consumes `WriteError`.
@@ -524,10 +526,12 @@ git commit -m "feat: shared JSON envelope for command output"
 - Test: `cmd/pika/main_test.go`
 
 **Interfaces:**
-- Consumes: `runInit`, `runCheck`, `runAdopt`, `runApply`, `runMCP` — existing signatures are `func(args []string, stdout, stderr io.Writer) int` except `runMCP`, which is `func(args []string, stdin io.Reader, stdout, stderr io.Writer) int`.
+- Consumes: `runInit`, `runCheck`, `runAdopt`, `runApply`, `runHandoff`, `runImprove` — all currently `func(args []string, stdout, stderr io.Writer) int` — and `runMCP`, which is `func(args []string, stdin io.Reader, stdout, stderr io.Writer) int`.
 - Produces: `type command struct{ name, summary, usage string; run runFunc }`, `var commands []command`, `func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int`, `func lookup(name string) (command, bool)`. Tasks 5, 6 and 7 register into `commands`.
 
-Normalize every command onto one signature so the table has a single type. `runInit`, `runCheck`, `runAdopt` and `runApply` gain an ignored `stdin io.Reader` parameter.
+Normalize all **seven** commands onto one signature so the table has a single type. `runInit`, `runCheck`, `runAdopt`, `runApply`, `runHandoff` and `runImprove` each gain an ignored `stdin io.Reader` parameter; `runMCP` already has one and only needs its position confirmed.
+
+`handoff` and `improve` arrived in commit `3431434` after this plan was drafted (`cmd/pika/improve.go`, dispatched at `main.go:34-39`). They are why this task is now urgent rather than cosmetic: they are the binary's first commands with free-form string flags, so `pika improve --branch version` currently prints the version and exits 0 without improving anything. Verify that exact invocation runs improve after your change.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -613,6 +617,20 @@ func TestVersionIsNotHijackedFromFlagPosition(t *testing.T) {
 	}
 }
 
+// Regression for a live bug on main: `pika improve --branch version`
+// printed the version and exited 0, silently doing nothing while
+// reporting success. improve's --branch and --agent are the binary's
+// first free-form string flags, which is what made the argv scan
+// exploitable. This test must not assert improve's own exit code (it
+// depends on git state and the Codex toolchain) — only that dispatch
+// reached improve instead of short-circuiting to the version.
+func TestImproveIsNotHijackedByAFlagValuedVersion(t *testing.T) {
+	_, out, _ := dispatchArgs(t, "improve", "--branch", "version")
+	if strings.TrimSpace(out) == version.String() {
+		t.Fatalf("dispatch printed the version instead of running improve: %q", out)
+	}
+}
+
 func TestEveryCommandHasSummaryAndUsage(t *testing.T) {
 	for _, c := range commands {
 		if strings.TrimSpace(c.summary) == "" {
@@ -689,6 +707,18 @@ var commands = []command{
 		summary: "serve the kernel to agents over stdio JSON-RPC",
 		usage:   "pika mcp [--root <dir>]",
 		run:     runMCP,
+	},
+	{
+		name:    "handoff",
+		summary: "hand failed check gates to the configured builder agent",
+		usage:   "pika handoff [--agent <name>] [--json] [--root <dir>]",
+		run:     runHandoff,
+	},
+	{
+		name:    "improve",
+		summary: "run check, repair failures via the builder agent, and commit on a verified recheck",
+		usage:   "pika improve [--branch <name>] [--agent <name>] [--json] [--root <dir>]",
+		run:     runImprove,
 	},
 	{
 		name:    "help",
@@ -820,7 +850,7 @@ git commit -m "feat: table-driven command dispatch with generated help; fix argv
 ### Task 4: Thread `--root` through every command
 
 **Files:**
-- Modify: `cmd/pika/init.go`, `check.go`, `adopt.go`, `apply.go`, `mcp.go`
+- Modify: `cmd/pika/init.go`, `check.go`, `adopt.go`, `apply.go`, `mcp.go`, `improve.go` (both `runHandoff` and `runImprove`)
 - Modify: `internal/envelope/envelope.go` (`Load` takes an explicit root)
 - Modify: `internal/checks/gate1.go` (drop `lockRelPath`, use the passed root)
 - Modify: `internal/mcp/server.go` (envelope load call site)
@@ -947,7 +977,7 @@ func resolveRoot(explicit string) (*repopath.Root, error) {
 }
 ```
 
-In each of `init.go`, `check.go`, `adopt.go`, `apply.go`, `mcp.go`, register the flag and resolve before doing any work:
+In each of `init.go`, `check.go`, `adopt.go`, `apply.go`, `mcp.go`, and `improve.go` (both commands), register the flag and resolve before doing any work:
 
 ```go
 	rootFlag := fs.String("root", "", "repository root (default: discovered from the working directory)")
