@@ -210,6 +210,12 @@ func (h *Handle) Save(rec Record) error {
 	if rec.WorkID != h.workID {
 		return fmt.Errorf("workrec: record work id %q does not match run %s", rec.WorkID, h.workID)
 	}
+	// Redaction happens here, before the encode and before the cache
+	// adoption below, so the bytes on disk and the record this handle
+	// reports are the same text: a `pika status` in the process that
+	// wrote the record must not read a goal the next process cannot.
+	// See redacted() in record.go for what is redacted and what is not.
+	rec = redacted(rec)
 	bs, err := encode(rec)
 	if err != nil {
 		return fmt.Errorf("workrec: encode record: %w", err)

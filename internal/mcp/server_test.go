@@ -936,6 +936,55 @@ func TestCleanShutdownOnEOF(t *testing.T) {
 	// Closing stdin (session cleanup) must make Serve return nil.
 }
 
+// TestBoardAppendsAreRedacted pins that the state board is redacted at
+// the instant it is written. Every string on it came from an agent, and
+// an agent pastes what it was looking at — a failing command line, an
+// environment dump. board.jsonl is append-only local state, so a secret
+// that lands there stays there.
+func TestBoardAppendsAreRedacted(t *testing.T) {
+	const (
+		oauthKey  = "sk-ant-api03-abcdefghij0123456789ABCDE"
+		githubPAT = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+		pemHeader = "-----BEGIN RSA PRIVATE KEY-----"
+	)
+	root := fixtureRepo(t, "", envelopeYAML(".project", "src"))
+	s := startServer(t, root)
+	s.initialize()
+
+	wantResult(t, s.callTool(1, "propose_decision", map[string]any{
+		"title":     "rotate the deploy key " + githubPAT,
+		"rationale": "the old one leaked:\n" + pemHeader,
+	}))
+	wantResult(t, s.callTool(2, "record_sources", map[string]any{
+		"sources": []any{"vault entry " + oauthKey, "docs/keys.md"},
+	}))
+	wantResult(t, s.callTool(3, "acquire_scope", map[string]any{"path": "src"}))
+
+	bs, err := os.ReadFile(filepath.Join(root, ".project", "state", "board.jsonl"))
+	if err != nil {
+		t.Fatalf("board.jsonl: %v", err)
+	}
+	board := string(bs)
+	for _, secret := range []string{oauthKey, githubPAT, pemHeader} {
+		if strings.Contains(board, secret) {
+			t.Errorf("board.jsonl still carries %q:\n%s", secret, board)
+		}
+	}
+	// Redacted, not gutted: the board is what a later agent reads to
+	// learn what was decided, so the prose around the placeholder has to
+	// survive.
+	for _, keep := range []string{"rotate the deploy key ", "docs/keys.md", `"path":"src"`} {
+		if !strings.Contains(board, keep) {
+			t.Errorf("board.jsonl lost %q:\n%s", keep, board)
+		}
+	}
+	for _, kind := range []string{"<redacted:oauth>", "<redacted:github-token>", "<redacted:pem-header>"} {
+		if !strings.Contains(board, kind) {
+			t.Errorf("board.jsonl is missing %s:\n%s", kind, board)
+		}
+	}
+}
+
 // toolArgs returns minimal valid arguments per tool for the fail-closed test.
 func toolArgs(name string) map[string]any {
 	switch name {
