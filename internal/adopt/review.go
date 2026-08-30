@@ -139,7 +139,11 @@ func renderApplied(b *strings.Builder, data ReviewData) {
 	if len(data.Skipped) == 0 {
 		return
 	}
-	fmt.Fprintf(b, "## Skipped (%d — your files were kept)\n\n", len(data.Skipped))
+	// "your files were kept" is not true of every skip: a kernel-owned
+	// file skipped because it already matches the rendered template is
+	// the kernel's, not the operator's. The heading says what holds for
+	// all of them; the per-line reason says which case each one is.
+	fmt.Fprintf(b, "## Skipped (%d — left on disk as apply found them)\n\n", len(data.Skipped))
 	for _, s := range data.Skipped {
 		fmt.Fprintf(b, "- `%s` — %s\n", s.Path, escapeDetail(s.Reason))
 	}

@@ -75,7 +75,14 @@ func printApplyReport(rep apply.Report, stdout io.Writer) {
 	if len(rep.Skipped) == 0 {
 		fmt.Fprintln(stdout, "skipped: none")
 	} else {
-		fmt.Fprintln(stdout, "skipped (your files were kept):")
+		// Not every skip is a file of the operator's that was kept:
+		// a kernel-owned file that already matches the rendered
+		// template is skipped too, and calling it "yours" tells the
+		// operator the kernel deferred to a file it in fact owns.
+		// The header states only what is true of every line — the
+		// file is on disk as apply found it — and each line gives
+		// its own reason.
+		fmt.Fprintln(stdout, "skipped (left on disk as apply found them):")
 		for _, s := range rep.Skipped {
 			fmt.Fprintf(stdout, "  %s: %s\n", s.Path, s.Reason)
 		}

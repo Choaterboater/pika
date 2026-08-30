@@ -313,22 +313,6 @@ func fillMissingCommands(c *contract.Contract, hints map[string]string) bool {
 	return added
 }
 
-// kernelOwnedCore is the set of rendered core files whose content the
-// kernel alone determines. The GitHub PR template and the CI workflow
-// encode how the kernel wants to be run, so a copy left behind by an
-// older kernel is the kernel's defect to correct. Everything else the
-// core pack renders — README.md, AGENTS.md, CONTRIBUTING.md — plus
-// go.mod and the whole language scaffold belongs to the operator the
-// moment it exists, and is only ever created when missing. The split
-// mirrors the `kernel` column of initcmd's coreTemplateTargets, which
-// is where `pika init --force` reads the same boundary; the state
-// files are deliberately absent, because apply refuses outright on an
-// already-adopted repository.
-var kernelOwnedCore = map[string]bool{
-	".github/pull_request_template.md": true,
-	".github/workflows/ci.yml":         true,
-}
-
 // buildPlan assembles the ordered operation plan: promote the drafts,
 // write the exceptions record, then reconcile every required core file.
 // A missing file is created. An existing operator-owned file — the user
@@ -337,6 +321,14 @@ var kernelOwnedCore = map[string]bool{
 // file is compared against the rendered template and rewritten when it
 // differs, as a journalled write so the refresh rolls back with the
 // rest of the transaction; when it already matches, it is skipped.
+//
+// Which core files the kernel owns is initcmd's declaration to make, and
+// apply reads it there through initcmd.KernelOwnsCore rather than
+// restating it. A second table here would let `pika apply` keep a file
+// stale that `pika init --force` regenerates, with nothing to say the
+// two had drifted apart. The state files ask the same question and get
+// false, which costs nothing: apply refuses outright on an
+// already-adopted repository.
 func buildPlan(root string, resolved *profiles.Resolved, core map[string][]byte, contractYAML, lockYAML, exceptionsYAMLBytes []byte) (txn.Plan, []Skipped, error) {
 	var plan txn.Plan
 	var skipped []Skipped
@@ -354,7 +346,7 @@ func buildPlan(root string, resolved *profiles.Resolved, core map[string][]byte,
 			return nil
 		case err != nil:
 			return fmt.Errorf("apply: stat %s: %w", rel, err)
-		case !kernelOwnedCore[rel]:
+		case !initcmd.KernelOwnsCore(rel):
 			skipped = append(skipped, Skipped{Path: rel, Reason: "already exists; kept the existing file"})
 			return nil
 		case !info.Mode().IsRegular():

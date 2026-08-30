@@ -3,8 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -154,6 +160,74 @@ func TestEveryCommandHasSummaryAndUsage(t *testing.T) {
 		if strings.TrimSpace(c.usage) == "" {
 			t.Errorf("command %q has no usage", c.name)
 		}
+	}
+}
+
+// commandMention matches how every pika message names a command it is
+// sending the operator to: a backtick, then `pika `, then the command
+// word. Flags and placeholders that follow are irrelevant to the guard.
+var commandMention = regexp.MustCompile("`pika ([a-z][a-z-]*)")
+
+// A message that tells an operator to run a command pika does not have is
+// worse than no advice: it is a dead end reached at exactly the moment
+// the operator is stuck, and it is reached long before anyone reads the
+// guide. `pika upgrade` — a command that only ever existed in the design
+// spec — shipped in adopt's already-adopted refusal for exactly that
+// reason: nothing connected the prose to the registry.
+//
+// This walks the registry against every command name mentioned in a Go
+// string literal anywhere in the repository, rather than comparing one
+// known message to one known string, so the same mistake in a message
+// written later is caught too.
+func TestEveryCommandNamedInAMessageIsRegistered(t *testing.T) {
+	root := filepath.Join("..", "..")
+	mentions := 0
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Errorf("parse %s: %v", path, err)
+			return nil
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			text, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				return true
+			}
+			for _, m := range commandMention.FindAllStringSubmatch(text, -1) {
+				mentions++
+				if _, ok := lookup(m[1]); !ok {
+					t.Errorf("%s names `pika %s`, which is not a registered command:\n  %s",
+						fset.Position(lit.Pos()), m[1], text)
+				}
+			}
+			return true
+		})
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk %s: %v", root, walkErr)
+	}
+	// A scan that matches nothing would pass forever while proving
+	// nothing; the messages it is meant to police do exist.
+	if mentions == 0 {
+		t.Fatal("no `pika <command>` mention found in any string literal; the guard is no longer reading the messages it claims to")
 	}
 }
 
