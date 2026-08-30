@@ -52,13 +52,12 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "pika authorize: unexpected argument %q\n", fs.Arg(0))
-		return 2
+		return fail(*jsonOut, stdout, stderr, "authorize", codeUsage,
+			fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
 	root, err := resolveRoot(*rootFlag)
 	if err != nil {
-		fmt.Fprintf(stderr, "pika authorize: %v\n", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "authorize", codeConfig, err.Error())
 	}
 
 	env, err := authorize.Build(authorize.Options{
@@ -69,11 +68,13 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		GitHub:     github,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "pika authorize: %v\n", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "authorize", codeUsage, err.Error())
 	}
 	doc, err := authorize.Render(env)
 	if err != nil {
+		if *jsonOut && emitFailure(stdout, stderr, "authorize", err, nil) {
+			return 1
+		}
 		fmt.Fprintf(stderr, "pika authorize: %v\n", err)
 		return 1
 	}
@@ -90,12 +91,24 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, string(doc))
 	}
 
+	// Every failure from here on has a result to report: res already
+	// names the root, the scope, the path, and the document that was
+	// about to land, and Written stays false.
+	stop := func(err error) int {
+		res.Error = err.Error()
+		if *jsonOut && emitJSON(stdout, stderr, "authorize", false, res) {
+			return 1
+		}
+		fmt.Fprintf(stderr, "pika authorize: %v\n", err)
+		return 1
+	}
+
 	if !*force {
 		if changes, refuse := existingEnvelope(root.Dir(), root.Envelope(), env); refuse {
 			res.Changes = changes
 			res.Error = "an envelope already exists; nothing was written"
 			if *jsonOut {
-				writeJSON(stdout, res)
+				emitJSON(stdout, stderr, "authorize", false, res)
 			} else {
 				fmt.Fprintf(stderr, "\npika authorize: %s already exists; nothing was written\n", res.Path)
 				printChanges(changes, stderr)
@@ -106,8 +119,7 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	if err := os.MkdirAll(root.StateDir(), 0o755); err != nil {
-		fmt.Fprintf(stderr, "pika authorize: %v\n", err)
-		return 1
+		return stop(err)
 	}
 	// 0600, not 0644: this file is a capability grant, and every other
 	// user on the machine has no business reading what an agent running
@@ -116,13 +128,11 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	// envelope would leave it world-readable; chmod the result instead
 	// of assuming the write settled it.
 	if err := os.WriteFile(root.Envelope(), doc, 0o600); err != nil {
-		fmt.Fprintf(stderr, "pika authorize: %v\n", err)
-		return 1
+		return stop(err)
 	}
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(root.Envelope(), 0o600); err != nil {
-			fmt.Fprintf(stderr, "pika authorize: %v\n", err)
-			return 1
+			return stop(err)
 		}
 	}
 	// Re-read what actually landed and put it through the kernel's own
@@ -130,13 +140,14 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	// command runs would be worse than no envelope at all: the operator
 	// would believe they were authorized.
 	if _, err := envelope.Load(root.Dir(), root.Envelope()); err != nil {
-		fmt.Fprintf(stderr, "pika authorize: wrote %s but it does not validate: %v\n", root.Envelope(), err)
-		return 1
+		return stop(fmt.Errorf("wrote %s but it does not validate: %w", root.Envelope(), err))
 	}
 
 	res.Written = true
 	if *jsonOut {
-		writeJSON(stdout, res)
+		if !emitJSON(stdout, stderr, "authorize", true, res) {
+			return 1
+		}
 		return 0
 	}
 	// Report the mode actually on disk rather than the one we asked for:

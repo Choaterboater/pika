@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -175,8 +174,9 @@ func TestAuthorizeJSONReportsWhatLanded(t *testing.T) {
 			} `json:"allow"`
 		} `json:"envelope"`
 	}
-	if err := json.Unmarshal([]byte(out), &res); err != nil {
-		t.Fatalf("stdout is not JSON (%v): %s", err, out)
+	env := resultOf(t, []byte(out), "authorize", &res)
+	if !env.OK {
+		t.Errorf("ok = false though authorize wrote the envelope:\n%s", out)
 	}
 	if !res.Written || res.Scope != "project" || res.Envelope.Schema != 1 {
 		t.Errorf("result = %+v, want a written project envelope", res)

@@ -85,8 +85,41 @@ func toolchainAbsent(lang string) string {
 	return ""
 }
 
-// checkReport mirrors the JSON check report (verify.Report) that the
-// binary prints for `check --json`.
+// envelope mirrors the cliout envelope every --json payload carries. It
+// is declared here rather than imported so these tests assert the wire
+// shape an outside consumer actually sees, not the producer's own type.
+type envelope struct {
+	Schema  int             `json:"schema"`
+	Command string          `json:"command"`
+	OK      bool            `json:"ok"`
+	Result  json.RawMessage `json:"result"`
+	Error   *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// unwrap asserts the discriminators every --json payload shares and
+// returns the command's own result. A consumer that cannot read schema,
+// command, and ok before knowing the shape is exactly what cliout
+// exists to prevent.
+func unwrap(t *testing.T, out, command string) envelope {
+	t.Helper()
+	var env envelope
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("%s --json did not print a cliout envelope: %v\n%s", command, err, out)
+	}
+	if env.Schema != 1 {
+		t.Errorf("schema = %d, want 1:\n%s", env.Schema, out)
+	}
+	if env.Command != command {
+		t.Errorf("command = %q, want %q:\n%s", env.Command, command, out)
+	}
+	return env
+}
+
+// checkReport mirrors the JSON check report (verify.Report) the binary
+// nests under the envelope's result for `check --json`.
 type checkReport struct {
 	Gates []struct {
 		ID     string   `json:"id"`
@@ -140,12 +173,20 @@ func scaffoldRepo(t *testing.T, lang string) string {
 	return dir
 }
 
-// parseCheckReport unmarshals the JSON report printed by `check --json`.
+// parseCheckReport unwraps the envelope printed by `check --json` and
+// returns the report nested under its result. The envelope's ok must
+// agree with the report's own pass: ok is the boolean the exit code is
+// derived from, so a payload where the two disagree would send an agent
+// down the wrong branch.
 func parseCheckReport(t *testing.T, out string) *checkReport {
 	t.Helper()
+	env := unwrap(t, out, "check")
 	var rep checkReport
-	if err := json.Unmarshal([]byte(out), &rep); err != nil {
-		t.Fatalf("parse check JSON: %v\noutput: %s", err, out)
+	if err := json.Unmarshal(env.Result, &rep); err != nil {
+		t.Fatalf("parse check result: %v\noutput: %s", err, out)
+	}
+	if env.OK != rep.Pass {
+		t.Fatalf("envelope ok = %v but report pass = %v:\n%s", env.OK, rep.Pass, out)
 	}
 	return &rep
 }

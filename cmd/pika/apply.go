@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -26,16 +25,21 @@ func runApply(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "pika apply: unexpected argument %q\n", fs.Arg(0))
-		return 2
+		return fail(*jsonOut, stdout, stderr, "apply", codeUsage,
+			fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
 	root, err := resolveRoot(*rootFlag)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika apply:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "apply", codeConfig, err.Error())
 	}
 	rep, err := apply.Run(apply.RunOptions{Dir: root.Dir()})
 	if err != nil {
+		// The report goes out even here: Report.Rollback and the applied
+		// ops are how a consumer tells a clean pre-state from mutations
+		// that may remain, and that answer cannot live only in prose.
+		if *jsonOut && emitFailure(stdout, stderr, "apply", err, rep) {
+			return 1
+		}
 		fmt.Fprintln(stderr, err)
 		// Report.Rollback is truthful: true only when the undo completed.
 		// A false with applied ops means the failure came after the commit
@@ -51,10 +55,7 @@ func runApply(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *jsonOut {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(rep); err != nil {
-			fmt.Fprintln(stderr, err)
+		if !emitJSON(stdout, stderr, "apply", true, rep) {
 			return 1
 		}
 		return 0

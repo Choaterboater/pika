@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,9 +90,7 @@ func TestCheckPassingFixtureGoldenJSON(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		t.Fatalf("stdout not valid JSON report: %v\n%s", err, stdout.String())
-	}
+	resultOf(t, stdout.Bytes(), "check", &rep)
 	if !rep.Pass || rep.Summary.Fail != 0 || rep.Summary.Pass != 6 {
 		t.Fatalf("report = %+v, want pass with 6 passing gates (contract + 5)", rep)
 	}
@@ -116,9 +113,7 @@ func TestCheckFailingLintFixtureGoldenJSON(t *testing.T) {
 		t.Fatalf("exit = %d, want 1; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		t.Fatalf("stdout not valid JSON report: %v\n%s", err, stdout.String())
-	}
+	resultOf(t, stdout.Bytes(), "check", &rep)
 	if rep.Pass {
 		t.Fatal("report.Pass = true, want false")
 	}
@@ -155,9 +150,7 @@ func TestCheckDiscoverySentinelsSkippedWithReason(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; skips are not failures; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		t.Fatal(err)
-	}
+	resultOf(t, stdout.Bytes(), "check", &rep)
 	if rep.Summary.Skip != 4 || rep.Summary.Pass != 2 {
 		t.Fatalf("summary = %+v, want pass=2 skip=4", rep.Summary)
 	}
@@ -258,9 +251,7 @@ func runCheckJSON(t *testing.T, args ...string) (verify.Report, int, string) {
 	var stdout, stderr bytes.Buffer
 	code := runCheck(args, strings.NewReader(""), &stdout, &stderr)
 	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		t.Fatalf("stdout not a JSON report: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
-	}
+	resultOf(t, stdout.Bytes(), "check", &rep)
 	return rep, code, stderr.String()
 }
 
@@ -388,9 +379,7 @@ func TestCheckCIScopeRunsAll(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		t.Fatal(err)
-	}
+	resultOf(t, stdout.Bytes(), "check", &rep)
 	if rep.Summary.Pass != 3 || rep.Summary.Fail != 0 {
 		t.Fatalf("summary = %+v, want contract+test+smoke passing", rep.Summary)
 	}
@@ -420,9 +409,7 @@ evidence:
 		t.Fatalf("exit = %d, want 1; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		t.Fatal(err)
-	}
+	resultOf(t, stdout.Bytes(), "check", &rep)
 	if rep.Gates[0].ID != "contract" || rep.Gates[0].Status != verify.StatusFail {
 		t.Fatalf("contract gate = %+v, want fail (schema ceiling)", rep.Gates[0])
 	}
@@ -471,9 +458,7 @@ func TestCheckNamingCatchAllFailsGate1(t *testing.T) {
 		t.Fatalf("exit = %d, want 1; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		t.Fatal(err)
-	}
+	resultOf(t, stdout.Bytes(), "check", &rep)
 	g := rep.Gates[0]
 	if g.ID != "contract" || g.Status != verify.StatusFail {
 		t.Fatalf("gate 1 = %+v, want a failed contract gate", g)
@@ -500,9 +485,7 @@ func TestCheckNamingExceptionCleansGate1(t *testing.T) {
 		t.Fatalf("exit = %d, want 0 with a valid exception; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		t.Fatal(err)
-	}
+	resultOf(t, stdout.Bytes(), "check", &rep)
 	if !rep.Pass || rep.Gates[0].Status != verify.StatusPass {
 		t.Fatalf("report = %+v, want gate 1 passing", rep)
 	}
@@ -521,9 +504,7 @@ func TestCheckMalformedExceptionFailsGate1(t *testing.T) {
 		t.Fatalf("exit = %d, want 1 for a malformed exceptions file; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		t.Fatal(err)
-	}
+	resultOf(t, stdout.Bytes(), "check", &rep)
 	if rep.Gates[0].Status != verify.StatusFail || !strings.Contains(rep.Gates[0].OutputTail, "owner") {
 		t.Fatalf("gate 1 = %+v, want a load error naming the missing owner", rep.Gates[0])
 	}
@@ -539,9 +520,7 @@ func TestCheckKebabWarningCarriesInJSON(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; warnings never fail the ladder; stderr: %s", code, stderr.String())
 	}
 	var rep verify.Report
-	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil {
-		t.Fatal(err)
-	}
+	resultOf(t, stdout.Bytes(), "check", &rep)
 	if rep.Gates[0].Status != verify.StatusPass {
 		t.Fatalf("gate 1 = %+v, want pass", rep.Gates[0])
 	}

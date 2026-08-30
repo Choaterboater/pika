@@ -72,13 +72,17 @@ func TestE2EAdoptPreview(t *testing.T) {
 	before := treePaths(t, dir)
 
 	out := runCLI(t, dir, 0, "adopt", "--json")
+	env := unwrap(t, out, "adopt")
+	if !env.OK {
+		t.Errorf("adopt --json reported ok = false on a clean preview:\n%s", out)
+	}
 	var rep struct {
 		DetectedProfiles []string `json:"detectedProfiles"`
 		Exceptions       []any    `json:"exceptions"`
 		Conflicts        []any    `json:"conflicts"`
 	}
-	if err := json.Unmarshal([]byte(out), &rep); err != nil {
-		t.Fatalf("adopt --json did not print a JSON report: %v\n%s", err, out)
+	if err := json.Unmarshal(env.Result, &rep); err != nil {
+		t.Fatalf("adopt --json result is not the adoption report: %v\n%s", err, out)
 	}
 	if !slices.Equal(rep.DetectedProfiles, []string{"core@1", "go@1"}) {
 		t.Errorf("detectedProfiles = %v, want [core@1 go@1]", rep.DetectedProfiles)

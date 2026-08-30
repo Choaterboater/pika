@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,14 +156,16 @@ func TestCheckRunsFromSubdirectory(t *testing.T) {
 	if code == 2 {
 		t.Fatalf("check from subdirectory returned usage error: %s", errb.String())
 	}
-	// The report envelope is Task 2's cliout work and has not landed;
-	// assert on the report check actually emits today.
+	// The payload is the shared envelope, so the discriminators are part
+	// of the assertion: a consumer standing in a subdirectory must be
+	// able to tell which command answered before reading the report.
 	var rep verify.Report
-	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
-		t.Fatalf("check did not emit its report from a subdirectory (%v):\n%s", err, out.String())
+	env := resultOf(t, out.Bytes(), "check", &rep)
+	if !env.OK {
+		t.Errorf("ok = false for a passing check from a subdirectory:\n%s", out.String())
 	}
 	if len(rep.Gates) == 0 || rep.Gates[0].ID != "contract" {
-		t.Errorf("gate 1 did not run against the discovered root:\n%s", out.String())
+		t.Fatalf("gate 1 did not run against the discovered root:\n%s", out.String())
 	}
 	if rep.Gates[0].Status != verify.StatusPass {
 		t.Errorf("gate 1 = %s from a subdirectory, want pass: %s", rep.Gates[0].Status, rep.Gates[0].OutputTail)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -34,8 +33,9 @@ func TestExplainJSONCarriesRationaleAndRemediation(t *testing.T) {
 		Rationale   string `json:"rationale"`
 		Remediation string `json:"remediation"`
 	}
-	if err := json.Unmarshal([]byte(out), &entry); err != nil {
-		t.Fatalf("stdout is not JSON (%v): %s", err, out)
+	env := resultOf(t, []byte(out), "explain", &entry)
+	if !env.OK {
+		t.Errorf("ok = false for an explained id:\n%s", out)
 	}
 	if entry.ID != "naming-catch-all" || entry.Kind != "naming-rule" {
 		t.Errorf("entry = %+v, want the naming-catch-all rule", entry)

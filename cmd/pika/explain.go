@@ -36,39 +36,53 @@ func runExplain(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: pika explain <rule-id> [--json] [--root <dir>]")
-		return 2
+		code := fail(*jsonOut, stdout, stderr, "explain", codeUsage, "expected exactly one rule id")
+		if !*jsonOut {
+			fmt.Fprintln(stderr, explainUsage)
+		}
+		return code
 	}
 	id := rest[0]
 	if err := fs.Parse(rest[1:]); err != nil {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintf(stderr, "pika explain: unexpected argument %q\n", fs.Arg(0))
-		fmt.Fprintln(stderr, "usage: pika explain <rule-id> [--json] [--root <dir>]")
-		return 2
+		code := fail(*jsonOut, stdout, stderr, "explain", codeUsage,
+			fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
+		if !*jsonOut {
+			fmt.Fprintln(stderr, explainUsage)
+		}
+		return code
 	}
 
 	resolved, err := explainSelection(*rootFlag)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika explain:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "explain", codeConfig, err.Error())
 	}
 
 	entry, err := explain.Lookup(id, resolved)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika explain:", err)
-		fmt.Fprintln(stderr, "known ids:", strings.Join(explain.KnownIDs(resolved), ", "))
-		return 2
+		code := fail(*jsonOut, stdout, stderr, "explain", codeUsage, err.Error())
+		if !*jsonOut {
+			fmt.Fprintln(stderr, "known ids:", strings.Join(explain.KnownIDs(resolved), ", "))
+		}
+		return code
 	}
 
 	if *jsonOut {
-		writeJSON(stdout, entry)
+		if !emitJSON(stdout, stderr, "explain", true, entry) {
+			return 1
+		}
 		return 0
 	}
 	printEntry(entry, stdout)
 	return 0
 }
+
+// explainUsage is the one-line synopsis printed beside a usage error. It
+// is a human hint, not part of the machine payload: with --json the
+// error envelope's code and message are the whole answer.
+const explainUsage = "usage: pika explain <rule-id> [--json] [--root <dir>]"
 
 // explainSelection resolves the profile packs whose rules explain is
 // asked about: the adopted contract's selection when there is one, and

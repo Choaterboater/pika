@@ -118,7 +118,7 @@ pika mcp
 
 Running `pika` with no arguments prints the same help.
 
-All commands support `--json` for automation.
+All commands support `--json` for automation, and every payload is the same envelope — `{"schema":1,"command":…,"ok":…,"result":{…}}` — so a consumer can tell which command answered, and whether it succeeded, before knowing the report's shape. See [docs/guides/usage.md](docs/guides/usage.md#json-output).
 
 ### `--root`, and the one command that does not discover
 

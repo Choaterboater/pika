@@ -43,24 +43,32 @@ func runInit(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "pika init: unexpected argument %q\n", fs.Arg(0))
-		return 2
+		return fail(*jsonOut, stdout, stderr, "init", codeUsage,
+			fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
 	root, err := targetRoot(*rootFlag)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika init:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "init", codeConfig, err.Error())
 	}
-	if err := initcmd.Run(initcmd.InitOptions{
+	manifest, err := initcmd.Run(initcmd.InitOptions{
 		Dir:      root.Dir(),
 		Name:     *name,
 		Module:   *module,
 		Profiles: profilesFlag,
 		Force:    *force,
-		JSON:     *jsonOut,
-		Out:      stdout,
-	}); err != nil {
+	})
+	if err != nil {
+		if *jsonOut && emitFailure(stdout, stderr, "init", err, nil) {
+			return 1
+		}
 		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	// The scaffold is silent unless asked: init's human output is the
+	// tree it just wrote. The manifest is encoded here, in the command
+	// layer, rather than inside initcmd — the package returns data and
+	// the CLI decides what a payload looks like.
+	if *jsonOut && !emitJSON(stdout, stderr, "init", true, manifest) {
 		return 1
 	}
 	return 0

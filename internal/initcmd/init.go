@@ -14,10 +14,8 @@ package initcmd
 import (
 	"embed"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -56,10 +54,15 @@ type InitOptions struct {
 	// contract already exists. User files outside .project are never
 	// deleted.
 	Force bool
-	// JSON emits the created-file manifest (sorted paths) on Out.
-	JSON bool
-	// Out receives the JSON manifest (default os.Stdout).
-	Out io.Writer
+}
+
+// Manifest is what init created: every file it wrote, sorted by path,
+// plus every contract command slot it populated so the caller can see
+// which gates will actually run. Run returns it; encoding it is the
+// command layer's business, not this package's.
+type Manifest struct {
+	Files    []string          `json:"files"`
+	Commands map[string]string `json:"commands"`
 }
 
 // genFile is one file init writes, with its slash-separated path relative
@@ -96,10 +99,10 @@ const contractRel = ".project/contract.yaml"
 // lockRel is the profiles lock's location relative to the scaffold root.
 const lockRel = ".project/profiles.lock"
 
-// Run scaffolds a pika-managed repository into opts.Dir. It fails
-// without writing anything when a contract already exists and --force is
-// not set.
-func Run(opts InitOptions) error {
+// Run scaffolds a pika-managed repository into opts.Dir and returns the
+// manifest of what it created. It fails without writing anything when a
+// contract already exists and --force is not set.
+func Run(opts InitOptions) (*Manifest, error) {
 	dir := opts.Dir
 	if dir == "" {
 		dir = "."
@@ -107,19 +110,19 @@ func Run(opts InitOptions) error {
 
 	selection, err := selection(opts.Profiles)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resolved, err := profiles.Resolve(selection)
 	if err != nil {
-		return fmt.Errorf("pika init: %w", err)
+		return nil, fmt.Errorf("pika init: %w", err)
 	}
 
 	contractPath := filepath.Join(dir, filepath.FromSlash(contractRel))
 	if !opts.Force {
 		if _, err := os.Stat(contractPath); err == nil {
-			return fmt.Errorf("pika init: %s already exists; pass --force to regenerate", contractRel)
+			return nil, fmt.Errorf("pika init: %s already exists; pass --force to regenerate", contractRel)
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("pika init: %s: %w", contractRel, err)
+			return nil, fmt.Errorf("pika init: %s: %w", contractRel, err)
 		}
 	}
 
@@ -133,31 +136,26 @@ func Run(opts InitOptions) error {
 	commands := commandsFromChecks(resolved.Checks, lookPath)
 	contractYAML, err := buildContract(name, selection, commands)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	files, err := buildFiles(lang, name, module, contractYAML)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	for _, f := range files {
 		if err := writeFile(dir, f.path, f.data); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// The lock is written through profiles.WriteLock so lock and contract
 	// pin the same packs and digests.
 	if err := profiles.WriteLock(filepath.Join(dir, filepath.FromSlash(lockRel)), selection); err != nil {
-		return fmt.Errorf("pika init: %w", err)
+		return nil, fmt.Errorf("pika init: %w", err)
 	}
 	files = append(files, genFile{path: lockRel})
 
-	if opts.JSON {
-		if err := writeManifest(files, commands, opts.Out); err != nil {
-			return err
-		}
-	}
-	return nil
+	return &Manifest{Files: filePaths(files), Commands: commands}, nil
 }
 
 // selection maps the requested profiles to pack references, core first.
@@ -600,25 +598,6 @@ func writeFile(root, rel string, data []byte) error {
 	}
 	if err := os.WriteFile(target, data, 0o644); err != nil {
 		return fmt.Errorf("pika init: write %s: %w", rel, err)
-	}
-	return nil
-}
-
-// writeManifest emits the created-file manifest as pretty-printed JSON:
-// every file init wrote, sorted by path, plus every contract command
-// slot init populated so the caller can see which gates will actually
-// run.
-func writeManifest(files []genFile, commands map[string]string, out io.Writer) error {
-	if out == nil {
-		out = os.Stdout
-	}
-	enc := json.NewEncoder(out)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(struct {
-		Files    []string          `json:"files"`
-		Commands map[string]string `json:"commands"`
-	}{Files: filePaths(files), Commands: commands}); err != nil {
-		return fmt.Errorf("pika init: encode manifest: %w", err)
 	}
 	return nil
 }

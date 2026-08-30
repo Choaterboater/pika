@@ -2,7 +2,6 @@ package initcmd
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"io/fs"
 	"maps"
@@ -65,7 +64,7 @@ func TestGoldenPerLanguage(t *testing.T) {
 			// dir-name-derived content (project name, module path, package
 			// name) matches the committed tree byte for byte.
 			dir := filepath.Join(t.TempDir(), lang+"-single")
-			if err := Run(InitOptions{Dir: dir, Profiles: []string{lang}}); err != nil {
+			if _, err := Run(InitOptions{Dir: dir, Profiles: []string{lang}}); err != nil {
 				t.Fatalf("init %s: %v", lang, err)
 			}
 			generated, err := treeFiles(dir)
@@ -136,7 +135,7 @@ func TestGoldenPerLanguage(t *testing.T) {
 
 func TestCoreOnlyScaffold(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bare")
-	if err := Run(InitOptions{Dir: dir}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	c, err := contract.Load(filepath.Join(dir, ".project", "contract.yaml"))
@@ -166,10 +165,10 @@ func TestCoreOnlyScaffold(t *testing.T) {
 func TestIdempotencyErrorsWithoutForce(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "go-single")
 	opts := InitOptions{Dir: dir, Profiles: []string{"go"}}
-	if err := Run(opts); err != nil {
+	if _, err := Run(opts); err != nil {
 		t.Fatalf("first init: %v", err)
 	}
-	err := Run(opts)
+	_, err := Run(opts)
 	if err == nil {
 		t.Fatal("second init without --force: got nil error, want refusal")
 	}
@@ -180,7 +179,7 @@ func TestIdempotencyErrorsWithoutForce(t *testing.T) {
 
 func TestForceRewritesAndPreservesUserFiles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "go-single")
-	if err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}}); err != nil {
 		t.Fatalf("first init: %v", err)
 	}
 	// User files live outside .project; force must never delete them.
@@ -198,7 +197,7 @@ func TestForceRewritesAndPreservesUserFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Force: true}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Force: true}); err != nil {
 		t.Fatalf("force init: %v", err)
 	}
 	for rel, content := range userFiles {
@@ -215,17 +214,15 @@ func TestForceRewritesAndPreservesUserFiles(t *testing.T) {
 	}
 }
 
-func TestJSONManifestIsSorted(t *testing.T) {
+// The manifest is init's answer to "what did you just create". It is
+// returned as data — the JSON encoding lives in the command layer — and
+// it must be sorted, complete, and true: every entry exists on disk and
+// every created file is listed.
+func TestManifestIsSortedAndComplete(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "go-single")
-	var buf bytes.Buffer
-	if err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, JSON: true, Out: &buf}); err != nil {
+	manifest, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}})
+	if err != nil {
 		t.Fatalf("init: %v", err)
-	}
-	var manifest struct {
-		Files []string `json:"files"`
-	}
-	if err := json.Unmarshal(buf.Bytes(), &manifest); err != nil {
-		t.Fatalf("manifest is not JSON: %v\n%s", err, buf.String())
 	}
 	if !slices.IsSorted(manifest.Files) {
 		t.Errorf("manifest not sorted: %v", manifest.Files)
@@ -234,6 +231,11 @@ func TestJSONManifestIsSorted(t *testing.T) {
 		if !slices.Contains(manifest.Files, want) {
 			t.Errorf("manifest missing %s: %v", want, manifest.Files)
 		}
+	}
+	// The commands block init populated travels with the manifest: it is
+	// how a caller learns which gates will actually run.
+	if len(manifest.Commands) == 0 {
+		t.Error("manifest reports no contract commands")
 	}
 	// Every manifest entry exists; every created file is listed.
 	for _, rel := range manifest.Files {
@@ -254,7 +256,7 @@ func TestJSONManifestIsSorted(t *testing.T) {
 
 func TestNameOverridesDirName(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "untidy Dir.Name")
-	if err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Name: "custom-name"}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Name: "custom-name"}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	c, err := contract.Load(filepath.Join(dir, ".project", "contract.yaml"))
@@ -275,7 +277,7 @@ func TestNameOverridesDirName(t *testing.T) {
 
 func TestModuleNameDerivedAndOverridable(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "go-single")
-	if err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	goMod, err := os.ReadFile(filepath.Join(dir, "go.mod"))
@@ -287,7 +289,7 @@ func TestModuleNameDerivedAndOverridable(t *testing.T) {
 	}
 
 	dir2 := filepath.Join(t.TempDir(), "go-single")
-	if err := Run(InitOptions{Dir: dir2, Profiles: []string{"go"}, Module: "example.com/foo/bar"}); err != nil {
+	if _, err := Run(InitOptions{Dir: dir2, Profiles: []string{"go"}, Module: "example.com/foo/bar"}); err != nil {
 		t.Fatalf("init with --module: %v", err)
 	}
 	goMod2, err := os.ReadFile(filepath.Join(dir2, "go.mod"))
@@ -301,7 +303,7 @@ func TestModuleNameDerivedAndOverridable(t *testing.T) {
 
 func TestUnknownProfileRejected(t *testing.T) {
 	dir := t.TempDir()
-	err := Run(InitOptions{Dir: dir, Profiles: []string{"cobol"}})
+	_, err := Run(InitOptions{Dir: dir, Profiles: []string{"cobol"}})
 	if err == nil {
 		t.Fatal("unknown profile accepted")
 	}
@@ -340,7 +342,7 @@ func TestCISetupCoversContractCommands(t *testing.T) {
 	for _, lang := range languages {
 		t.Run(lang, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), lang+"-single")
-			if err := Run(InitOptions{Dir: dir, Profiles: []string{lang}}); err != nil {
+			if _, err := Run(InitOptions{Dir: dir, Profiles: []string{lang}}); err != nil {
 				t.Fatalf("init %s: %v", lang, err)
 			}
 			ci, err := os.ReadFile(filepath.Join(dir, ".github", "workflows", "ci.yml"))
@@ -410,7 +412,7 @@ func TestDigitLeadingNamesProduceValidStackIdentifiers(t *testing.T) {
 	} {
 		t.Run(tc.lang, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "1-check")
-			if err := Run(InitOptions{Dir: dir, Profiles: []string{tc.lang}}); err != nil {
+			if _, err := Run(InitOptions{Dir: dir, Profiles: []string{tc.lang}}); err != nil {
 				t.Fatalf("init %s: %v", tc.lang, err)
 			}
 			data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(tc.file)))

@@ -52,9 +52,13 @@ func TestE2EAdoptApply(t *testing.T) {
 
 	// Apply: transactional promotion, JSON report, gate 1 pass.
 	out := runCLI(t, dir, 0, "apply", "--json")
+	env := unwrap(t, out, "apply")
+	if !env.OK {
+		t.Errorf("apply --json reported ok = false on the happy path:\n%s", out)
+	}
 	var rep applyReport
-	if err := json.Unmarshal([]byte(out), &rep); err != nil {
-		t.Fatalf("apply --json did not print a JSON report: %v\n%s", err, out)
+	if err := json.Unmarshal(env.Result, &rep); err != nil {
+		t.Fatalf("apply --json result is not the apply report: %v\n%s", err, out)
 	}
 	if rep.Rollback {
 		t.Error("apply reported a rollback on the happy path")
@@ -90,17 +94,25 @@ func TestE2EAdoptApply(t *testing.T) {
 	// check --all is green on the adopted repository (gates with no
 	// command in this fixture skip honestly).
 	out = runCLI(t, dir, 0, "check", "--all", "--json")
-	var chk checkReport
-	if err := json.Unmarshal([]byte(out), &chk); err != nil {
-		t.Fatalf("check --all --json did not print a JSON report: %v\n%s", err, out)
-	}
+	chk := parseCheckReport(t, out)
 	if !chk.Pass {
 		t.Errorf("check --all failed after apply:\n%s", out)
 	}
 
 	// A second apply is refused: the contract exists, nothing changes.
+	// The refusal is still an envelope — ok:false with the reason — so a
+	// consumer learns why without reading stderr prose.
 	runCLI(t, dir, 1, "apply")
-	runCLI(t, dir, 1, "apply", "--json")
+	refused := unwrap(t, runCLI(t, dir, 1, "apply", "--json"), "apply")
+	if refused.OK {
+		t.Error("refused apply reported ok = true")
+	}
+	var failure struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(refused.Result, &failure); err != nil || failure.Error == "" {
+		t.Errorf("refused apply did not report why (%v): %s", err, refused.Result)
+	}
 
 	// The refusal leaves the review bundle and the applied state alone.
 	review2, err := os.ReadFile(filepath.Join(dir, "review", "adoption-review.md"))

@@ -25,18 +25,19 @@ func runDoctor(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "pika doctor: unexpected argument %q\n", fs.Arg(0))
-		return 2
+		return fail(*jsonOut, stdout, stderr, "doctor", codeUsage,
+			fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
 	root, err := resolveRoot(*rootFlag)
 	if err != nil {
-		fmt.Fprintf(stderr, "pika doctor: %v\n", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "doctor", codeConfig, err.Error())
 	}
 
 	rep := doctor.Run(root)
 	if *jsonOut {
-		writeJSON(stdout, rep)
+		if !emitJSON(stdout, stderr, "doctor", rep.OK, rep) {
+			return 1
+		}
 	} else {
 		printDoctorReport(rep, stdout)
 	}

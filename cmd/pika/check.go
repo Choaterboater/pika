@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -38,8 +37,8 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "pika check: unexpected argument %q\n", fs.Arg(0))
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeUsage,
+			fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
 	scopes := 0
 	for _, b := range []*bool{all, changedFlag, ci} {
@@ -48,8 +47,8 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	if scopes > 1 {
-		fmt.Fprintln(stderr, "pika check: --all, --changed, and --ci are mutually exclusive")
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeUsage,
+			"--all, --changed, and --ci are mutually exclusive")
 	}
 	scope := verify.All
 	switch {
@@ -61,8 +60,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 
 	root, err := resolveRoot(*rootFlag)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika check:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
 	}
 
 	// The contract, the exceptions record, and the gate subprocesses are
@@ -83,13 +81,11 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	// verify.
 	c, err := contract.Load(path)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika check:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
 	}
 	resolved, err := profiles.Resolve(c.Profiles)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika check:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
 	}
 
 	// Gate 1 (rung 1, spec §12.6): contract schema ceiling, exceptions
@@ -106,8 +102,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	}}
 	ordered, err := verify.FromProfiles(resolved.Checks, c.Commands)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika check:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
 	}
 
 	// Gate 1 always runs: it validates the contract itself, which no
@@ -116,8 +111,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	if scope == verify.Changed {
 		set, err := changed.Files(root)
 		if err != nil {
-			fmt.Fprintln(stderr, "pika check:", err)
-			return 2
+			return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
 		}
 		if set.Degraded {
 			scopeWarnings = append(scopeWarnings,
@@ -137,19 +131,15 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 
 	rep, err := verify.Run(context.Background(), gates, scope, verify.WithDir(root.Dir()))
 	if err != nil {
-		fmt.Fprintln(stderr, "pika check:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
 	}
 	rep.Warnings = append(rep.Warnings, scopeWarnings...)
 	rep.Warnings = append(rep.Warnings, gate1Warnings...)
 
 	if *jsonOut {
-		data, err := json.Marshal(rep)
-		if err != nil {
-			fmt.Fprintln(stderr, "pika check:", err)
-			return 2
+		if !emitJSON(stdout, stderr, "check", rep.Pass, rep) {
+			return 1
 		}
-		fmt.Fprintln(stdout, string(data))
 	} else {
 		printReport(rep, stdout)
 	}

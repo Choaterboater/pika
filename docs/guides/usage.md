@@ -419,6 +419,36 @@ pika explain <rule-or-gate-or-code>
 
 All commands: `0` success, `1` failure, `2` usage/config error.
 
+## JSON output
+
+Every `--json` payload is the same envelope, whatever produced it:
+
+```json
+{
+  "schema": 1,
+  "command": "check",
+  "ok": true,
+  "result": { }
+}
+```
+
+`result` is the command's own report, unchanged — `check` nests the verification report, `doctor` its findings, `init` the created-file manifest. `ok` is the boolean the exit code is derived from: `ok:false` means exit `1`.
+
+A usage or configuration error (exit `2`) replaces `result` with `error` and prints nothing on stderr:
+
+```json
+{
+  "schema": 1,
+  "command": "check",
+  "ok": false,
+  "error": {"code": "usage", "message": "unexpected argument \"junk\""}
+}
+```
+
+`code` is `usage` (the invocation was wrong) or `config` (the repository state prevents the command from running). If `--json` itself could not be parsed — an unknown flag, for instance — the error is plain text on stderr instead, because there is no payload to put it in.
+
+`schema` is the envelope version and only changes on a breaking shape change; `pika mcp` is not covered by it, as it speaks JSON-RPC rather than `--json`.
+
 ## Where state lives
 
 | Path | What | Committed? |

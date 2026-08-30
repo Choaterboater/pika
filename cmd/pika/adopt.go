@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -27,24 +26,23 @@ func runAdopt(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "pika adopt: unexpected argument %q\n", fs.Arg(0))
-		return 2
+		return fail(*jsonOut, stdout, stderr, "adopt", codeUsage,
+			fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
 	root, err := resolveRoot(*rootFlag)
 	if err != nil {
-		fmt.Fprintln(stderr, "pika adopt:", err)
-		return 2
+		return fail(*jsonOut, stdout, stderr, "adopt", codeConfig, err.Error())
 	}
 	rep, err := adopt.Preview(root.Dir())
 	if err != nil {
+		if *jsonOut && emitFailure(stdout, stderr, "adopt", err, nil) {
+			return 1
+		}
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if *jsonOut {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(rep); err != nil {
-			fmt.Fprintln(stderr, err)
+		if !emitJSON(stdout, stderr, "adopt", true, rep) {
 			return 1
 		}
 		return 0
