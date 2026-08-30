@@ -57,9 +57,9 @@ func Files(root *repopath.Root) (*Set, error) {
 	seen := map[string]bool{}
 	// Staged, unstaged, and untracked changes always count.
 	for _, args := range [][]string{
-		{"diff", "--name-only", "--no-renames"},
-		{"diff", "--name-only", "--no-renames", "--cached"},
-		{"ls-files", "--others", "--exclude-standard"},
+		{"diff", "--name-only", "--no-renames", "-z"},
+		{"diff", "--name-only", "--no-renames", "--cached", "-z"},
+		{"ls-files", "--others", "--exclude-standard", "-z"},
 	} {
 		out, err := git(dir, args...)
 		if err != nil {
@@ -74,7 +74,7 @@ func Files(root *repopath.Root) (*Set, error) {
 		return degraded(err.Error()), nil
 	}
 	if base != "" {
-		out, err := git(dir, "diff", "--name-only", "--no-renames", base+"...HEAD")
+		out, err := git(dir, "diff", "--name-only", "--no-renames", "-z", base+"...HEAD")
 		if err != nil {
 			return degraded("git diff against the merge base with " + ref + " failed"), nil
 		}
@@ -109,11 +109,20 @@ func mergeBase(dir string) (ref, base string, err error) {
 	return "", "", nil
 }
 
+// collect adds every path in one NUL-delimited name list to the set.
+//
+// The lists are read with `-z` because without it Git C-quotes any path
+// holding a non-ASCII byte, whitespace or a control character, and a
+// quoted literal matches no package prefix. `--changed` would then drop
+// that file from the change set and skip the gates that own it —
+// narrowing verification by accident, which is the one failure mode this
+// package exists to prevent. Under `-z` each path arrives verbatim, so
+// nothing is trimmed either: leading and trailing whitespace is part of
+// a filename Git just reported exactly.
 func collect(seen map[string]bool, out string) {
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			seen[line] = true
+	for _, path := range strings.Split(out, "\x00") {
+		if path != "" {
+			seen[path] = true
 		}
 	}
 }

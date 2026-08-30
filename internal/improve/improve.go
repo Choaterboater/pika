@@ -1,6 +1,7 @@
 package improve
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -490,11 +491,10 @@ func lifecycle(ctx context.Context, cfg Config, kind string, handle *workrec.Han
 		return result, errors.New("improve: post-handoff checks failed; changes left uncommitted")
 	}
 
-	changed, err := runGit(ctx, cfg.Root, "status", "--porcelain", "--untracked-files=all")
+	entries, err := readStatus(ctx, cfg.Root)
 	if err != nil {
 		return result, err
 	}
-	entries := statusEntries(changed)
 	if moved := privateStateMoved(entries); moved != "" {
 		return result, fmt.Errorf("%w: %s", ErrPrivateStateMoved, moved)
 	}
@@ -742,17 +742,18 @@ func orNoBaseCommit(commit string) string {
 // is allowed to commit. See privateStateDir for why it filters the whole
 // subtree.
 //
-// A rename contributes both of its paths, origin first. Adding the origin
-// is what stages the rename's deletion, so a commit built from this list
-// records the move rather than leaving the file behind at both paths;
-// naming only the destination, as this once did, is also how a private
-// origin escaped the filter entirely. privateStateMoved has already
-// refused that case by the time this runs, so what reaches here is either
-// wholly private (dropped) or wholly public (kept).
+// A rename contributes both of its paths, destination first — the order
+// `-z` reports them in. Adding the origin is what stages the rename's
+// deletion, so a commit built from this list records the move rather
+// than leaving the file behind at both paths; naming only the
+// destination, as this once did, is also how a private origin escaped
+// the filter entirely. privateStateMoved has already refused that case
+// by the time this runs, so what reaches here is either wholly private
+// (dropped) or wholly public (kept).
 func changePaths(entries []statusEntry) []string {
 	out := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		for _, path := range [...]string{entry.origin, entry.path} {
+		for _, path := range [...]string{entry.path, entry.origin} {
 			if path == "" || isPrivateState(path) {
 				continue
 			}
@@ -784,11 +785,11 @@ func changePaths(entries []statusEntry) []string {
 func privateStateMoved(entries []statusEntry) string {
 	for _, entry := range entries {
 		if entry.origin != "" {
-			if isPrivateState(entry.origin) {
-				return entry.origin
-			}
 			if isPrivateState(entry.path) {
 				return entry.path
+			}
+			if isPrivateState(entry.origin) {
+				return entry.origin
 			}
 			continue
 		}
@@ -813,31 +814,103 @@ func runGit(ctx context.Context, root string, args ...string) (string, error) {
 	return string(output), nil
 }
 
-// statusEntry is one line of `git status --porcelain`: its two status
-// columns and the path or paths the line names. A rename or a copy names
-// two — the origin first — and both of them matter, so neither is thrown
-// away here.
+// readStatus reads the working tree exactly as the guards below need to
+// see it: every untracked file named, every path verbatim.
+//
+// It is one function rather than a command and a parse at the call site
+// because the flags and the parser are a single contract — `-z` is what
+// makes the paths verbatim, and a parser fed output produced without it
+// would silently go back to reading Git's quoting as though it were a
+// path.
+func readStatus(ctx context.Context, root string) ([]statusEntry, error) {
+	out, err := gitPorcelain(ctx, root, "status", "--porcelain", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	return statusEntries(out)
+}
+
+// gitPorcelain runs Git for machine-readable output and returns stdout
+// alone.
+//
+// runGit merges stderr into what it returns, which is right for output
+// nothing parses and wrong for this: a warning Git wrote to stderr would
+// arrive inside a NUL-delimited record, and a parser that refuses what
+// it cannot understand would refuse a run that had nothing wrong with
+// it. Diagnostics still reach the error, where they belong.
+func gitPorcelain(ctx context.Context, root string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = root
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("improve: git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return string(output), nil
+}
+
+// statusEntry is one record of `git status --porcelain -z`: its two
+// status columns, the path the record names, and — for a rename or a
+// copy — the path the content came from. Both sides matter, so neither
+// is thrown away here.
+//
+// `-z` is what makes the paths trustworthy. Without it Git C-quotes any
+// path holding a non-ASCII byte, whitespace or a control character
+// (`core.quotePath` is on by default), so `.project/state/wéird.json`
+// arrives as the literal `".project/state/w\303\251ird.json"` — a string
+// no prefix test for `.project/state` matches, and every guard below it
+// fails open on exactly the input shaped to defeat them. Under `-z` Git
+// emits each path verbatim and quotes nothing.
 type statusEntry struct {
 	code   string
-	origin string // the pre-rename path; empty unless the line named two
+	origin string // the pre-rename path; empty unless the record named two
 	path   string
 }
 
-func statusEntries(value string) []statusEntry {
-	var out []statusEntry
-	for _, line := range strings.Split(value, "\n") {
-		if len(line) < 4 {
-			continue
+// statusEntries parses `git status --porcelain -z` into its records.
+//
+// `-z` also changes how a rename is encoded, and the change is not
+// cosmetic: the `->` is gone and the field order is reversed, so a
+// rename arrives as `XY <destination>\0<origin>\0` and the origin is a
+// separate trailing field read after the path it moved to.
+//
+// A record this cannot parse is an error, never a skip. Everything the
+// caller does with these entries is a guard, and a guard that quietly
+// discards the record it failed to understand opens on precisely the
+// input that confused it.
+func statusEntries(value string) ([]statusEntry, error) {
+	fields := strings.Split(value, "\x00")
+	// Every record is NUL-terminated rather than NUL-separated, so
+	// well-formed output ends in an empty trailing field — as does the
+	// empty output of a clean tree.
+	if n := len(fields); n > 0 && fields[n-1] == "" {
+		fields = fields[:n-1]
+	}
+	out := make([]statusEntry, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		field := fields[i]
+		// Two status columns, the one space `-z` keeps as their
+		// separator, and a path of at least one byte.
+		if len(field) < 4 || field[2] != ' ' {
+			return nil, fmt.Errorf("improve: unparsable git status record %q", field)
 		}
-		entry := statusEntry{code: line[:2]}
-		entry.path = strings.TrimSpace(line[3:])
-		if origin, dest, renamed := strings.Cut(entry.path, " -> "); renamed {
-			entry.origin, entry.path = origin, dest
-		}
-		if entry.path == "" {
-			continue
+		entry := statusEntry{code: field[:2], path: field[3:]}
+		if renameOrCopy(entry.code) {
+			i++
+			if i >= len(fields) || fields[i] == "" {
+				return nil, fmt.Errorf("improve: git status record %q names no rename origin", field)
+			}
+			entry.origin = fields[i]
 		}
 		out = append(out, entry)
 	}
-	return out
+	return out, nil
+}
+
+// renameOrCopy reports whether a status code is the one shape that makes
+// the next field an origin rather than the next record. Either column
+// can carry it, and R and C are the only two letters Git spends on it.
+func renameOrCopy(code string) bool {
+	return strings.ContainsAny(code, "RC")
 }

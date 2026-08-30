@@ -93,6 +93,44 @@ func TestWorkingTreeChangesAreDetected(t *testing.T) {
 	}
 }
 
+// Git C-quotes any path holding a non-ASCII byte, whitespace or a
+// control character unless it is asked for `-z` output, so without it
+// `src/café.go` arrives as the literal `"src/caf\303\251.go"`. That
+// literal matches no package prefix, so `--changed` would drop the file
+// from the change set and skip the gates that own it — narrowing
+// verification by accident, which is the one failure mode this package
+// exists to prevent. Both a modified tracked file and an untracked one
+// are checked: they come from different Git commands.
+func TestNonASCIIPathsAreReportedVerbatim(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	const tracked = "src/café.go"
+	writeFile(t, filepath.Join(dir, filepath.FromSlash(tracked)), "package src\n")
+	gitCommitAll(t, dir, "init")
+	writeFile(t, filepath.Join(dir, filepath.FromSlash(tracked)), "package src // edited\n")
+	const untracked = "src/naïve test.go"
+	writeFile(t, filepath.Join(dir, filepath.FromSlash(untracked)), "package src\n")
+
+	root, _ := repopath.At(dir)
+	set, err := Files(root)
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	if set.Degraded {
+		t.Fatalf("unexpected degradation: %s", set.Reason)
+	}
+	for _, want := range []string{tracked, untracked} {
+		if !contains(set.Paths, want) {
+			t.Errorf("Paths = %q, want it to include %q verbatim", set.Paths, want)
+		}
+	}
+	for _, got := range set.Paths {
+		if strings.HasPrefix(got, `"`) {
+			t.Errorf("Paths = %q, want verbatim paths, not Git's quoting", set.Paths)
+		}
+	}
+}
+
 func TestEmptySetIsNotDegraded(t *testing.T) {
 	dir := t.TempDir()
 	gitInit(t, dir)
