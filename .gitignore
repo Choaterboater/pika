@@ -5,6 +5,7 @@
 *.test
 *.out
 .superpowers/
+.worktrees/
 
 # Compiled binary
 /pika
