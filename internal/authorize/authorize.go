@@ -12,7 +12,9 @@
 package authorize
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"sort"
 	"strings"
 
@@ -47,13 +49,29 @@ type Options struct {
 	GitHub     []string
 }
 
-// Build produces the envelope for the declared scope. Nothing beyond the
-// scope's own grants and the explicit lists is ever granted: budget is
-// deliberately never written, because no code compares spend against it,
-// and a ceiling that is never enforced is a lie.
-func Build(opts Options) (*envelope.Env, error) {
+// errNoContract marks the single gateCommands failure that is not a
+// defect in the repository: nothing has been adopted yet, so there are no
+// resolved gates to derive exec grants from.
+var errNoContract = errors.New("no contract")
+
+// Build produces the envelope for the declared scope, plus any warnings
+// about what could not be derived. Nothing beyond the scope's own grants
+// and the explicit lists is ever granted: budget is deliberately never
+// written, because no code compares spend against it, and a ceiling that
+// is never enforced is a lie.
+//
+// The write grant does not depend on the contract. Exec grants are
+// derived from the gates a contract resolves to, but preview_plan — the
+// one MCP tool that only ever runs *before* a contract exists — needs
+// fs_write in exactly the state where no contract can be loaded. Failing
+// the whole build there left the canonical "run pika authorize --scope
+// project" remediation with no state in which it worked. A missing
+// contract is therefore a warning and an empty Exec list; a contract that
+// exists and does not load is still an error, because that is a real
+// defect and silently granting writes over it would hide it.
+func Build(opts Options) (*envelope.Env, []string, error) {
 	if opts.Root == nil {
-		return nil, fmt.Errorf("authorize: no repository root")
+		return nil, nil, fmt.Errorf("authorize: no repository root")
 	}
 	env := &envelope.Env{
 		Schema:           1,
@@ -70,24 +88,32 @@ func Build(opts Options) (*envelope.Env, error) {
 		// subtree: this grant authorizes writes anywhere in the repo.
 		env.Allow.FSWrite = []string{"."}
 	default:
-		return nil, fmt.Errorf("authorize: unknown scope %q (want %s, %s, or %s)",
+		return nil, nil, fmt.Errorf("authorize: unknown scope %q (want %s, %s, or %s)",
 			opts.Scope, ScopeRead, ScopeProject, ScopeRepo)
 	}
 
 	// The read scope authorizes no change at all, so it needs no
 	// contract: it must work in a repository that was never adopted.
+	var warnings []string
 	if opts.Scope != ScopeRead {
 		execs, err := gateCommands(opts.Root)
-		if err != nil {
-			return nil, err
+		switch {
+		case err == nil:
+			env.Allow.Exec = execs
+		case errors.Is(err, errNoContract):
+			warnings = append(warnings, fmt.Sprintf(
+				"no contract at %s yet, so no gate commands were derived: this envelope grants no exec. "+
+					"Re-run \"pika authorize --force\" after \"pika init\" or \"pika adopt\" to authorize the gates the contract declares.",
+				opts.Root.Contract()))
+		default:
+			return nil, nil, err
 		}
-		env.Allow.Exec = execs
 	}
 
 	env.Allow.Network = dedupe(opts.Network)
 	env.Allow.Credential = dedupe(opts.Credential)
 	env.Allow.GitHub = dedupe(opts.GitHub)
-	return env, nil
+	return env, warnings, nil
 }
 
 // gateCommands collects the exec grants for the gates the contract will
@@ -99,10 +125,17 @@ func Build(opts Options) (*envelope.Env, error) {
 // failure mode this command exists to remove. It is also the tighter
 // grant, which is the right default: "go" would additionally authorize
 // "go build -o /anywhere", a command no gate runs.
+//
+// A contract that is simply absent yields errNoContract, which Build
+// downgrades to a warning; every other failure is a real defect in a
+// contract that does exist and is returned as an error.
 func gateCommands(root *repopath.Root) ([]string, error) {
 	c, err := contract.Load(root.Contract())
 	if err != nil {
-		return nil, fmt.Errorf("authorize: %w (run \"pika init\" or \"pika adopt\" first)", err)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%w at %s", errNoContract, root.Contract())
+		}
+		return nil, fmt.Errorf("authorize: %w", err)
 	}
 	resolved, err := profiles.Resolve(c.Profiles)
 	if err != nil {

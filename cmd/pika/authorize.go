@@ -23,6 +23,7 @@ type authorizeResult struct {
 	Written  bool          `json:"written"`
 	Envelope *envelope.Env `json:"envelope"`
 	Document string        `json:"document"`
+	Warnings []string      `json:"warnings,omitempty"`
 	Changes  []string      `json:"changes,omitempty"`
 	Error    string        `json:"error,omitempty"`
 }
@@ -60,7 +61,7 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return fail(*jsonOut, stdout, stderr, "authorize", codeConfig, err.Error())
 	}
 
-	env, err := authorize.Build(authorize.Options{
+	env, warnings, err := authorize.Build(authorize.Options{
 		Root:       root,
 		Scope:      *scope,
 		Network:    network,
@@ -69,6 +70,12 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	})
 	if err != nil {
 		return fail(*jsonOut, stdout, stderr, "authorize", codeUsage, err.Error())
+	}
+	// Warnings go to stderr even in text mode: they report a grant the
+	// operator asked for and did not get, which is exactly the kind of
+	// silence that sends someone into an envelope_denied loop.
+	for _, w := range warnings {
+		fmt.Fprintf(stderr, "pika authorize: warning: %s\n", w)
 	}
 	doc, err := authorize.Render(env)
 	if err != nil {
@@ -85,6 +92,7 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		Path:     root.Envelope(),
 		Envelope: env,
 		Document: string(doc),
+		Warnings: warnings,
 	}
 
 	if !*jsonOut {

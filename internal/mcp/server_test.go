@@ -225,7 +225,7 @@ func writeGeneratedEnvelope(t *testing.T, root, scope string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := authorize.Build(authorize.Options{Root: r, Scope: scope})
+	env, _, err := authorize.Build(authorize.Options{Root: r, Scope: scope})
 	if err != nil {
 		t.Fatal(err)
 	}

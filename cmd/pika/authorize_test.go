@@ -226,10 +226,26 @@ func TestAuthorizeReadScopeWorksWithoutAContract(t *testing.T) {
 		t.Errorf("read scope granted something mutating:\n%s", data)
 	}
 
-	// The project scope in the same directory has no gates to authorize
-	// and must say so rather than write an envelope that grants nothing.
+	// The project scope in the same directory has no gates to derive
+	// exec grants from, but its write grant does not depend on a
+	// contract: preview_plan needs fs_write in exactly this state, so
+	// the remediation `pika doctor` and `pika explain envelope_denied`
+	// both print has to work here.
 	code, _, errb := dispatchArgs(t, "authorize", "--scope", "project", "--force")
-	if code != 2 {
-		t.Fatalf("project scope without a contract exit = %d, want 2 (stderr %q)", code, errb)
+	if code != 0 {
+		t.Fatalf("project scope without a contract exit = %d, want 0 (stderr %q)", code, errb)
+	}
+	if !strings.Contains(errb, "no contract") || !strings.Contains(errb, "exec") {
+		t.Errorf("stderr = %q, want a warning that no exec grants were derived", errb)
+	}
+	data, err = os.ReadFile(filepath.Join(dir, ".project", "state", "envelope.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "fs_write") {
+		t.Errorf("project scope granted no writes:\n%s", data)
+	}
+	if strings.Contains(string(data), "exec") {
+		t.Errorf("project scope invented exec grants with no contract to derive them from:\n%s", data)
 	}
 }

@@ -1,6 +1,7 @@
 package authorize
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,7 +55,7 @@ func projectRoot(t *testing.T) *repopath.Root {
 }
 
 func TestReadScopeGrantsNothingMutating(t *testing.T) {
-	env, err := Build(Options{Root: projectRoot(t), Scope: ScopeRead})
+	env, _, err := Build(Options{Root: projectRoot(t), Scope: ScopeRead})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -67,7 +68,7 @@ func TestReadScopeGrantsNothingMutating(t *testing.T) {
 }
 
 func TestProjectScopeGrantsProjectPathsOnly(t *testing.T) {
-	env, err := Build(Options{Root: projectRoot(t), Scope: ScopeProject})
+	env, _, err := Build(Options{Root: projectRoot(t), Scope: ScopeProject})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestProjectScopeGrantsProjectPathsOnly(t *testing.T) {
 // that task a green test over behavior that does not exist yet, so this
 // test deliberately stops at the emitted grant.
 func TestRepoScopeGrantsRepoRoot(t *testing.T) {
-	env, err := Build(Options{Root: projectRoot(t), Scope: ScopeRepo})
+	env, _, err := Build(Options{Root: projectRoot(t), Scope: ScopeRepo})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestRepoScopeGrantsRepoRoot(t *testing.T) {
 // or the command is theater.
 func TestGeneratedEnvelopeAuthorizesTheGatesItWasDerivedFrom(t *testing.T) {
 	root := projectRoot(t)
-	env, err := Build(Options{Root: root, Scope: ScopeProject})
+	env, _, err := Build(Options{Root: root, Scope: ScopeProject})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestGeneratedEnvelopeAuthorizesTheGatesItWasDerivedFrom(t *testing.T) {
 // authorized, and nothing outside is.
 func TestProjectScopeAuthorizesKernelWrites(t *testing.T) {
 	root := projectRoot(t)
-	env, err := Build(Options{Root: root, Scope: ScopeProject})
+	env, _, err := Build(Options{Root: root, Scope: ScopeProject})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestProjectScopeAuthorizesKernelWrites(t *testing.T) {
 
 func TestNetworkCredentialGitHubNeverImplicit(t *testing.T) {
 	for _, scope := range []string{ScopeRead, ScopeProject, ScopeRepo} {
-		env, err := Build(Options{Root: projectRoot(t), Scope: scope})
+		env, _, err := Build(Options{Root: projectRoot(t), Scope: scope})
 		if err != nil {
 			t.Fatalf("Build(%s): %v", scope, err)
 		}
@@ -198,7 +199,7 @@ func TestNetworkCredentialGitHubNeverImplicit(t *testing.T) {
 // Render has no budget field at all, so no ceiling can reach the file
 // even if an Env were built carrying one.
 func TestRenderNeverWritesABudget(t *testing.T) {
-	env, err := Build(Options{Root: projectRoot(t), Scope: ScopeProject})
+	env, _, err := Build(Options{Root: projectRoot(t), Scope: ScopeProject})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestRenderNeverWritesABudget(t *testing.T) {
 }
 
 func TestExplicitGrantsAreHonored(t *testing.T) {
-	env, err := Build(Options{
+	env, _, err := Build(Options{
 		Root:    projectRoot(t),
 		Scope:   ScopeProject,
 		Network: []string{"proxy.golang.org"},
@@ -233,7 +234,7 @@ func TestExplicitGrantsAreHonored(t *testing.T) {
 // The generated document must survive the kernel's own strict validator.
 func TestRenderedEnvelopeValidates(t *testing.T) {
 	for _, scope := range []string{ScopeRead, ScopeProject, ScopeRepo} {
-		env, err := Build(Options{
+		env, _, err := Build(Options{
 			Root:       projectRoot(t),
 			Scope:      scope,
 			Network:    []string{"proxy.golang.org"},
@@ -261,21 +262,69 @@ func TestRenderedEnvelopeValidates(t *testing.T) {
 }
 
 func TestUnknownScopeIsAnError(t *testing.T) {
-	if _, err := Build(Options{Root: projectRoot(t), Scope: "wide"}); err == nil {
+	if _, _, err := Build(Options{Root: projectRoot(t), Scope: "wide"}); err == nil {
 		t.Fatal("Build(unknown scope) = nil error, want error")
 	}
 }
 
-func TestProjectScopeRequiresAContract(t *testing.T) {
+// preview_plan is the one MCP tool that only ever runs before a contract
+// exists, and it needs fs_write. When the project scope refused to build
+// without a contract, no --scope value could authorize it in the state it
+// requires — and `pika doctor` and `pika explain envelope_denied` both
+// send an operator here, so the canonical remediation looped. The write
+// grant does not depend on the contract, so it must not fail with it.
+func TestProjectScopeWorksBeforeAdoption(t *testing.T) {
 	root, err := repopath.At(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Build(Options{Root: root, Scope: ScopeProject}); err == nil {
-		t.Fatal("Build without a contract = nil error, want error")
+	env, warnings, err := Build(Options{Root: root, Scope: ScopeProject})
+	if err != nil {
+		t.Fatalf("Build without a contract: %v", err)
 	}
-	if _, err := Build(Options{Root: root, Scope: ScopeRead}); err != nil {
+	if len(env.Allow.FSWrite) != len(projectPaths) {
+		t.Errorf("fs_write = %v, want the project paths %v", env.Allow.FSWrite, projectPaths)
+	}
+	// Empty and not guessed: exec grants are derived from resolved
+	// gates, and there are none to derive from.
+	if len(env.Allow.Exec) != 0 {
+		t.Errorf("exec = %v, want none derivable without a contract", env.Allow.Exec)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "no contract") {
+		t.Fatalf("warnings = %v, want one naming the missing contract", warnings)
+	}
+	if !strings.Contains(warnings[0], "exec") {
+		t.Errorf("warning = %q, want it to say what was not granted", warnings[0])
+	}
+
+	if _, _, err := Build(Options{Root: root, Scope: ScopeRead}); err != nil {
 		t.Fatalf("read scope must work without a contract: %v", err)
+	}
+}
+
+// The downgrade is for an absent contract only. A contract that exists
+// and does not load is a real defect, and granting writes over it would
+// hide the one thing the operator needs to fix.
+func TestBrokenContractStillFailsTheBuild(t *testing.T) {
+	dir := t.TempDir()
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(root.Contract(), []byte("schema: 1\nproject: [not, a, mapping]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env, warnings, err := Build(Options{Root: root, Scope: ScopeProject})
+	if err == nil {
+		t.Fatalf("Build over a malformed contract = %+v (warnings %v), want an error", env, warnings)
+	}
+	// It must fail *as a broken contract*, not be mistaken for the
+	// absent-contract case the warning path handles.
+	if errors.Is(err, errNoContract) {
+		t.Fatalf("Build error = %v, want a contract-load failure, not the no-contract downgrade", err)
 	}
 }
 
@@ -305,7 +354,7 @@ commands:
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := Build(Options{Root: root, Scope: ScopeProject})
+	env, _, err := Build(Options{Root: root, Scope: ScopeProject})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -322,7 +371,7 @@ commands:
 
 func TestDiffReportsWhatWouldChange(t *testing.T) {
 	root := projectRoot(t)
-	next, err := Build(Options{Root: root, Scope: ScopeProject})
+	next, _, err := Build(Options{Root: root, Scope: ScopeProject})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

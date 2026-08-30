@@ -272,6 +272,8 @@ Before this command existed, the only way to let an agent write anything was to 
 
 `read` works in a repository that was never adopted, because it authorizes no change and therefore needs no contract.
 
+`project` and `repo` work there too: the write grant does not depend on a contract. Exec grants are derived from the gates a contract resolves to, so before `pika init` or `pika adopt` there are none to derive — `authorize` says so on stderr, writes the envelope with no `exec`, and exits 0. That is the state `preview_plan` runs in, and it is why the remediation `pika doctor` prints works before adoption. Re-run `pika authorize --force` afterwards to pick up the contract's gate commands. A contract that exists and does not parse is still an error: it is a defect to fix, not a grant to skip.
+
 `exec` grants are the gate's **full argv**, not just the binary: `go build -o /dev/null ./...`, not `go`. That is what the enforcement side matches against, and it is the tighter grant — authorizing bare `go` would also authorize `go build -o /anywhere`, a command no gate runs.
 
 Generated for this repository:
