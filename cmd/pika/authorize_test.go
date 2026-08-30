@@ -74,6 +74,43 @@ func TestAuthorizeWritesMode0600(t *testing.T) {
 	}
 }
 
+// The migration this command exists for: an operator hand-authored an
+// envelope (which lands 0644) and runs --force to regenerate it. Go's
+// os.WriteFile does not change the mode of a file that already exists,
+// so the overwrite path must chmod explicitly — and the message must
+// not claim a mode nobody confirmed.
+func TestAuthorizeForceTightensModeOnOverwrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes are not meaningful on Windows")
+	}
+	dir := authorizeProject(t)
+	path := filepath.Join(dir, ".project", "state", "envelope.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("schema: 1\nallow:\n  fs_write:\n    - .project\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errb := dispatchArgs(t, "authorize", "--scope", "project", "--force")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errb)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("envelope mode after --force overwrite = %04o, want 0600", got)
+	}
+	if !strings.Contains(out, "(mode 0600)") {
+		t.Errorf("stdout does not report the verified mode:\n%s", out)
+	}
+}
+
 // Overwriting an authorization silently is how an operator loses grants
 // they deliberately added. Refuse, show the delta, write nothing.
 func TestAuthorizeRefusesToOverwriteWithoutForce(t *testing.T) {

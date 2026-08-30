@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/Choaterboater/pika/internal/authorize"
@@ -110,10 +111,19 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	}
 	// 0600, not 0644: this file is a capability grant, and every other
 	// user on the machine has no business reading what an agent running
-	// as this operator is allowed to do.
+	// as this operator is allowed to do. os.WriteFile only applies perm
+	// when it *creates* the file, so replacing a hand-authored 0644
+	// envelope would leave it world-readable; chmod the result instead
+	// of assuming the write settled it.
 	if err := os.WriteFile(root.Envelope(), doc, 0o600); err != nil {
 		fmt.Fprintf(stderr, "pika authorize: %v\n", err)
 		return 1
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(root.Envelope(), 0o600); err != nil {
+			fmt.Fprintf(stderr, "pika authorize: %v\n", err)
+			return 1
+		}
 	}
 	// Re-read what actually landed and put it through the kernel's own
 	// loader. A generated envelope that fails the validator every other
@@ -129,7 +139,14 @@ func runAuthorize(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		writeJSON(stdout, res)
 		return 0
 	}
-	fmt.Fprintf(stdout, "\nwrote %s (mode 0600), verified by envelope.Load\n", root.Envelope())
+	// Report the mode actually on disk rather than the one we asked for:
+	// an unconditional "(mode 0600)" is precisely what kept the overwrite
+	// case invisible.
+	mode := ""
+	if info, err := os.Stat(root.Envelope()); err == nil {
+		mode = fmt.Sprintf(" (mode %04o)", info.Mode().Perm())
+	}
+	fmt.Fprintf(stdout, "\nwrote %s%s, verified by envelope.Load\n", root.Envelope(), mode)
 	return 0
 }
 
