@@ -41,7 +41,7 @@ them have an enforcement call site in the binary today.
 | Envelope class | Enforced? | Where |
 |---|---|---|
 | `fs_write` | **Yes** | `internal/mcp/server.go` — `preview_plan`, `acquire_scope`, `release_scope`, `publish_evidence`, `propose_decision`, `record_sources` |
-| `exec` | **Yes (new in M1.5)** | `internal/mcp/server.go` — `run_checks` authorizes each gate's full argv before spawning it |
+| `exec` | **Yes (new in M1.5)** | `internal/mcp/server.go` — `run_checks` authorizes each gate's full argv before spawning it, and `preview_plan` authorizes every discovered check command its baseline would run |
 | `fs_read` | No | schema and matcher exist (`Envelope.allowsRead`); no call site asks |
 | `network` | No | schema and matcher exist; no call site asks |
 | `credential` | No | schema and matcher exist; no call site asks |

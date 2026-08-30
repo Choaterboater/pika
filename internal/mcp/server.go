@@ -90,6 +90,12 @@ func toolErrf(code, format string, args ...any) *toolError {
 	return &toolError{Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
+// Error lets a *toolError travel through an ordinary error return and be
+// recovered with errors.As. adopt.Preview's exec authorizer is the first
+// caller that needs it: the callback contract is error, but the agent is
+// owed the stable code, not a flattened string.
+func (e *toolError) Error() string { return e.Code + ": " + e.Message }
+
 // toolResult is the MCP tool result envelope: {ok, data?, error?}.
 type toolResult struct {
 	OK    bool           `json:"ok"`
@@ -152,7 +158,7 @@ var tools = []tool{
 	},
 	{
 		name:        "preview_plan",
-		description: "Run the read-only adoption preview and write the two .draft proposal files (.project/contract.yaml.draft, .project/profiles.lock.draft). Never touches tracked files.",
+		description: "Run the adoption preview: write the two .draft proposal files (.project/contract.yaml.draft, .project/profiles.lock.draft) and run each discovered check command once to record a baseline. Never touches tracked files; needs fs_write for the drafts and exec for every discovered command.",
 		inputSchema: schemaObj(nil),
 		handler:     (*server).toolPreviewPlan,
 	},
@@ -425,8 +431,13 @@ func summarizeProfiles(r *profiles.Resolved) resolvedProfiles {
 	return out
 }
 
-// toolPreviewPlan implements preview_plan: adopt.Preview writes exactly the
-// two draft files and nothing else, and only after the envelope grants them.
+// toolPreviewPlan implements preview_plan: the adoption inventory, which
+// writes exactly the two draft files and — because a baseline is the point
+// of an adoption preview — runs every check command discovery finds in the
+// repository, once each. Both effects are authorized before either
+// happens: fs_write for the drafts, exec for every command the preview
+// would spawn. An envelope granting writes and no exec cannot make this
+// server spawn a process it found lying in the repository.
 func (s *server) toolPreviewPlan(_ json.RawMessage) (map[string]any, *toolError) {
 	for _, target := range []string{contractDraft, lockDraft} {
 		if terr := s.authorize(envelope.KindFSWrite, target); terr != nil {
@@ -436,8 +447,22 @@ func (s *server) toolPreviewPlan(_ json.RawMessage) (map[string]any, *toolError)
 	if _, err := os.Stat(filepath.Join(s.repoRoot, filepath.FromSlash(contractPath))); err == nil {
 		return nil, toolErrf(errAlreadyAdopted, "%s already exists: repository already adopted; run_checks verifies it", contractPath)
 	}
-	report, err := adopt.Preview(s.repoRoot)
+	// adopt.Preview decides which commands it will spawn and asks here
+	// before running any of them; a denial aborts the preview whole, the
+	// same all-or-nothing rule run_checks applies to its gates.
+	report, err := adopt.Preview(s.repoRoot, adopt.WithExecAuthorizer(func(commands [][]string) error {
+		for _, argv := range commands {
+			if terr := s.authorize(envelope.KindExec, strings.Join(argv, " ")); terr != nil {
+				return terr
+			}
+		}
+		return nil
+	}))
 	if err != nil {
+		var denied *toolError
+		if errors.As(err, &denied) {
+			return nil, denied
+		}
 		return nil, toolErrf(errInternal, "preview: %v", err)
 	}
 	return map[string]any{

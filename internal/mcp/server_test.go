@@ -472,6 +472,65 @@ func TestPreviewPlanProducesDrafts(t *testing.T) {
 	}
 }
 
+// discoverableCheckRepo is a repository whose only interesting property is
+// that discovery finds a check command in it: a root Makefile with a test
+// target becomes ExistingChecks{"test": "make test"}, which adopt.Preview
+// spawns to record its baseline.
+func discoverableCheckRepo(t *testing.T, envelopeDoc string) string {
+	t.Helper()
+	root := fixtureRepo(t, "", envelopeDoc)
+	writeFile(t, root, "Makefile", "test:\n\t@echo baseline\n")
+	return root
+}
+
+// preview_plan runs every discovered check command once to record a
+// baseline. Before this was authorized, an envelope granting writes under
+// .project and no exec at all still let an agent make pika spawn whatever
+// commands happened to be lying in the repository — the same inverted
+// gradient run_checks had.
+func TestPreviewPlanDeniedWithoutExecGrant(t *testing.T) {
+	root := discoverableCheckRepo(t, envelopeYAML(".project"))
+	s := startServer(t, root)
+	s.initialize()
+
+	resp := s.callTool(1, "preview_plan", nil)
+	errObj := wantToolError(t, resp, "envelope_denied")
+	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "make test") {
+		t.Errorf("denial message = %q, want it to name the denied command", msg)
+	}
+	// A denial must cost the repository nothing: no draft, no baseline.
+	for _, draft := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(draft))); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("denied preview_plan wrote %s: %v", draft, err)
+		}
+	}
+}
+
+// The mirror image: granting exec for exactly the discovered command lets
+// the preview run it, so the grant an operator is told to make is the one
+// the tool asks for.
+func TestPreviewPlanAllowedWithExecGrant(t *testing.T) {
+	doc := "schema: 1\nallow:\n  fs_write: [.project]\n  exec: [\"make test\"]\n"
+	root := discoverableCheckRepo(t, doc)
+	s := startServer(t, root)
+	s.initialize()
+
+	res := wantResult(t, s.callTool(1, "preview_plan", nil))
+	data := res["data"].(map[string]any)
+	baseline, ok := data["baselineChecks"].([]any)
+	if !ok || len(baseline) != 1 {
+		t.Fatalf("baselineChecks = %v, want the one discovered command", data["baselineChecks"])
+	}
+	if got := baseline[0].(map[string]any)["command"]; got != "make test" {
+		t.Errorf("baseline command = %v, want %q", got, "make test")
+	}
+	for _, draft := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(draft))); err != nil {
+			t.Errorf("preview_plan did not write %s: %v", draft, err)
+		}
+	}
+}
+
 func TestRunChecksReport(t *testing.T) {
 	contract := "schema: 1\nproject:\n  name: fixture\n  topology: single\nprofiles:\n  - core@1\ncommands:\n  test: go version\nevidence:\n  publish: sanitized\ngithub:\n  merge: squash\n"
 	root := fixtureRepo(t, contract, "")

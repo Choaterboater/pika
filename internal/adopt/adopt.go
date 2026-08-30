@@ -148,12 +148,47 @@ type Report struct {
 	Preview          []Diff             `json:"preview"`
 }
 
+// previewConfig holds Preview's optional policy hooks. The zero value is
+// the human-shell behavior: nothing is asked before anything runs.
+type previewConfig struct {
+	authorizeExec func(commands [][]string) error
+}
+
+// Option tunes a Preview.
+type Option func(*previewConfig)
+
+// WithExecAuthorizer makes Preview ask fn for permission before it runs
+// the discovered check commands its baseline is built from. fn receives
+// every command as the argv it will actually be spawned with, in
+// execution order, and is called exactly once — after discovery, before
+// the first process starts and before any draft is written — so a
+// refusal never leaves half a baseline run or a stale draft behind. A
+// nil error authorizes them all; a non-nil error is returned to Preview's
+// caller unwrapped, so a caller can recover its own error type from it.
+//
+// Unset, nothing is asked. That is `pika adopt` in a human shell, and it
+// is the same asymmetry `pika check` has with run_checks: an operator
+// typing a command is the authorization, while an agent must be
+// authorized. The MCP server passes the capability envelope here.
+func WithExecAuthorizer(fn func(commands [][]string) error) Option {
+	return func(pc *previewConfig) { pc.authorizeExec = fn }
+}
+
 // Preview inventories repoRoot and produces the adoption report plus the two
 // draft files. It returns an error when the repository is already adopted
 // (a committed contract exists — direct the caller to check/upgrade) or when
 // discovery, draft generation, or validation fails. Baseline command
 // failures are data in the report, not errors.
-func Preview(repoRoot string) (*Report, error) {
+//
+// A preview is read-only with respect to tracked files but not with
+// respect to the machine: it runs every discovered check command once to
+// record a baseline. WithExecAuthorizer is how a caller that must
+// authorize those spawns gets asked before any of them starts.
+func Preview(repoRoot string, opts ...Option) (*Report, error) {
+	var cfg previewConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	if repoRoot == "" {
 		repoRoot = "."
 	}
@@ -167,6 +202,15 @@ func Preview(repoRoot string) (*Report, error) {
 	if err != nil {
 		return nil, fmt.Errorf("adopt: %w", err)
 	}
+	// Every spawn this preview performs is decided here, before the
+	// first one starts and before a draft exists: a denial must cost the
+	// repository nothing.
+	commands := baselineCommands(inv.ExistingChecks)
+	if cfg.authorizeExec != nil {
+		if err := cfg.authorizeExec(spawnedArgv(commands)); err != nil {
+			return nil, err
+		}
+	}
 	resolved, err := profiles.Resolve([]string{profiles.CoreRef})
 	if err != nil {
 		return nil, fmt.Errorf("adopt: %w", err)
@@ -177,7 +221,7 @@ func Preview(repoRoot string) (*Report, error) {
 
 	conventions, exceptions, conflicts, changes := classifyConventions(repoRoot, inv, resolved, draft)
 
-	baseline, err := runBaseline(repoRoot, inv.ExistingChecks)
+	baseline, err := runBaseline(repoRoot, commands)
 	if err != nil {
 		return nil, fmt.Errorf("adopt: baseline: %w", err)
 	}
@@ -433,15 +477,47 @@ func requiredExists(repoRoot, req string) bool {
 	return strings.HasSuffix(req, "/") == info.IsDir() || !strings.HasSuffix(req, "/")
 }
 
+// baselineCommand pairs a discovered check verb with the argv the baseline
+// will spawn for it. An empty argv means the discovered command was blank:
+// it is recorded as a baseline failure and nothing is spawned.
+type baselineCommand struct {
+	verb    string
+	command string
+	argv    []string
+}
+
+// baselineCommands parses the discovered check commands into the exact
+// argv lines runBaseline will spawn, in execution order. It is the single
+// answer to "what does a preview execute": the exec authorizer is asked
+// about these and runBaseline runs these, so the two cannot drift.
+func baselineCommands(existing map[string]string) []baselineCommand {
+	out := make([]baselineCommand, 0, len(existing))
+	for _, verb := range sortedVerbs(existing) {
+		command := existing[verb]
+		out = append(out, baselineCommand{verb: verb, command: command, argv: strings.Fields(command)})
+	}
+	return out
+}
+
+// spawnedArgv projects the commands that actually reach exec, in order.
+func spawnedArgv(commands []baselineCommand) [][]string {
+	out := make([][]string, 0, len(commands))
+	for _, bc := range commands {
+		if len(bc.argv) > 0 {
+			out = append(out, bc.argv)
+		}
+	}
+	return out
+}
+
 // runBaseline executes each discovered check command once, sequentially,
 // each with a 30s deadline, and records the outcome. A command that cannot
 // start is a baseline failure (exit -1), not an adopt error.
-func runBaseline(repoRoot string, existing map[string]string) ([]BaselineCheck, error) {
-	out := make([]BaselineCheck, 0, len(existing))
-	for _, verb := range sortedVerbs(existing) {
-		command := existing[verb]
-		bc := BaselineCheck{Verb: verb, Command: command, Exit: -1, Status: "fail"}
-		argv := strings.Fields(command)
+func runBaseline(repoRoot string, commands []baselineCommand) ([]BaselineCheck, error) {
+	out := make([]BaselineCheck, 0, len(commands))
+	for _, c := range commands {
+		bc := BaselineCheck{Verb: c.verb, Command: c.command, Exit: -1, Status: "fail"}
+		argv := c.argv
 		if len(argv) == 0 {
 			out = append(out, bc)
 			continue
