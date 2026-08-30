@@ -16,11 +16,6 @@ import (
 	"github.com/Choaterboater/pika/internal/verify"
 )
 
-// handoffStateDir is the retired bundle location. Nothing writes here any
-// more; changePaths still filters it so a bundle left by an older Pika is
-// never swept into a commit.
-const handoffStateDir = ".project/state/handoffs"
-
 // ErrNoActionableFindings indicates that a check report has no failed gates
 // to give an agent. Warnings intentionally do not count as repair work.
 var ErrNoActionableFindings = errors.New("improve: no actionable failed check gates")
@@ -84,7 +79,8 @@ type Handoff struct {
 // CreateHandoff writes a private redacted report and a repair-only prompt
 // into bundleDir, then runs the supplied agent. It never puts warning-only
 // findings into the prompt: documented exceptions and review signals are not
-// destructive work.
+// destructive work. This is the `pika handoff` entry point: a repair handoff
+// is defined by the failed gates and takes no goal.
 //
 // root and bundleDir are independent: root is the repository the agent and
 // the Git-state checks operate on, while bundleDir is wherever the caller's
@@ -92,6 +88,21 @@ type Handoff struct {
 // bundleDir is mandatory — defaulting it would let a caller silently recreate
 // the unidentified orphan bundles this parameter exists to remove.
 func CreateHandoff(ctx context.Context, root, bundleDir string, report *verify.Report, runner Runner) (Handoff, error) {
+	return createHandoff(ctx, root, bundleDir, "", report, runner)
+}
+
+// createHandoff is the single implementation behind every handoff. The
+// goal is the work an agent is asked to do that the ladder cannot state:
+// feature work supplies one, repair work leaves it empty and is described
+// entirely by its failed gates. Both produce the same bundle, run the
+// same agent and are held to the same Git-state equality check, because a
+// second handoff path would be a second place for those guarantees to
+// drift.
+//
+// With neither a goal nor a failed gate there is nothing to ask for, and
+// the refusal happens before the bundle directory is created so a run
+// with nothing to do leaves nothing behind.
+func createHandoff(ctx context.Context, root, bundleDir, goal string, report *verify.Report, runner Runner) (Handoff, error) {
 	if report == nil {
 		return Handoff{}, errors.New("improve: check report is required")
 	}
@@ -101,8 +112,9 @@ func CreateHandoff(ctx context.Context, root, bundleDir string, report *verify.R
 	if strings.TrimSpace(bundleDir) == "" {
 		return Handoff{}, errors.New("improve: handoff bundle directory is required")
 	}
+	goal = strings.TrimSpace(goal)
 	failed := failedGates(report)
-	if len(failed) == 0 {
+	if goal == "" && len(failed) == 0 {
 		return Handoff{}, ErrNoActionableFindings
 	}
 	stateBefore, err := currentGitState(ctx, root)
@@ -127,7 +139,7 @@ func CreateHandoff(ctx context.Context, root, bundleDir string, report *verify.R
 	if err := os.WriteFile(handoff.ReportPath, []byte(redact.Apply(string(reportJSON))+"\n"), 0o600); err != nil {
 		return Handoff{}, fmt.Errorf("write check report: %w", err)
 	}
-	prompt := buildPrompt(failed)
+	prompt := buildPrompt(goal, failed)
 	if err := os.WriteFile(handoff.PromptPath, []byte(redact.Apply(prompt)), 0o600); err != nil {
 		return Handoff{}, fmt.Errorf("write handoff prompt: %w", err)
 	}
@@ -226,17 +238,26 @@ func failedGates(report *verify.Report) []verify.GateResult {
 	return failed
 }
 
-func buildPrompt(failed []verify.GateResult) string {
+// buildPrompt states the work and nothing else. The rules an agent must
+// obey are identical for both kinds of work, so they are written once;
+// only the sections describing the work differ, and a section that has no
+// content is omitted rather than emitted empty.
+func buildPrompt(goal string, failed []verify.GateResult) string {
 	var b strings.Builder
-	b.WriteString("You are the builder in a verified Pika repair run. Investigate and fix only the failed Pika check gates below. Work in the current repository. Do not run git commit, git merge, git rebase, git push, or any GitHub command; Pika verifies and commits approved changes itself. Do not change vendor assets, public filenames, or generated outputs merely to silence a warning; those must be represented by a documented Pika exception when intentional. Run focused tests while repairing.\n\n")
-	b.WriteString("## Actionable failed gates\n")
-	for _, gate := range failed {
-		fmt.Fprintf(&b, "\n### %s\n", gate.ID)
-		if gate.Reason != "" {
-			fmt.Fprintf(&b, "%s\n", gate.Reason)
-		}
-		if gate.OutputTail != "" {
-			fmt.Fprintf(&b, "```text\n%s\n```\n", gate.OutputTail)
+	b.WriteString("You are the builder in a verified Pika run. Do only the work stated below. Work in the current repository. Do not run git commit, git merge, git rebase, git push, or any GitHub command; Pika verifies and commits approved changes itself. Do not change vendor assets, public filenames, or generated outputs merely to silence a warning; those must be represented by a documented Pika exception when intentional. Run focused tests as you work.\n")
+	if goal != "" {
+		fmt.Fprintf(&b, "\n## Goal\n\n%s\n", goal)
+	}
+	if len(failed) > 0 {
+		b.WriteString("\n## Actionable failed gates\n")
+		for _, gate := range failed {
+			fmt.Fprintf(&b, "\n### %s\n", gate.ID)
+			if gate.Reason != "" {
+				fmt.Fprintf(&b, "%s\n", gate.Reason)
+			}
+			if gate.OutputTail != "" {
+				fmt.Fprintf(&b, "```text\n%s\n```\n", gate.OutputTail)
+			}
 		}
 	}
 	return b.String()

@@ -8,14 +8,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"path/filepath"
 	"time"
 
 	"github.com/Choaterboater/pika/internal/cliout"
 	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/evidence"
 	"github.com/Choaterboater/pika/internal/improve"
 	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/verify"
+	"github.com/Choaterboater/pika/internal/workrec"
 )
 
 const defaultImproveBranch = "chore/pika-improve"
@@ -60,25 +61,72 @@ func runHandoff(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(*jsonOut, stdout, stderr, "handoff", codeConfig, err.Error())
 	}
-	// `pika handoff` has no run record of its own: no M2 task gives it one, so
-	// it still mints an unidentified bundle directory here. Routed to Task 4.
-	bundleDir := filepath.Join(root.Dir(), ".project", "state", "handoffs", fmt.Sprintf("%d", time.Now().UTC().UnixNano()))
-	handoff, err := improve.CreateHandoff(context.Background(), root.Dir(), bundleDir, report, runner)
+	handoff, workID, err := recordedHandoff(context.Background(), root, *agent, report, runner)
 	if err != nil {
-		if *jsonOut && emitFailure(stdout, stderr, "handoff", err, nil) {
+		if *jsonOut && emitFailure(stdout, stderr, "handoff", err, map[string]any{"workId": workID}) {
 			return 1
 		}
 		fmt.Fprintln(stderr, "pika handoff:", err)
 		return 1
 	}
 	if *jsonOut {
-		if !emitJSON(stdout, stderr, "handoff", true, map[string]any{"handoff": handoff, "checks": report}) {
+		if !emitJSON(stdout, stderr, "handoff", true, map[string]any{"workId": workID, "handoff": handoff, "checks": report}) {
 			return 1
 		}
 	} else {
-		fmt.Fprintf(stdout, "handoff: Codex completed; bundle: %s\n", handoff.Dir)
+		fmt.Fprintf(stdout, "handoff: Codex completed; run %s; bundle: %s\n", workID, handoff.Dir)
 	}
 	return 0
+}
+
+// recordedHandoff runs a standalone `pika handoff` as what it is: a short
+// run. A handoff is one phase of the same lifecycle `pika improve` runs,
+// so it gets the same durable record — created before the bundle is
+// written, so the bundle has an identity, and closed with a terminal
+// outcome on both exits. Without this the command minted a bundle at
+// .project/state/handoffs/<unixnano>, which is exactly the anonymous
+// directory the run record exists to abolish, reached through a second
+// door.
+//
+// The record is created only once there is work to hand over: the
+// no-failed-gate exit above returns before this is called, because a run
+// refused before it does anything must leave nothing behind.
+func recordedHandoff(ctx context.Context, root *repopath.Root, agent string, report *verify.Report, runner improve.Runner) (improve.Handoff, string, error) {
+	workID, err := evidence.NewWorkID(time.Now().UTC(), "handoff")
+	if err != nil {
+		return improve.Handoff{}, "", err
+	}
+	// The baseline is already observed by the time this is reached: the
+	// report handed in is what the ladder said, so the run is born with
+	// its baseline phase already complete.
+	handle, err := workrec.Create(root, workrec.Record{
+		WorkID:   workID,
+		Kind:     workrec.KindRepair,
+		Phase:    workrec.PhaseBaseline,
+		Baseline: report,
+		Role:     agent,
+		Runtime:  "codex",
+		Phases:   []workrec.PhaseStamp{{Phase: workrec.PhaseBaseline, At: time.Now().UTC()}},
+	})
+	if err != nil {
+		return improve.Handoff{}, workID, err
+	}
+	handoff, runErr := improve.CreateHandoff(ctx, root.Dir(), handle.HandoffDir(), report, runner)
+	rec := handle.Record()
+	if runErr != nil {
+		rec.Outcome = workrec.OutcomeBlocked
+		rec.Reason = runErr.Error()
+	} else {
+		rec.Phase = workrec.PhaseHandoff
+		rec.Phases = append(rec.Phases, workrec.PhaseStamp{Phase: workrec.PhaseHandoff, At: time.Now().UTC()})
+		// `pika handoff` sets out to produce a bundle, not a commit. It
+		// produced one, so the run is complete rather than abandoned.
+		rec.Outcome = workrec.OutcomeComplete
+	}
+	if err := handle.Save(rec); err != nil {
+		return handoff, workID, errors.Join(runErr, err)
+	}
+	return handoff, workID, runErr
 }
 
 // runImprove implements `pika improve [--branch <name>] [--agent <name>]
