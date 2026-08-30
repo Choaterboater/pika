@@ -178,18 +178,37 @@ func runImprove(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if result.ChecksBefore != nil && result.ChecksBefore.Pass {
-		fmt.Fprintln(stdout, "improve: baseline checks passed; no branch or handoff created")
-	} else if err == nil {
-		fmt.Fprintf(stdout, "improve: verified fixes committed on %s\ncommit: %s\nchanged: %v\n", result.Branch, result.Commit, result.ChangedFiles)
-	} else {
-		fmt.Fprintf(stdout, "improve: stopped on branch %s; no commit created\nhandoff: %s\n", result.Branch, result.Handoff.Dir)
-	}
+	printImproveResult(stdout, result, err)
 	if err != nil {
 		fmt.Fprintln(stderr, "pika improve:", err)
 		return 1
 	}
 	return 0
+}
+
+// printImproveResult writes the human-readable outcome of one run.
+//
+// Every branch names the run. The work id is the only handle an operator
+// has on what just happened — it is the argument to `pika status` and
+// the name of the receipt — so a text-mode run the caller cannot name
+// reproduces the exact gap the durable record exists to close. `pika
+// handoff` prints `run %s`; these say it the same way.
+func printImproveResult(stdout io.Writer, result improve.Result, err error) {
+	switch {
+	case result.WorkID == "":
+		// improve.Run refuses a dirty tree, an unknown work kind and
+		// feature work with no goal before the record exists, and
+		// returns a zero Result. There is no run to name and no branch
+		// or bundle to report, so printing an empty run id would
+		// invent the anonymous run the record abolished.
+		fmt.Fprintln(stdout, "improve: refused before the run started; nothing was created")
+	case result.ChecksBefore != nil && result.ChecksBefore.Pass:
+		fmt.Fprintf(stdout, "improve: baseline checks passed; run %s; no branch or handoff created\n", result.WorkID)
+	case err == nil:
+		fmt.Fprintf(stdout, "improve: verified fixes committed on %s; run %s\ncommit: %s\nchanged: %v\n", result.Branch, result.WorkID, result.Commit, result.ChangedFiles)
+	default:
+		fmt.Fprintf(stdout, "improve: stopped on branch %s; run %s; no commit created\nhandoff: %s\n", result.Branch, result.WorkID, result.Handoff.Dir)
+	}
 }
 
 // configuredRunner delays contract-agent validation until Pika has confirmed
