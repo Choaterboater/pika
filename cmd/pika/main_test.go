@@ -168,6 +168,32 @@ func TestEveryCommandHasSummaryAndUsage(t *testing.T) {
 // word. Flags and placeholders that follow are irrelevant to the guard.
 var commandMention = regexp.MustCompile("`pika ([a-z][a-z-]*)")
 
+// ownedByThisModule reports whether a directory below the repository
+// root holds source this module is answerable for.
+//
+// Two kinds of directory are not ours. One with its own go.mod begins a
+// different module: the testdata fixtures do, and so does every git
+// worktree of another branch under .worktrees/, which is where this
+// guard once failed — on a sibling branch's copy of a message this
+// branch had already fixed. That failure could not happen in CI, whose
+// fresh checkout has no gitignored worktrees, so it was red only on the
+// machines that develop pika; a test green in CI and red locally teaches
+// people to ignore local failures, which is the habit that let `pika
+// upgrade` ship. One prefixed with a dot or an underscore is never built
+// by the go tool, so it is not module source either, which covers .git
+// and whatever resembles it next.
+//
+// Naming .worktrees would have cleared today's failure and nothing else.
+// The module boundary is the rule the next worktree, vendored copy, or
+// nested module already obeys, so nobody has to rediscover this.
+func ownedByThisModule(dir string) bool {
+	if base := filepath.Base(dir); strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_") {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(dir, "go.mod"))
+	return err != nil
+}
+
 // A message that tells an operator to run a command pika does not have is
 // worse than no advice: it is a dead end reached at exactly the moment
 // the operator is stuck, and it is reached long before anyone reads the
@@ -176,7 +202,7 @@ var commandMention = regexp.MustCompile("`pika ([a-z][a-z-]*)")
 // reason: nothing connected the prose to the registry.
 //
 // This walks the registry against every command name mentioned in a Go
-// string literal anywhere in the repository, rather than comparing one
+// string literal anywhere in this module, rather than comparing one
 // known message to one known string, so the same mistake in a message
 // written later is caught too.
 func TestEveryCommandNamedInAMessageIsRegistered(t *testing.T) {
@@ -187,7 +213,9 @@ func TestEveryCommandNamedInAMessageIsRegistered(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			// The root arrives as given and is this module by
+			// definition; everything below it must earn the walk.
+			if path != root && !ownedByThisModule(path) {
 				return fs.SkipDir
 			}
 			return nil
