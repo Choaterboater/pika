@@ -173,7 +173,8 @@ ok    lock           pinned digests match the embedded registry
 ok    exceptions     exceptions record loads
 warn  envelope       no capability envelope at /home/you/pika/.project/state/envelope.yaml
                      → run "pika authorize --scope project"; without it every mutating MCP tool is denied
-ok    gate.format    gofmt -l -w .
+ok    recovery       no interrupted transaction
+ok    gate.format    gofmt -l .
 ok    gate.lint      go vet ./...
 ok    gate.typecheck go build -o /dev/null ./...
 ok    gate.test      go test ./... -count=1
@@ -295,7 +296,7 @@ allow:
   - go run ./cmd/pika version
   - go test ./... -count=1
   - go vet ./...
-  - gofmt -l -w .
+  - gofmt -l .
 rollback_boundary: repository
 ```
 
@@ -341,7 +342,7 @@ pika handoff
 
 `handoff` runs `pika check --all --json`, selects only failed check gates, and invokes the configured `agents.builder` when its runtime is `codex`. It runs Codex locally with a writable-workspace sandbox, automatic review, and network access disabled; it never uses a danger or approval-bypass mode. Pika also refuses the handoff if the agent changes Git history.
 
-The private bundle is written under `.project/state/handoffs/<run-id>/`:
+Every handoff belongs to a run, and the private bundle lives inside that run's record at `.project/state/work/<work-id>/handoff/`:
 
 | File | Purpose |
 | --- | --- |
@@ -372,6 +373,141 @@ agents:
   builder:
     runtime: codex
 ```
+
+---
+
+## 12. Hand a goal to the agent (`pika work`)
+
+```sh
+pika work "add a /healthz endpoint that returns 200"
+```
+
+`work` is the normal entry point. It runs the *same* lifecycle as `improve` — clean worktree, baseline check, branch, Codex handoff, recheck, one verified local commit — and differs in exactly one decision.
+
+A failed gate describes its own repair, so `improve` stops when the baseline is already green: there is nothing left to fix. A goal is work the ladder cannot describe, so a green baseline says nothing about whether the goal has been met, and `work` goes on to the agent regardless. The goal is the entire input, and it reaches the agent verbatim as the `## Goal` section of `prompt.md`.
+
+The goal is exactly one quoted string:
+
+```sh
+pika work "add a /healthz endpoint"           # correct
+pika work add a /healthz endpoint             # exit 2: unquoted, four positionals
+pika work "$GOAL"                             # exit 2 when GOAL is unset or blank
+```
+
+`--branch <name>`, `--agent <name>`, `--json` and `--root <dir>` behave exactly as `improve`'s do, and the default branch is the same `chore/pika-improve` — so a run interrupted before it branched resumes onto the branch `pika resume` would pick anyway.
+
+---
+
+## 13. See what pika has run (`pika status`)
+
+```sh
+pika status                  # every run, newest first
+pika status <work-id>        # one run in full
+```
+
+Every run of `work`, `improve` and `handoff` writes a durable record: its goal, kind, branch, base commit, the phases that completed and when, the terminal outcome, and — when it stopped — the reason verbatim. `status` reads those records and executes nothing.
+
+A repository that has never run anything exits 0 with an empty listing; that is a valid state, not a failure. A record too damaged to read fails the whole listing rather than being quietly skipped: a listing that looked complete while hiding corruption is worse than no listing.
+
+A run showing `in-flight?` has no terminal outcome. That is genuinely ambiguous on disk — a run still working and a run whose final write never landed leave identical records — so `status` says so instead of guessing. Either way the next move is the same: look at the branch, or hand it to `pika resume`.
+
+### The record is local; the receipt is committed
+
+| Path | What | Committed? |
+|---|---|---|
+| `.project/state/work/<work-id>/` | The run record and its handoff bundle: prompts, raw agent output, full ladder reports | **Never** (gitignored) |
+| `.project/evidence/<work-id>.json` | The kernel-issued evidence receipt for a run that attempted work | Yes |
+
+The split is deliberate. The record is operational state — it exists so a run can be resumed and diagnosed on the machine that ran it, and it holds unredacted agent transcripts. The receipt is the public attestation: schema-validated, redacted, and issued by the kernel rather than written by the agent whose work it describes.
+
+---
+
+## 14. Continue an interrupted run (`pika resume`)
+
+```sh
+pika resume <work-id>
+```
+
+A run interrupted by a crash, a lost terminal or a `Ctrl-C` leaves a record naming its branch, its bundle and the last phase that completed. `resume` rejoins it and carries it to a terminal outcome, skipping only the phases whose product is durable: the baseline ladder it already recorded, and the handoff it already ran. The recheck is never skipped — "commit only what the ladder proved" has to be proved by this process against this tree.
+
+There is deliberately **no `--branch` flag**. The run's own record names the branch its work is on, and a flag that is silently ignored whenever the record has one is a flag that will eventually be believed.
+
+`resume` refuses rather than guessing, and each refusal is a different next move:
+
+| Refusal | What it means |
+|---|---|
+| unknown work id | check what you typed; `pika status` lists the runs this repository has |
+| the run already reached a terminal outcome | it is finished; `pika status <work-id>` says how |
+| the run's branch is gone | the work was deleted or merged away; start a new run |
+| the repository moved under the run | look at what moved before resuming anything |
+
+All four exit 2, not 1: nothing was attempted. Exit 1 means the resumed run itself ran and failed.
+
+If Git proves the work already landed — the branch points at the commit the record names — `resume` writes the missing terminal outcome and stops. It does not branch again or re-run an agent over work the repository already contains.
+
+---
+
+## 15. Unwedge a crashed transaction (`pika recover`)
+
+### The situation this exists for
+
+`pika apply` runs under a crash-safe journal and an exclusive lock at `.project/state/recovery/lock`. If the process is killed part-way — a lost SSH session, an OOM kill, a CI runner that vanished — three things are true at once:
+
+1. The tree may be half-mutated: some planned operations ran, the rest did not.
+2. The journal and per-op backups needed to undo them are on disk.
+3. **The lock is still held, and it is never stolen — not even when the process that took it is gone.**
+
+That third point is deliberate: stealing a lock from a process that turns out to still be running is how two transactions come to apply plans to one tree. But it means every later transaction fails, forever, with:
+
+```
+txn: scope lease required: recovery lock at .../recovery/lock held by pid 41234 since ...
+```
+
+`pika recover` is the way out.
+
+### Look first
+
+```sh
+pika recover
+```
+
+The default changes nothing. It reports where recovery state lives, who holds the lock, **whether that process is still running**, and every journaled operation with what a rollback would do to it:
+
+```
+root      /home/you/my-service (contract)
+recovery  /home/you/my-service/.project/state/recovery
+
+lock      tx 17e4c1a09b3f0000-3f9c21ab held by pid 41234 since 2026-08-30T12:00:00Z
+          the holder process is not running, so the lock is stale
+
+transaction 17e4c1a09b3f0000-3f9c21ab
+  undo  write  .project/contract.yaml
+  undo  create .project/profiles.lock
+  skip  delete review/adoption-review.md  (the mutation never ran)
+
+nothing has been changed. Re-run with --apply to roll this back and release the lock.
+```
+
+`undo` and `skip` are not guesses. Each entry is classified against the file on disk and its preserved backup, by the same code the rollback itself uses — so the report is the plan, not a second opinion about it.
+
+### Then act
+
+```sh
+pika recover --apply
+```
+
+This rolls every journaled operation back in reverse order, restores each file byte-for-byte from its backup, retires the journal and the backups, and releases the lock. The repository is left exactly as it was before the transaction started, and new transactions can begin.
+
+### What it refuses
+
+| State | What `pika recover` does |
+|---|---|
+| the holder process is still running | **refuses**, exit 2, naming the pid — wait for it, do not roll its work out from under it |
+| the lock names no holder at all | **refuses**, exit 2 — an empty lock cannot be proved stale, so it says so and names the file to remove once you are certain |
+| a journal entry does not match the disk | stops that journal with an error naming the entry; something outside pika edited those files between the crash and now |
+| nothing pending | exits 0 saying so; a repository with no interrupted transaction is a normal state |
+
+`pika doctor` reports the same state as a `recovery` finding and points here, so the situation is discoverable without already knowing this command exists.
 
 ---
 
@@ -411,11 +547,21 @@ pika check --changed  # while iterating; degrades loudly to --all when git canno
 pika check --all      # before pushing
 ```
 
+**Delegating a piece of work:**
+
+```sh
+pika work "add a /healthz endpoint that returns 200"
+pika status                       # the run, its phases, and how it ended
+pika resume <work-id>             # only if it was interrupted
+git log -1 chore/pika-improve     # the verified commit, still local and unpublished
+```
+
 **Something is off:**
 
 ```sh
-pika doctor                       # root, contract, lock, exceptions, envelope, gates, git
+pika doctor                       # root, contract, lock, exceptions, envelope, recovery, gates, git
 pika explain <rule-or-gate-or-code>
+pika recover                      # when doctor reports a transaction that never finished
 ```
 
 ---
@@ -461,7 +607,10 @@ A usage or configuration error (exit `2`) replaces `result` with `error` and pri
 | `.project/contract.yaml` | Live project contract | Yes |
 | `.project/profiles.lock` | Pinned profile digests | Yes |
 | `.project/exceptions.yaml` | Recorded naming exceptions | Yes |
-| `.project/state/` | Board, recovery journals, handoff bundles, raw transcripts | **Never** (gitignored by init) |
+| `.project/evidence/<work-id>.json` | Kernel-issued evidence receipt for one run — schema-validated and redacted | Yes |
+| `.project/state/` | Board, recovery journals, run records, raw transcripts | **Never** (gitignored by init) |
+| `.project/state/work/<work-id>/` | One run's durable record and its handoff bundle | **Never** |
+| `.project/state/recovery/` | Transaction journals, per-op backups, and the recovery lock | **Never** |
 | `.project/state/envelope.yaml` | Capability envelope — mode 0600, local-only, machine-specific | **Never** |
 | `review/adoption-review.md` | Human-readable adoption review | Yes |
 

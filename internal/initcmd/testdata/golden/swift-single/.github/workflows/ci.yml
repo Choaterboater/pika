@@ -1,35 +1,39 @@
 name: check
+
+# No path filter. A filter can only name the directories that existed
+# when this workflow was scaffolded, so every directory the repository
+# grows afterwards is silently exempt from verification — and CI that
+# skips the change while still reporting success is worse than no CI.
 on:
   push:
     branches: [main]
-    paths:
-      - '.project/**'
-      - 'docs/**'
-      - 'AGENTS.md'
-      - 'README.md'
-      - 'CONTRIBUTING.md'
-      - '.github/workflows/ci.yml'
-      - 'Sources/**'
-      - 'Package.swift'
   pull_request:
-    paths:
-      - '.project/**'
-      - 'docs/**'
-      - 'AGENTS.md'
-      - 'README.md'
-      - 'CONTRIBUTING.md'
-      - '.github/workflows/ci.yml'
-      - 'Sources/**'
-      - 'Package.swift'
+
+# Least privilege: this job reads the tree and nothing else.
+permissions:
+  contents: read
+
+env:
+  # The kernel that judges this repository, pinned to the pika release
+  # that scaffolded it. `@latest` would let the verifier change with no
+  # commit here, so a green pull request goes red on merge with nothing
+  # in the diff to explain it. Bump this deliberately, in its own commit.
+  PIKA_REF: v0.1.0
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # `pika check --changed` resolves a merge base; a shallow clone
+          # has none and degrades to running every gate. Full history
+          # keeps the narrowing path honest when a job opts into it.
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
       - name: Install pika
-        run: go install github.com/Choaterboater/pika/cmd/pika@latest
+        run: go install "github.com/Choaterboater/pika/cmd/pika@$PIKA_REF"
       - name: Verify
         run: pika check --ci

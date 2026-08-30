@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,30 +151,29 @@ func TestCompletionRules(t *testing.T) {
 
 func TestNewWorkID(t *testing.T) {
 	now := time.Date(2026, 8, 28, 14, 3, 9, 0, time.UTC)
-	id1, err := NewWorkID(now, "auth-timeout")
+	id, err := NewWorkID(now, "auth-timeout")
 	if err != nil {
 		t.Fatalf("NewWorkID: %v", err)
 	}
-	id2, _ := NewWorkID(now.Add(300*time.Millisecond), "auth-timeout") // same second
-	if id1 != id2 {
-		t.Errorf("not deterministic within a second: %q vs %q", id1, id2)
-	}
-	if got, want := id1[:8], "20260828"; got != want {
+	if got, want := id[:8], "20260828"; got != want {
 		t.Errorf("date prefix = %q, want %q", got, want)
 	}
-
-	// Different second yields a different hash suffix (collision resistance).
-	id3, _ := NewWorkID(now.Add(2*time.Second), "auth-timeout")
-	if id3 == id1 {
-		t.Error("different seconds produced identical ids")
+	if !strings.HasPrefix(id, "20260828-auth-timeout-") || len(id) != len("20260828-auth-timeout-")+8 {
+		t.Errorf("id = %q, want 20260828-auth-timeout-<8hex>", id)
 	}
-	// The spec §14.1 example shape validates.
+	if err := ValidateWorkID(id); err != nil {
+		t.Errorf("ValidateWorkID(%q): %v", id, err)
+	}
+	// The spec §14.1 example shape validates, and so does a 4-hex id from
+	// before the suffix widened — see TestWorkIDSuffixWidthCompatibility.
 	if err := ValidateWorkID("20260828-auth-timeout-7f3a"); err != nil {
 		t.Errorf("ValidateWorkID rejected spec example: %v", err)
 	}
 	for _, bad := range []string{
 		"", "20260828", "20260828-auth-timeout", "20260828-auth-timeout-7f3",
-		"20260828--auth-7f3a", "20260828-Auth-7f3a", "20260828-auth-7f3a-", "20260828-auth-timeout-7f3a-x",
+		"20260828--auth-7f3a", "20260828-Auth-7f3a", "20260828-auth-7f3a-",
+		"20260828-auth-timeout-7f3a-x", "20260828-auth-timeout-7f3a94c1d",
+		"20260828-auth-timeout-7f3g94c1",
 	} {
 		if err := ValidateWorkID(bad); err == nil {
 			t.Errorf("ValidateWorkID accepted %q", bad)
@@ -183,6 +183,102 @@ func TestNewWorkID(t *testing.T) {
 		if _, err := NewWorkID(now, bad); err == nil {
 			t.Errorf("NewWorkID accepted slug %q", bad)
 		}
+	}
+}
+
+// TestWorkIDSuffixWidthCompatibility pins the claim that widening the
+// suffix from 4 to 8 hex characters was not a flag day: ids written by
+// the earlier 16-bit implementation must still validate, at BOTH
+// enforcement points — workIDPattern via ValidateWorkID, and the work_id
+// pattern in evidence-receipt.schema.json via the schema validator. The
+// two patterns are duplicated strings in two files; this is what catches
+// them drifting apart.
+func TestWorkIDSuffixWidthCompatibility(t *testing.T) {
+	for _, id := range []string{
+		"20260828-auth-timeout-7f3a",     // 4 hex: pre-widening
+		"20260828-auth-timeout-7f3a94",   // 6 hex
+		"20260828-auth-timeout-7f3a94c1", // 8 hex: what NewWorkID mints
+	} {
+		if err := ValidateWorkID(id); err != nil {
+			t.Errorf("ValidateWorkID(%q): %v", id, err)
+		}
+		in := fixture()
+		in.WorkID = id
+		r, err := Build(in)
+		if err != nil {
+			t.Errorf("Build with work_id %q: %v", id, err)
+			continue
+		}
+		// Build already validates against the embedded schema; re-running
+		// Validate states plainly that the schema's own work_id pattern
+		// accepts this width too.
+		if err := Validate(r); err != nil {
+			t.Errorf("schema rejected work_id %q: %v", id, err)
+		}
+	}
+}
+
+// TestWorkIDsDoNotCollideWithinOneSecond pins the property the suffix
+// exists for: the same slug must not keep producing the same id, which
+// silently overwrote one evidence file.
+//
+// Bound: 2048 draws, at most one duplicate. Random ids are not strictly
+// unique — the birthday bound forbids promising that — so the assertion
+// is a duplicate budget, chosen to sit in the wide gap between the two
+// suffix widths. Expected duplicates are about n^2/2^(bits+1):
+//
+//	16 bits: 32 expected. P(at most 1) = e^-32 * 33 ~= 4e-13, so a
+//	         16-bit suffix — or the old constant one, which collapses all
+//	         2048 draws onto a single id — fails every time.
+//	32 bits: 0.00049 expected. P(2 or more) ~= 1.2e-7, so this passes
+//	         comfortably; roughly one spurious failure per eight million
+//	         runs.
+//
+// Raising n would widen neither margin: it makes the 32-bit flake rate
+// grow as n^2 while the 16-bit side is already certain.
+func TestWorkIDsDoNotCollideWithinOneSecond(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	const (
+		n       = 2048
+		maxDups = 1
+	)
+	seen := make(map[string]struct{}, n)
+	firstDup, dupID := -1, ""
+	for i := 0; i < n; i++ {
+		id, err := NewWorkID(now, "auth-timeout")
+		if err != nil {
+			t.Fatalf("NewWorkID: %v", err)
+		}
+		if err := ValidateWorkID(id); err != nil {
+			t.Fatalf("ValidateWorkID(%q): %v", id, err)
+		}
+		if _, dup := seen[id]; dup && firstDup < 0 {
+			firstDup, dupID = i, id
+		}
+		seen[id] = struct{}{}
+	}
+	if dups := n - len(seen); dups > maxDups {
+		t.Fatalf("%d duplicate ids in %d draws for one slug in one second (want at most %d); first duplicate at draw %d: %q",
+			dups, n, maxDups, firstDup, dupID)
+	}
+}
+
+// TestNewWorkIDRandFailure: a failed entropy read is an error, never a
+// fallback to a weaker source that would quietly stop being unique.
+func TestNewWorkIDRandFailure(t *testing.T) {
+	orig := randRead
+	t.Cleanup(func() { randRead = orig })
+	randRead = func([]byte) (int, error) { return 0, errors.New("entropy pool drained") }
+
+	id, err := NewWorkID(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC), "auth-timeout")
+	if err == nil {
+		t.Fatalf("NewWorkID returned %q, want error when the random source fails", id)
+	}
+	if id != "" {
+		t.Errorf("id = %q, want empty on error", id)
+	}
+	if !strings.Contains(err.Error(), "entropy pool drained") {
+		t.Errorf("error does not wrap the rand failure: %v", err)
 	}
 }
 

@@ -45,10 +45,10 @@ type Entry struct {
 
 // Report describes the outcome of recovering one transaction's journal.
 type Report struct {
-	TxID    string
-	Undone  []Entry // ops that had run and were rolled back
-	Skipped []Entry // ops whose mutation never ran
-	Notes   []string
+	TxID    string   `json:"txId"`
+	Undone  []Entry  `json:"undone,omitempty"`  // ops that had run and were rolled back
+	Skipped []Entry  `json:"skipped,omitempty"` // ops whose mutation never ran
+	Notes   []string `json:"notes,omitempty"`
 }
 
 // lockInfo is the diagnostic payload of the recovery lock file. The lock
@@ -378,14 +378,10 @@ func (tx *Tx) restoreBackup(e Entry, abs string) error {
 // recovery — stops that journal's recovery with an error naming the
 // entry.
 func Recover(root string) ([]Report, error) {
-	if root == "" {
-		root = "."
-	}
-	abs, err := filepath.Abs(root)
+	abs, recDir, err := recoveryDir(root)
 	if err != nil {
-		return nil, fmt.Errorf("txn: resolve root %q: %w", root, err)
+		return nil, err
 	}
-	recDir := filepath.Join(abs, filepath.FromSlash(recoveryRelPath))
 	journals, err := filepath.Glob(filepath.Join(recDir, "*.jsonl"))
 	if err != nil {
 		return nil, fmt.Errorf("txn: scan recovery dir: %w", err)

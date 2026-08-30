@@ -15,13 +15,12 @@ package evidence
 
 import (
 	"bytes"
-	"crypto/sha256"
+	"crypto/rand"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strconv"
 	"sync"
 	"time"
 
@@ -42,8 +41,14 @@ const receiptSchemaVersion = 1
 const outputSummaryBytes = 8 * 1024
 
 // workIDPattern is the spec section 14.1 work-id shape:
-// YYYYMMDD-short-slug-4hex, e.g. 20260828-auth-timeout-7f3a.
-var workIDPattern = regexp.MustCompile(`^[0-9]{8}-[a-z0-9]+(-[a-z0-9]+)*-[0-9a-f]{4}$`)
+// YYYYMMDD-short-slug-hex, e.g. 20260828-auth-timeout-7f3a94c1.
+//
+// The suffix is 4 to 8 hex characters. NewWorkID mints 8 (32 bits); the
+// 4-character lower bound keeps ids written by the earlier 16-bit
+// implementation valid, so widening cost no flag day. This pattern is
+// mirrored byte-for-byte by work_id in evidence-receipt.schema.json —
+// change the two together or receipts stop validating.
+var workIDPattern = regexp.MustCompile(`^[0-9]{8}-[a-z0-9]+(-[a-z0-9]+)*-[0-9a-f]{4,8}$`)
 
 // slugPattern is the kebab-case shape NewWorkID accepts for the slug
 // component: lowercase alnum words joined by single hyphens.
@@ -344,12 +349,28 @@ func redactAll(ss []string) []string {
 	return out
 }
 
-// NewWorkID derives a collision-resistant work ID of the spec section
-// 14.1 shape YYYYMMDD-slug-4hex. The 4-hex suffix is the first two bytes
-// of SHA-256 over the slug and the Unix second, so the same slug and
-// timestamp (within the same second) always yield the same ID while
-// distinct runs diverge. The slug must be kebab-case lowercase
-// alnum words, at most maxSlugLen bytes.
+// randRead is the entropy source for work-id suffixes. It is a variable
+// only so tests can observe the read-error path; production always uses
+// crypto/rand.
+var randRead = rand.Read
+
+// NewWorkID mints a work ID of the spec section 14.1 shape
+// YYYYMMDD-slug-hex. The suffix is four bytes drawn from crypto/rand, so
+// two runs of the same slug get distinct IDs and cannot overwrite each
+// other's evidence file. There is deliberately no fallback source: a work
+// ID that quietly stops being unique is worse than a failed run, so a
+// rand read error is returned.
+//
+// The suffix is 32 bits rather than the original 16 because the date
+// prefix is a whole day, so ids collide within a (day, slug) namespace,
+// not a (second, slug) one — and an automated lifecycle reuses one slug
+// all day. At 16 bits the birthday bound put an even-odds first collision
+// around 300 runs of one slug in one day, which is reachable under
+// CI-driven use and surfaces as "cannot start a run": safe, but a
+// self-inflicted outage. 32 bits moves that boundary to ~77,000.
+//
+// The slug must be kebab-case lowercase alnum words, at most maxSlugLen
+// bytes.
 func NewWorkID(now time.Time, slug string) (string, error) {
 	if !slugPattern.MatchString(slug) {
 		return "", fmt.Errorf("evidence: slug %q must be kebab-case lowercase alnum words", slug)
@@ -357,19 +378,19 @@ func NewWorkID(now time.Time, slug string) (string, error) {
 	if len(slug) > maxSlugLen {
 		return "", fmt.Errorf("evidence: slug exceeds %d bytes", maxSlugLen)
 	}
-	h := sha256.New()
-	h.Write([]byte(slug))
-	h.Write([]byte{0})
-	h.Write([]byte(strconv.FormatInt(now.Unix(), 10)))
-	suffix := hex.EncodeToString(h.Sum(nil)[:2])
-	return now.Format("20060102") + "-" + slug + "-" + suffix, nil
+	var b [4]byte
+	if _, err := randRead(b[:]); err != nil {
+		return "", fmt.Errorf("evidence: read random work-id suffix: %w", err)
+	}
+	return now.Format("20060102") + "-" + slug + "-" + hex.EncodeToString(b[:]), nil
 }
 
 // ValidateWorkID checks the spec section 14.1 work-id shape:
-// YYYYMMDD-kebab-slug-4hex.
+// YYYYMMDD-kebab-slug-hex, with a 4-to-8-character hex suffix (NewWorkID
+// mints 8; 4 stays valid for ids written before the suffix widened).
 func ValidateWorkID(id string) error {
 	if !workIDPattern.MatchString(id) {
-		return fmt.Errorf("work_id %q must match YYYYMMDD-kebab-slug-4hex", id)
+		return fmt.Errorf("work_id %q must match YYYYMMDD-kebab-slug-hex with a 4-to-8-character hex suffix", id)
 	}
 	return nil
 }

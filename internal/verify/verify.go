@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -34,12 +36,29 @@ const (
 	unixDevNull = "/dev/null"
 )
 
+// LadderEnvVar names the marker every spawned gate carries: the chain of
+// trees the enclosing ladders are verifying, outermost first, joined with
+// the platform's path-list separator. Run reads it on entry and refuses a
+// run whose target tree is already in the chain. It is the only
+// environment variable the kernel sets.
+const LadderEnvVar = "PIKA_CHECK_LADDER"
+
+// ErrNestedRun is returned by Run when the tree it was asked to verify is
+// already under verification by an enclosing ladder. Callers report it;
+// falling back to running the ladder anyway would restore the loop it
+// exists to cut.
+var ErrNestedRun = errors.New("verify: refusing to re-enter a running ladder")
+
 // runConfig carries the tunables injected through Run options; tests use
 // the deadlines to exercise real timeouts without waiting minutes.
 type runConfig struct {
 	gateTimeout time.Duration
 	reapDelay   time.Duration
 	dir         string
+	// gateEnv is the fully built environment for every spawned gate:
+	// this process's environment with the ladder marker rewritten.
+	// Computed once per Run, not injected by an Option.
+	gateEnv []string
 }
 
 // Option tunes a Run.
@@ -96,6 +115,18 @@ type Gate struct {
 	// exit status and combined output; a nonzero exit fails the gate.
 	// When Func is set, Cmd is informational only.
 	Func func(ctx context.Context) (exit int, output string)
+
+	// FailOnOutput inverts the success criterion for a command gate that
+	// reports by printing rather than by exiting: when set, a gate that
+	// exits 0 but produced output fails anyway. `gofmt -l .` forces it —
+	// it lists every misformatted file and exits 0, and the argv that
+	// would fail is a shell pipeline the kernel deliberately cannot
+	// express (gate argv goes to exec verbatim, spec §16). It is judged
+	// on the captured combined output: a gate reporting drift on stderr
+	// has reported drift. A gate that already failed keeps its
+	// exit-status reason, which says more. Func gates decide their own
+	// status and are never pack-declared, so this governs command gates.
+	FailOnOutput bool
 
 	// SkipReason, when non-empty, records the gate as skipped with this
 	// reason without executing it. A skip does not stop the ladder.
@@ -155,15 +186,45 @@ type Report struct {
 }
 
 // Run executes the ladder: gates in order, first failure skips every
-// downstream gate. Run returns an error only for a malformed CheckSet;
-// gate failures are data in the Report, not errors. Options tune the
-// per-gate execution deadline and post-kill reap delay (used by tests to
-// exercise real deadlines quickly).
+// downstream gate. Gate failures are data in the Report, not errors; Run
+// returns an error only for a malformed CheckSet or for a nested run
+// (ErrNestedRun). Options tune the per-gate execution deadline and
+// post-kill reap delay (used by tests to exercise real deadlines
+// quickly).
 func Run(ctx context.Context, cs CheckSet, scope Scope, opts ...Option) (*Report, error) {
 	rc := runConfig{gateTimeout: defaultGateTimeout, reapDelay: defaultReapDelay}
 	for _, opt := range opts {
 		opt(&rc)
 	}
+
+	// The re-entrancy guard, before any gate runs. `pika check`'s test
+	// gate runs the repository's own suite, and that suite can invoke
+	// pika: in M1.5 the loop re-entered every ~13 seconds until the
+	// machine held ~20 orphaned drivers.
+	//
+	// Refusing — rather than skipping — is deliberate. A skipped gate is
+	// StatusSkip, Pass is Summary.Fail == 0, so a silent skip would
+	// return a green report for a ladder that never ran: the exact
+	// failure class this guard exists to prevent.
+	//
+	// The guard is scoped to the tree under verification, not to the
+	// process. A ladder verifying a fixture in a temp directory is not
+	// the loop — it terminates — and refusing it would forbid every
+	// hermetic test that runs check against a fixture.
+	target, err := targetDir(rc.dir)
+	if err != nil {
+		return nil, err
+	}
+	chain := ladderChain(os.Getenv(LadderEnvVar))
+	for _, enclosing := range chain {
+		if enclosing == target {
+			return nil, fmt.Errorf(
+				"%w: %s (enclosing ladders: %s); a gate re-entered the ladder that spawned it — pin the inner command to a different root",
+				ErrNestedRun, target, strings.Join(chain, ", "))
+		}
+	}
+	rc.gateEnv = gateEnvironment(os.Environ(),
+		strings.Join(append(chain, target), string(os.PathListSeparator)))
 
 	rep := &Report{Gates: make([]GateResult, 0, len(cs))}
 	if scope == CI {
@@ -237,6 +298,9 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 	// An unset dir leaves cmd.Dir empty, which is exec's own "inherit the
 	// process working directory" default.
 	cmd.Dir = rc.dir
+	// Setting cmd.Env replaces the inherited environment wholesale, so
+	// gateEnv carries every inherited entry forward; see gateEnvironment.
+	cmd.Env = rc.gateEnv
 	// Stdin stays nil: gates read /dev/null and can never prompt.
 	setGroup(cmd)
 	// exec.CommandContext's default Cancel kills only the direct child;
@@ -274,7 +338,84 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 			res.Reason = err.Error()
 		}
 	}
+	// After the exit-status branch, never before it: a gate that already
+	// failed keeps the reason that names its exit status. Whitespace
+	// alone is not a report — a gate that printed only a newline has
+	// said nothing.
+	if g.FailOnOutput && res.Status == StatusPass && strings.TrimSpace(string(output)) != "" {
+		res.Status = StatusFail
+		res.Reason = "gate exited 0 but produced output, which this gate reports as failure"
+	}
 	return res, nil
+}
+
+// targetDir resolves the tree a Run verifies. An unset dir means the
+// process working directory, which is exec's own default for a gate.
+func targetDir(dir string) (string, error) {
+	if dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("verify: resolving the working directory: %w", err)
+		}
+		dir = wd
+	}
+	return canonicalDir(dir), nil
+}
+
+// canonicalDir puts a directory in the one comparable form the ladder
+// chain uses: absolute and, where the path exists, symlink-free. Symlink
+// resolution is what makes the guard hold on macOS, where /tmp and
+// /var/folders are symlinks: two spellings of one tree must not read as
+// two different trees. A path that cannot be resolved keeps its absolute
+// form — a gate against a nonexistent directory fails on its own terms.
+func canonicalDir(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return dir
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
+// ladderChain parses the marker into the trees the enclosing ladders are
+// verifying. Entries are canonicalized on the way in so a hand-set marker
+// compares the same as one this package wrote.
+func ladderChain(raw string) []string {
+	parts := filepath.SplitList(raw)
+	chain := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		chain = append(chain, canonicalDir(p))
+	}
+	return chain
+}
+
+// gateEnvironment builds the environment for a spawned gate: everything
+// this process inherited, with the ladder marker set to chain.
+//
+// cmd.Env replaces the whole environment rather than extending it, so the
+// inherited entries are copied explicitly. A gate stripped of PATH, HOME
+// or GOCACHE would fail as a toolchain error and read as a broken
+// repository rather than as a broken kernel.
+//
+// An inherited marker is dropped rather than left beside the new one:
+// duplicate keys in an environment block resolve last-wins on some
+// platforms and first-wins on others, and a gate must not have to guess
+// which chain it is in.
+func gateEnvironment(parent []string, chain string) []string {
+	prefix := LadderEnvVar + "="
+	env := make([]string, 0, len(parent)+1)
+	for _, kv := range parent {
+		if strings.HasPrefix(kv, prefix) {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, prefix+chain)
 }
 
 // portableArgv rewrites an argument that is exactly "/dev/null" to

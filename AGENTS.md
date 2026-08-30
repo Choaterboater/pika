@@ -72,9 +72,13 @@ the suite through the gate that started it. `TestImproveIsNotHijackedByAFlagValu
 did exactly that: it created a branch named `version` in the working
 checkout and spawned the test gate recursively.
 
-Every test that invokes a command MUST pin its root: `t.Chdir(t.TempDir())`
-for in-process dispatch, or `cmd.Dir = <fixture>` / `--root <fixture>` for a
-spawned binary.
+The kernel enforces this now, rather than trusting the convention:
+`verify.Run` plants `PIKA_CHECK_LADDER` — the chain of trees the enclosing
+ladders are verifying — in every spawned gate's environment, and refuses with
+`verify.ErrNestedRun` any run whose target tree is already in that chain.
+Pinning a test's root is still required (`t.Chdir(t.TempDir())` for in-process
+dispatch, `cmd.Dir = <fixture>` / `--root <fixture>` for a spawned binary):
+the guard stops the recursion, it does not make an unpinned test correct.
 
 ## Milestone delta
 

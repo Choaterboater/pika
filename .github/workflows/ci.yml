@@ -42,11 +42,5 @@ jobs:
         run: |
           "$RUNNER_TEMP/pika" check --ci
 
-      # The contract's format gate is `gofmt -l -w .`, which rewrites
-      # rather than failing. This step is what turns formatting drift
-      # into a red build.
-      - name: gofmt drift
-        run: git diff --exit-code
-
       - name: Unit tests
         run: go test ./... -count=1

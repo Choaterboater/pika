@@ -6,14 +6,17 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/version"
 )
 
 // TestMain pins PATH resolution for the whole package. The contract's
@@ -317,7 +320,7 @@ func TestUnknownProfileRejected(t *testing.T) {
 // preinstalled on GitHub runners) regressed silently once already.
 func TestCISetupCoversContractCommands(t *testing.T) {
 	required := map[string][]string{
-		// contract commands `gofmt -l -w .`, `go vet ./...`,
+		// contract commands `gofmt -l .`, `go vet ./...`,
 		// `go build -o /dev/null ./...`, `go test ./...`: setup-go
 		// installs the whole toolchain.
 		"go": []string{"actions/setup-go@v5"},
@@ -325,7 +328,7 @@ func TestCISetupCoversContractCommands(t *testing.T) {
 		// command; node 24 setup keeps the hinted commands runnable once
 		// the user adds the scripts and installs dependencies.
 		"typescript": []string{"actions/setup-node@v4", "node-version: \"24\""},
-		// contract commands `python -m pytest`, `ruff format .`,
+		// contract commands `python -m pytest`, `ruff format --check .`,
 		// `ruff check .`, `mypy .`: runners ship a bare interpreter, so
 		// all three packages are installed explicitly.
 		"python": []string{"actions/setup-python@v5", "python -m pip install pytest ruff mypy"},
@@ -449,7 +452,7 @@ func TestCommandsPopulatedFromAutofillableHints(t *testing.T) {
 
 	got := commandsFromChecks(resolved.Checks, present)
 	want := map[string]string{
-		"format":    "gofmt -l -w .",
+		"format":    "gofmt -l .",
 		"lint":      "go vet ./...",
 		"typecheck": "go build -o /dev/null ./...",
 	}
@@ -502,5 +505,132 @@ func TestExplicitPackCommandsAreNotCopied(t *testing.T) {
 
 	if got := commandsFromChecks(resolved.Checks, present)["test"]; got != "" {
 		t.Errorf("commands[test] = %q; go@1 already declares cmd, the contract must not duplicate it", got)
+	}
+}
+
+// renderScaffoldedCI renders the workflow `pika init` writes for one
+// language, straight from the core pack template.
+func renderScaffoldedCI(t *testing.T, lang string) string {
+	t.Helper()
+	core, err := CoreFiles(lang, lang+"-single")
+	if err != nil {
+		t.Fatalf("render core files for %s: %v", lang, err)
+	}
+	ci, ok := core[".github/workflows/ci.yml"]
+	if !ok {
+		t.Fatalf("core files for %s carry no CI workflow", lang)
+	}
+	return string(ci)
+}
+
+// TestScaffoldedCIHasNoPathsFilter pins the removal of the trigger path
+// filter. A filter can only name the directories that existed when the
+// scaffold was written, so every directory the repository grows
+// afterwards is exempt from CI while CI still reports success — the
+// worst available failure mode for a verification tool. The filter also
+// never listed the adopting repository's own source tree beyond the one
+// directory the stack template creates.
+func TestScaffoldedCIHasNoPathsFilter(t *testing.T) {
+	for _, lang := range languages {
+		t.Run(lang, func(t *testing.T) {
+			ci := renderScaffoldedCI(t, lang)
+			if strings.Contains(ci, "paths:") {
+				t.Errorf("scaffolded ci.yml for %s still filters trigger paths:\n%s", lang, ci)
+			}
+			// The two settings the filter's removal depends on: a full
+			// clone so `pika check --changed` can resolve a merge base
+			// rather than silently widening to every gate, and least
+			// privilege for a job that only reads the tree.
+			for _, want := range []string{"fetch-depth: 0", "permissions:", "contents: read"} {
+				if !strings.Contains(ci, want) {
+					t.Errorf("scaffolded ci.yml for %s lacks %q:\n%s", lang, want, ci)
+				}
+			}
+		})
+	}
+}
+
+// TestScaffoldedCIPinsTheKernelThatScaffoldedIt pins the replacement of
+// `go install ...@latest`. Under @latest the kernel that judges a
+// repository can change with no commit to that repository: a green pull
+// request goes red on merge with nothing in the diff to explain it, and
+// the operator has no way to see why. The pin must also be DERIVED from
+// the version the binary reports rather than transcribed into the
+// template, or it stops meaning "the kernel that adopted this repo" at
+// the next release with nothing to catch the drift.
+func TestScaffoldedCIPinsTheKernelThatScaffoldedIt(t *testing.T) {
+	want := "v" + version.Version
+	for _, lang := range languages {
+		t.Run(lang, func(t *testing.T) {
+			ci := renderScaffoldedCI(t, lang)
+			// The defect is the install target, not the word: the
+			// template's own comment names @latest to explain why it is
+			// gone, so the assertion has to name the module path too.
+			if strings.Contains(ci, "cmd/pika@latest") {
+				t.Errorf("scaffolded ci.yml for %s still installs a floating kernel:\n%s", lang, ci)
+			}
+			if !strings.Contains(ci, "PIKA_REF: "+want) {
+				t.Errorf("scaffolded ci.yml for %s does not pin PIKA_REF to %q (the version this binary reports):\n%s", lang, want, ci)
+			}
+			if !strings.Contains(ci, "github.com/Choaterboater/pika/cmd/pika@$PIKA_REF") {
+				t.Errorf("scaffolded ci.yml for %s does not install the kernel at the pinned ref:\n%s", lang, ci)
+			}
+		})
+	}
+}
+
+// stubExecutable writes a no-op executable named name into dir, so a
+// fabricated PATH can stand in for a host that has that binary and no
+// other.
+func stubExecutable(t *testing.T, dir, name string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPythonTestCommandRunsOnDebian pins python@1's test slot against the
+// most common Linux host. The slot is an unconditional cmd, not a hint,
+// so init's PATH probing never gets a chance to drop it: whatever it
+// names is written into every scaffolded contract and is what the test
+// gate runs. `python -m pytest` names an interpreter Debian and Ubuntu
+// do not ship — they provide `python3` only — so it produced a repository
+// that failed its own test gate on the host most likely to run it.
+func TestPythonTestCommandRunsOnDebian(t *testing.T) {
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "python@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := resolved.Checks.Test.Cmd
+	if len(cmd) == 0 {
+		t.Fatal("python@1 declares no test command")
+	}
+	// Platform-independent half: the gate must not name a bare `python`
+	// executable at all. This holds on Windows too, where the python.org
+	// installer creates python.exe but no python3.exe — so `python3 -m
+	// pytest` would only have moved the hole rather than closed it.
+	if cmd[0] == "python" {
+		t.Fatalf("python@1 test command %q requires a `python` executable", strings.Join(cmd, " "))
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("the PATH fixture below is a POSIX shell script; the assertion above covers Windows")
+	}
+	// Executable half: a PATH that is exactly a Debian host with pytest
+	// installed — python3 and pytest, and no `python`.
+	binDir := t.TempDir()
+	stubExecutable(t, binDir, "python3")
+	stubExecutable(t, binDir, "pytest")
+	t.Setenv("PATH", binDir)
+	// Non-vacuous by construction: if `python` still resolved, the run
+	// below would prove nothing.
+	if path, err := exec.LookPath("python"); err == nil {
+		t.Fatalf("fixture PATH still resolves python at %s", path)
+	}
+	out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python@1 test command %q does not run where only python3 exists: %v\n%s",
+			strings.Join(cmd, " "), err, out)
 	}
 }

@@ -96,6 +96,9 @@ pika explain naming-kebab-case
 # Authorize an agent to write (local-only, never committed)
 pika authorize --scope project
 
+# Hand a goal to the builder agent and get one verified local commit
+pika work "add a /healthz endpoint that returns 200"
+
 # Expose the kernel to your AI agent over MCP
 pika mcp
 ```
@@ -107,12 +110,16 @@ pika mcp
 | `pika init` | Create a lean project contract and scaffold for a new repository |
 | `pika adopt` | Inventory an existing repository; produces a draft contract and migration preview without changing working code |
 | `pika apply` | Promote the adoption drafts into a live contract transactionally — create-if-missing, full rollback on failure, and a rewritten human-readable review bundle |
+| `pika recover` | Report a transaction that never finished — holder, liveness, and every file a rollback would touch — and undo it with `--apply` |
 | `pika check` | Run the verification ladder locally or in CI (`--all`, `--changed`, `--ci`; `--ci` makes no LLM calls) |
+| `pika status` | List the durable work runs this repository has, or report one in full: phases, branch, commit, outcome, and the reason it stopped |
 | `pika doctor` | Diagnose contract, lock, exceptions, envelope, per-gate command, toolchain, and git — without executing a single gate |
 | `pika explain` | Explain a naming rule, a verification gate, or an MCP error code: rationale, remediation, and a copy-pasteable exception record |
 | `pika authorize` | Generate the capability envelope agents need, at `.project/state/envelope.yaml` (mode 0600, local-only, never committed) |
 | `pika handoff` | Give actionable failed checks to the configured Codex builder and save a private handoff bundle |
 | `pika improve` | Run checks, let Codex repair failed gates, recheck, and make one verified local commit |
+| `pika work` | Run a stated goal through the same verified lifecycle: branch, builder agent, recheck, one verified local commit |
+| `pika resume` | Continue an interrupted work run from the phase its record proves it reached, or refuse with the specific reason it cannot |
 | `pika mcp` | Serve the kernel to agents over MCP (stdio JSON-RPC) |
 | `pika help` | Describe pika, or one command's flags — generated from the dispatch table, so help cannot drift from the registered commands |
 

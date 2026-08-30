@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -276,5 +277,218 @@ func TestMissingGateBinaryIsAnError(t *testing.T) {
 	}
 	if rep.OK {
 		t.Error("a gate that cannot run must flip Report.OK false, matching `pika check` exit 1")
+	}
+}
+
+// writeRecoveryLock stands a recovery lock up at dir held by pid.
+func writeRecoveryLock(t *testing.T, dir string, pid int) {
+	t.Helper()
+	rec := filepath.Join(dir, ".project", "state", "recovery")
+	if err := os.MkdirAll(rec, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"txId":"0000000000000001-c0ffee01","pid":` + strconv.Itoa(pid) + `,"startedAt":"2026-08-30T12:00:00Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(rec, "lock"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A stale recovery lock wedges every future transaction on the
+// repository — `pika apply` fails with scope-lease-required until it is
+// gone — and the lock is deliberately never stolen, so nothing clears it
+// on its own. That is a hard failure, not a review signal, and doctor is
+// where an operator goes to find out why a command will not run. The
+// remediation has to name the command that fixes it, or the diagnosis
+// leaves them exactly where they were.
+func TestDoctorReportsAStaleTransactionLock(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	writeRecoveryLock(t, dir, 99999999)
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep := Run(root)
+	f := findingByID(t, rep, "recovery")
+	if f.Severity != SeverityError {
+		t.Errorf("recovery severity = %q, want %q: the repository cannot transact", f.Severity, SeverityError)
+	}
+	if !strings.Contains(f.Detail, "99999999") {
+		t.Errorf("recovery detail = %q, want it to name the holder", f.Detail)
+	}
+	if !strings.Contains(f.Remediation, "pika recover") {
+		t.Errorf("recovery remediation = %q, want it to name \"pika recover\"", f.Remediation)
+	}
+	if rep.OK {
+		t.Error("OK = true with a stale lock: the next `pika apply` fails")
+	}
+}
+
+// A transaction that is actually running is not damage. Reporting it as
+// an error would make doctor fail during a normal `pika apply` and teach
+// an operator that its verdict means nothing.
+func TestDoctorReportsALiveTransactionWithoutFailing(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	writeRecoveryLock(t, dir, os.Getpid())
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep := Run(root)
+	f := findingByID(t, rep, "recovery")
+	if f.Severity != SeverityWarn {
+		t.Errorf("recovery severity = %q, want %q: a running transaction is not damage", f.Severity, SeverityWarn)
+	}
+	if rep.OK != true {
+		t.Error("OK = false while a transaction is merely in progress")
+	}
+}
+
+// The common case has to be quiet, and it has to be present: a finding
+// that only appears when something is wrong is one an operator cannot
+// tell apart from a check that was never run.
+func TestDoctorReportsNoInterruptedTransaction(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if f := findingByID(t, Run(root), "recovery"); f.Severity != SeverityOK {
+		t.Errorf("recovery = %+v, want an ok finding on a repository with nothing pending", f)
+	}
+}
+
+// writeEnvelope lays down a capability envelope at dir granting exactly
+// the given exec argv lines and nothing else.
+func writeEnvelope(t *testing.T, dir string, execGrants ...string) {
+	t.Helper()
+	state := filepath.Join(dir, ".project", "state")
+	if err := os.MkdirAll(state, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	quoted := make([]string, 0, len(execGrants))
+	for _, g := range execGrants {
+		quoted = append(quoted, strconv.Quote(g))
+	}
+	doc := "schema: 1\nallow:\n  exec: [" + strings.Join(quoted, ", ") + "]\n"
+	if err := os.WriteFile(filepath.Join(state, "envelope.yaml"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// addCommand appends one commands entry to the fixture contract.
+func addCommand(t *testing.T, dir, slot, cmd string) {
+	t.Helper()
+	path := filepath.Join(dir, ".project", "contract.yaml")
+	doc, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = append(doc, []byte("  "+slot+": \""+cmd+"\"\n")...)
+	if err := os.WriteFile(path, doc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// findingIDs lists the ids of every finding whose id carries prefix.
+func findingIDs(rep *Report, prefix string) []string {
+	var out []string
+	for _, f := range rep.Findings {
+		if strings.HasPrefix(f.ID, prefix) {
+			out = append(out, f.ID)
+		}
+	}
+	return out
+}
+
+// TestDoctorWarnsWhenTheEnvelopeWouldDenyAGate covers the cross-check
+// between the two halves of doctor that never spoke: the envelope it
+// loads and the gate argv it resolves. Before this, the first notice an
+// agent got that its envelope did not cover a gate was an
+// envelope_denied from MCP run_checks, mid-task, with nothing in
+// `pika doctor` predicting it.
+//
+// The fixture also pins the matching rule. `true --all` is denied by a
+// grant of "true" because envelope.matchesExec compares whole argv lines
+// element-wise; a cross-check written against g.Cmd[0] would call it
+// covered and reproduce exactly the surprise this finding exists to
+// remove.
+func TestDoctorWarnsWhenTheEnvelopeWouldDenyAGate(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir) // the contract already declares commands.test: "true"
+	addCommand(t, dir, "smoke", "true --all")
+	writeEnvelope(t, dir, "true")
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep := Run(root)
+
+	// The envelope exists and parses, so the envelope finding itself
+	// stays ok: the denial is reported per gate, not by condemning the
+	// file.
+	if got := findingByID(t, rep, "envelope").Severity; got != SeverityOK {
+		t.Errorf("envelope severity = %q, want %q for a present, valid envelope", got, SeverityOK)
+	}
+	// `true` is granted exactly, so the test gate must not be reported.
+	if ids := findingIDs(rep, "envelope.gate.test"); len(ids) != 0 {
+		t.Errorf("gate `true` is granted exactly but was reported denied: %v", ids)
+	}
+	f := findingByID(t, rep, "envelope.gate.smoke")
+	if f.Severity != SeverityWarn {
+		t.Errorf("envelope.gate.smoke severity = %q, want %q", f.Severity, SeverityWarn)
+	}
+	if !strings.Contains(f.Detail, "true --all") {
+		t.Errorf("detail = %q, want it to name the whole denied argv line", f.Detail)
+	}
+	if !strings.Contains(f.Detail, "envelope_denied") {
+		t.Errorf("detail = %q, want it to name the run_checks outcome it predicts", f.Detail)
+	}
+	if !strings.Contains(f.Remediation, "allow.exec") {
+		t.Errorf("remediation = %q, want it to name allow.exec", f.Remediation)
+	}
+	// A warning must not fail the report: `pika check` consults no
+	// envelope, so nothing a human runs on this repository is broken.
+	if !rep.OK {
+		t.Error("an envelope that does not cover a gate must not flip Report.OK false")
+	}
+
+	// Widening the grant to the whole line clears the finding, which is
+	// what makes the remediation actionable rather than decorative.
+	writeEnvelope(t, dir, "true", "true --all")
+	if ids := findingIDs(Run(root), "envelope.gate."); len(ids) != 0 {
+		t.Errorf("grants covering every gate still reported denials: %v", ids)
+	}
+}
+
+// An ABSENT envelope stays exactly the warning it has always been, and
+// produces no per-gate denials. A human running `pika check` never needs
+// an envelope; one denial per gate for every repository that has not run
+// `pika authorize` would bury the finding that means something and
+// change the verdict of a command nobody asked to change.
+func TestAbsentEnvelopeStaysAWarningWithNoGateDenials(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	addCommand(t, dir, "smoke", "true --all")
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep := Run(root)
+	if got := findingByID(t, rep, "envelope").Severity; got != SeverityWarn {
+		t.Errorf("absent envelope severity = %q, want %q", got, SeverityWarn)
+	}
+	if ids := findingIDs(rep, "envelope.gate."); len(ids) != 0 {
+		t.Errorf("absent envelope produced per-gate denials %v; only a present envelope is cross-examined", ids)
+	}
+	if !rep.OK {
+		t.Error("a repository with no envelope must still report OK")
 	}
 }

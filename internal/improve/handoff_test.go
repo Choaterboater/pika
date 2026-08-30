@@ -4,11 +4,83 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/Choaterboater/pika/internal/verify"
 )
+
+// The bundle used to be minted at `.project/state/handoffs/<unixnano>/`: a
+// path with no run identity that nothing in the repository ever read back.
+// CreateHandoff now writes into the directory it is handed, so the run record
+// that owns the run also owns its bundle.
+func TestCreateHandoffWritesBundleIntoTheGivenDirectory(t *testing.T) {
+	root := fixtureRepository(t)
+	bundle := recordBundleDir(t, root)
+	report := &verify.Report{Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail, OutputTail: "unexpected semicolon"}}}
+
+	handoff, err := CreateHandoff(context.Background(), root, bundle, report, &recordingRunner{response: "fixed lint"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handoff.Dir != bundle {
+		t.Fatalf("handoff.Dir = %q, want the directory it was given %q", handoff.Dir, bundle)
+	}
+	for name, got := range map[string]string{
+		"checks-before.json":    handoff.ReportPath,
+		"prompt.md":             handoff.PromptPath,
+		"codex-last-message.md": handoff.ResultPath,
+	} {
+		want := filepath.Join(bundle, name)
+		if got != want {
+			t.Fatalf("%s path = %q, want %q", name, got, want)
+		}
+		info, err := os.Stat(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode = %v, want 0600: bundle files are private", name, info.Mode().Perm())
+		}
+	}
+	info, err := os.Stat(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		t.Fatalf("bundle dir mode = %v, want 0700", info.Mode().Perm())
+	}
+	legacy := filepath.Join(root, ".project", "state", "handoffs")
+	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(%q) = %v, want not-exist: CreateHandoff must mint no directory of its own", legacy, err)
+	}
+}
+
+// The raw Codex message is the only unredacted file the bundle ever holds.
+// It must not outlive the redaction that consumes it.
+func TestCreateHandoffRemovesTheRawLastMessage(t *testing.T) {
+	root := fixtureRepository(t)
+	bundle := recordBundleDir(t, root)
+	report := &verify.Report{Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}}
+
+	if _, err := CreateHandoff(context.Background(), root, bundle, report, &recordingRunner{response: "token sk-abcdefghijklmnopqrstuvwx"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	want := []string{"checks-before.json", "codex-last-message.md", "prompt.md"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("bundle contains %v, want exactly %v: the raw message must not survive redaction", names, want)
+	}
+}
 
 func TestCreateHandoffWritesOnlyFailedGatesToPrompt(t *testing.T) {
 	root := fixtureRepository(t)
@@ -21,7 +93,7 @@ func TestCreateHandoffWritesOnlyFailedGatesToPrompt(t *testing.T) {
 	}
 	runner := &recordingRunner{response: "fixed lint"}
 
-	handoff, err := CreateHandoff(context.Background(), root, report, runner)
+	handoff, err := CreateHandoff(context.Background(), root, recordBundleDir(t, root), report, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +124,7 @@ func TestCreateHandoffRedactsCodexFinalMessage(t *testing.T) {
 	report := &verify.Report{Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}}
 	runner := &recordingRunner{response: "token sk-abcdefghijklmnopqrstuvwx at /Users/alice/private"}
 
-	handoff, err := CreateHandoff(context.Background(), root, report, runner)
+	handoff, err := CreateHandoff(context.Background(), root, recordBundleDir(t, root), report, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +143,7 @@ func TestCreateHandoffRedactsCodexFinalMessage(t *testing.T) {
 func TestCreateHandoffRedactsFinalMessageWhenRunnerFails(t *testing.T) {
 	root := fixtureRepository(t)
 	report := &verify.Report{Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}}
-	handoff, err := CreateHandoff(context.Background(), root, report, failingMessageRunner{})
+	handoff, err := CreateHandoff(context.Background(), root, recordBundleDir(t, root), report, failingMessageRunner{})
 	if err == nil {
 		t.Fatal("CreateHandoff error = nil, want runner failure")
 	}
@@ -94,6 +166,37 @@ func TestCodexRunnerArgsUseConfiguredModelAndEffort(t *testing.T) {
 	}
 }
 
+// Warnings are not repair work. The refusal happens before the bundle
+// directory is created, so a run with nothing to fix leaves nothing behind.
+func TestCreateHandoffRefusesAReportWithNoFailedGates(t *testing.T) {
+	root := fixtureRepository(t)
+	bundle := recordBundleDir(t, root)
+	report := &verify.Report{
+		Gates:    []verify.GateResult{{ID: "lint", Status: verify.StatusPass}},
+		Warnings: []string{"review-only large file warning"},
+	}
+
+	_, err := CreateHandoff(context.Background(), root, bundle, report, &recordingRunner{})
+	if !errors.Is(err, ErrNoActionableFindings) {
+		t.Fatalf("CreateHandoff error = %v, want ErrNoActionableFindings", err)
+	}
+	if _, err := os.Stat(bundle); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(%q) = %v, want not-exist: a refused handoff must create no bundle", bundle, err)
+	}
+}
+
+// The bundle directory has no default on purpose: a caller that forgets it
+// must fail loudly rather than quietly resurrect the unidentified bundle.
+func TestCreateHandoffRequiresABundleDirectory(t *testing.T) {
+	root := fixtureRepository(t)
+	report := &verify.Report{Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}}
+
+	_, err := CreateHandoff(context.Background(), root, "   ", report, &recordingRunner{})
+	if err == nil || !strings.Contains(err.Error(), "handoff bundle directory is required") {
+		t.Fatalf("CreateHandoff error = %v, want a missing-bundle-directory refusal", err)
+	}
+}
+
 type recordingRunner struct {
 	root       string
 	promptPath string
@@ -113,4 +216,13 @@ func (failingMessageRunner) Run(_ context.Context, _, _, outputPath string) erro
 		return err
 	}
 	return errors.New("Codex failed")
+}
+
+// recordBundleDir names a bundle the way a run record does: inside the run's
+// own directory. Task 4 passes (*workrec.Handle).HandoffDir() here; this
+// package deliberately does not import workrec, so the layout stays the
+// record's business and the handoff's only contract is "write here".
+func recordBundleDir(t *testing.T, root string) string {
+	t.Helper()
+	return filepath.Join(root, ".project", "state", "work", "2026-08-30-repair-a1b2", "handoff")
 }

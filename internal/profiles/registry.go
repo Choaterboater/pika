@@ -122,13 +122,15 @@ type Verification struct {
 // discovery finds nothing. autofill additionally promises that the hint
 // is a complete command that runs correctly in a freshly scaffolded
 // project of this stack, so `pika init` may write it straight into
-// contract.commands.
+// contract.commands. fail-on-output declares that this slot's command
+// reports by printing rather than by exiting.
 type checkSpec struct {
-	ID        string   `yaml:"id"`
-	Cmd       []string `yaml:"cmd"`
-	Discovery bool     `yaml:"discovery"`
-	Hint      []string `yaml:"hint"`
-	Autofill  bool     `yaml:"autofill"`
+	ID           string   `yaml:"id"`
+	Cmd          []string `yaml:"cmd"`
+	Discovery    bool     `yaml:"discovery"`
+	Hint         []string `yaml:"hint"`
+	Autofill     bool     `yaml:"autofill"`
+	FailOnOutput bool     `yaml:"fail-on-output"`
 }
 
 // DocTrigger names documentation that must stay in sync with changes.
@@ -188,12 +190,20 @@ type Layer struct {
 // lint` is sound advice and an unsound adoption — npm is installed, the
 // script it delegates to is not — which is exactly why the two are
 // separate fields.
+//
+// FailOnOutput is a third kind of statement: not what to run, but how to
+// read the result. Some checking tools report by printing and still exit
+// 0 — `gofmt -l .` lists every misformatted file with status 0 — so a
+// gate judged on exit status alone can never fail. The flag says this
+// slot's success criterion is silence, and verify honors it for whatever
+// command fills the slot.
 type Check struct {
-	ID        string
-	Cmd       []string
-	Discovery bool
-	Hint      []string
-	Autofill  bool
+	ID           string
+	Cmd          []string
+	Discovery    bool
+	Hint         []string
+	Autofill     bool
+	FailOnOutput bool
 }
 
 // CheckSet holds the five verification slots.
@@ -326,6 +336,12 @@ func mergeChecks(base, lang CheckSet) CheckSet {
 // checkSet maps the pack's declared checks onto the fixed slots. Every
 // slot must be declared exactly once, as either a command or a discovery
 // sentinel.
+//
+// fail-on-output is validated the way autofill is: it is a measured claim
+// about a concrete command, so the pack must ship one for that slot —
+// either a cmd or a hint. On a bare sentinel the pack has judged nothing
+// and the flag has no anchor, which is a pack authoring error rather than
+// a silent no-op.
 func (p *Pack) checkSet() (CheckSet, error) {
 	var cs CheckSet
 	slots := map[string]*Check{
@@ -353,9 +369,13 @@ func (p *Pack) checkSet() (CheckSet, error) {
 			if spec.Autofill && len(spec.Hint) == 0 {
 				return cs, fmt.Errorf("check %q: autofill needs a hint to fill from", spec.ID)
 			}
+			if spec.FailOnOutput && len(spec.Hint) == 0 {
+				return cs, fmt.Errorf("check %q: fail-on-output needs a cmd or hint whose output it judges", spec.ID)
+			}
 			slot.Discovery = true
 			slot.Hint = spec.Hint
 			slot.Autofill = spec.Autofill
+			slot.FailOnOutput = spec.FailOnOutput
 			continue
 		}
 		if len(spec.Cmd) == 0 {
@@ -368,6 +388,7 @@ func (p *Pack) checkSet() (CheckSet, error) {
 			return cs, fmt.Errorf("check %q: autofill belongs to a discovery sentinel", spec.ID)
 		}
 		slot.Cmd = spec.Cmd
+		slot.FailOnOutput = spec.FailOnOutput
 	}
 	for id := range slots {
 		if !seen[id] {

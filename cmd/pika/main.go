@@ -102,10 +102,22 @@ var commands = []command{
 		run:     runApply,
 	},
 	{
+		name:    "recover",
+		summary: "report, and on request undo, a transaction that never finished",
+		usage:   "pika recover [--apply] [--json] [--root <dir>]",
+		run:     runRecover,
+	},
+	{
 		name:    "check",
 		summary: "run the verification ladder",
 		usage:   "pika check [--all|--changed|--ci] [--json] [--contract <path>] [--root <dir>]",
 		run:     runCheck,
+	},
+	{
+		name:    "status",
+		summary: "list durable work runs, or report one run in full",
+		usage:   "pika status [<work-id>] [--json] [--root <dir>]",
+		run:     runStatus,
 	},
 	{
 		name:    "doctor",
@@ -142,6 +154,18 @@ var commands = []command{
 		summary: "run check, repair failures via the builder agent, and commit on a verified recheck",
 		usage:   "pika improve [--branch <name>] [--agent <name>] [--json] [--root <dir>]",
 		run:     runImprove,
+	},
+	{
+		name:    "work",
+		summary: "run a stated goal through the same verified lifecycle, as feature work",
+		usage:   "pika work \"<goal>\" [--branch <name>] [--agent <name>] [--json] [--root <dir>]",
+		run:     runWork,
+	},
+	{
+		name:    "resume",
+		summary: "continue an interrupted work run, or refuse with the reason it cannot",
+		usage:   "pika resume <work-id> [--agent <name>] [--json] [--root <dir>]",
+		run:     runResume,
 	},
 }
 

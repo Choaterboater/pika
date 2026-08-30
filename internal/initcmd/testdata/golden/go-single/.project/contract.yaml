@@ -12,7 +12,7 @@ packages:
     - core@1
     - go@1
 commands:
-  format: gofmt -l -w .
+  format: gofmt -l .
   lint: go vet ./...
   typecheck: go build -o /dev/null ./...
 agents: {}

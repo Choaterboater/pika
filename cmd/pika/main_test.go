@@ -180,7 +180,12 @@ var jsonCases = map[string]jsonCase{
 			t.Fatalf("adopt fixture: %v", err)
 		}
 	}},
+	// recover defaults to a report, so the default invocation is the
+	// whole command with nothing to undo: it resolves the root, reads
+	// the recovery directory, and answers inside the envelope.
+	"recover":   {setup: writeMinimalProject},
 	"check":     {args: []string{"--all"}, setup: writeMinimalProject},
+	"status":    {},
 	"doctor":    {setup: writeMinimalProject},
 	"explain":   {args: []string{"typecheck"}},
 	"authorize": {args: []string{"--scope", "read"}},
@@ -189,6 +194,16 @@ var jsonCases = map[string]jsonCase{
 	// agent or Git mutation. Neither reaches a runtime.
 	"handoff": {setup: writeMinimalProject},
 	"improve": {setup: writeMinimalProject},
+	// work always goes on to the agent — a green ladder says nothing
+	// about whether a goal has been met — so the exercise that reaches
+	// no runtime is the lifecycle's own refusal. A temp directory is a
+	// project but not a git checkout, so the run stops on the very
+	// first thing it does and no record, branch or bundle is created.
+	"work": {args: []string{"add a health endpoint"}, setup: writeMinimalProject},
+	// resume is handed a run that already finished: the refusal is a
+	// real exercise of the command — root, record, envelope — and the
+	// only one that reaches no agent and mutates no repository.
+	"resume": {args: []string{resumeEnvelopeRunID}, setup: seedFinishedRun},
 }
 
 // writeUnadoptedRepo lays down the smallest repository `adopt` accepts:

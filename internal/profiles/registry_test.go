@@ -311,3 +311,48 @@ func TestAutofillRequiresAHintedSentinel(t *testing.T) {
 		t.Error("resolved lint slot lost its autofill flag")
 	}
 }
+
+// fail-on-output is a measured claim about a concrete command — this
+// tool reports by printing and still exits 0 — so a pack may only make
+// it about a command it ships. On a bare sentinel there is nothing the
+// claim was measured against, and swallowing the flag there would leave
+// a pack author believing a gate can fail when it cannot. The valid
+// shapes (sentinel with a hint, and a real command) must survive with
+// the flag intact.
+func TestFailOnOutputRequiresACommandOrHint(t *testing.T) {
+	full := func(extra ...checkSpec) *Pack {
+		p := &Pack{}
+		for _, id := range []string{"format", "lint", "typecheck", "test", "smoke"} {
+			p.Verification.Checks = append(p.Verification.Checks, checkSpec{ID: id, Discovery: true})
+		}
+		for _, e := range extra {
+			for i := range p.Verification.Checks {
+				if p.Verification.Checks[i].ID == e.ID {
+					p.Verification.Checks[i] = e
+				}
+			}
+		}
+		return p
+	}
+
+	_, err := full(checkSpec{ID: "format", Discovery: true, FailOnOutput: true}).checkSet()
+	if err == nil || !strings.Contains(err.Error(), "fail-on-output needs a cmd or hint") {
+		t.Fatalf("checkSet() error = %v, want one rejecting fail-on-output on a bare sentinel", err)
+	}
+
+	cs, err := full(checkSpec{ID: "format", Discovery: true, FailOnOutput: true, Hint: []string{"gofmt", "-l", "."}}).checkSet()
+	if err != nil {
+		t.Fatalf("hinted fail-on-output sentinel rejected: %v", err)
+	}
+	if !cs.Format.FailOnOutput {
+		t.Error("resolved format slot lost its fail-on-output flag")
+	}
+
+	cs, err = full(checkSpec{ID: "format", Cmd: []string{"gofmt", "-l", "."}, FailOnOutput: true}).checkSet()
+	if err != nil {
+		t.Fatalf("fail-on-output on a real command rejected: %v", err)
+	}
+	if !cs.Format.FailOnOutput {
+		t.Error("resolved format slot lost its fail-on-output flag on the cmd path")
+	}
+}

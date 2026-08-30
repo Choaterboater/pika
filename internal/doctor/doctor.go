@@ -18,6 +18,7 @@ import (
 	"github.com/Choaterboater/pika/internal/envelope"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/repopath"
+	"github.com/Choaterboater/pika/internal/txn"
 	"github.com/Choaterboater/pika/internal/verify"
 	"github.com/Choaterboater/pika/internal/version"
 )
@@ -68,8 +69,9 @@ func Run(root *repopath.Root) *Report {
 	c := checkContract(rep, root)
 	resolved := checkProfiles(rep, root, c)
 	checkExceptions(rep, root)
-	checkEnvelope(rep, root)
-	checkGates(rep, c, resolved)
+	env := checkEnvelope(rep, root)
+	checkRecovery(rep, root)
+	checkGates(rep, root, c, resolved, env)
 	checkGit(rep)
 	return rep
 }
@@ -139,22 +141,76 @@ func checkExceptions(rep *Report, root *repopath.Root) {
 	rep.add("exceptions", SeverityOK, "exceptions record loads", "")
 }
 
-func checkEnvelope(rep *Report, root *repopath.Root) {
+// checkEnvelope reports the capability envelope and returns it so the
+// gate check can cross-examine it. A nil result means there is nothing
+// to cross-examine: either no envelope exists, or the one that does is
+// unreadable and already carries its own error.
+func checkEnvelope(rep *Report, root *repopath.Root) *envelope.Envelope {
 	path := root.Envelope()
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		// A warning, not an error: `pika check` never needs an envelope.
 		// Only the mutating MCP tools do.
 		rep.add("envelope", SeverityWarn, "no capability envelope at "+path,
 			"run \"pika authorize --scope project\"; without it every mutating MCP tool is denied")
-		return
+		return nil
 	}
 	env, err := envelope.Load(root.Dir(), path)
 	if err != nil {
 		rep.add("envelope", SeverityError, err.Error(),
 			"fix or regenerate the envelope with \"pika authorize --force\"")
-		return
+		return nil
 	}
 	rep.add("envelope", SeverityOK, "grants: "+grantedKinds(env), "")
+	return env
+}
+
+// checkRecovery reports an unfinished transaction, which is the one
+// repository state that stops `pika apply` working and clears itself
+// under no circumstances.
+//
+// The lock is taken with O_EXCL and deliberately never stolen, so a
+// crashed apply leaves it behind and every later transaction fails with
+// scope-lease-required until it is removed. Before `pika recover` there
+// was no command that would remove it and nothing that named the file,
+// which made a diagnosis an operator could not act on — so the
+// remediation here names the command, not the symptom.
+//
+// Severity follows what the state actually costs. A stale lock or an
+// orphaned journal is an error: the repository cannot transact, and a
+// tree left half-mutated by an interrupted apply is worse than that. A
+// transaction that is genuinely running is only a warning — reporting a
+// normal `pika apply` as damage would teach an operator that doctor's
+// verdict means nothing.
+func checkRecovery(rep *Report, root *repopath.Root) {
+	pending, err := txn.Inspect(root.Dir())
+	if err != nil {
+		rep.add("recovery", SeverityError, err.Error(),
+			"inspect .project/state/recovery; \"pika recover\" reports what it finds there")
+		return
+	}
+	if pending.Clean() {
+		rep.add("recovery", SeverityOK, "no interrupted transaction", "")
+		return
+	}
+	const remediation = "run \"pika recover\" to see what would be rolled back, then \"pika recover --apply\""
+	switch l := pending.Lock; {
+	case l != nil && l.Alive:
+		rep.add("recovery", SeverityWarn,
+			fmt.Sprintf("transaction %s is in progress: lock held by running pid %d since %s", l.TxID, l.PID, l.StartedAt),
+			"wait for it to finish; \"pika recover\" refuses to touch a live transaction")
+	case l != nil && l.Unreadable != "":
+		rep.add("recovery", SeverityError,
+			fmt.Sprintf("the recovery lock at %s names no holder (%s); every transaction on this repository will fail until it is gone", l.Path, l.Unreadable),
+			"confirm no transaction is running, then remove "+l.Path)
+	case l != nil:
+		rep.add("recovery", SeverityError,
+			fmt.Sprintf("stale recovery lock: transaction %s was held by pid %d since %s and that process is gone; every transaction on this repository will fail until it is released", l.TxID, l.PID, l.StartedAt),
+			remediation)
+	default:
+		rep.add("recovery", SeverityError,
+			fmt.Sprintf("%d uncommitted transaction journal(s) under %s with no lock; an interrupted apply may have left this tree half-mutated", len(pending.Txs), pending.Dir),
+			remediation)
+	}
 }
 
 func grantedKinds(env *envelope.Envelope) string {
@@ -179,7 +235,7 @@ func grantedKinds(env *envelope.Envelope) string {
 // builds a real gate for it either way, exec.CommandContext fails with
 // something that is not an *exec.ExitError, and runGate's default branch
 // scores it StatusFail — exit 1.
-func checkGates(rep *Report, c *contract.Contract, resolved *profiles.Resolved) {
+func checkGates(rep *Report, root *repopath.Root, c *contract.Contract, resolved *profiles.Resolved, env *envelope.Envelope) {
 	if c == nil || resolved == nil {
 		return
 	}
@@ -210,10 +266,49 @@ func checkGates(rep *Report, c *contract.Contract, resolved *profiles.Resolved) 
 			rep.add(id, SeverityError,
 				fmt.Sprintf("%s: %s is not on PATH", strings.Join(g.Cmd, " "), g.Cmd[0]),
 				"install the toolchain; \"pika check\" runs this gate here and fails when the binary is absent")
-			continue
+		} else {
+			rep.add(id, SeverityOK, strings.Join(g.Cmd, " "), "")
 		}
-		rep.add(id, SeverityOK, strings.Join(g.Cmd, " "), "")
+		checkGateAuthorized(rep, root, env, g)
 	}
+}
+
+// checkGateAuthorized reports a resolved gate the present envelope would
+// refuse to run. doctor already loaded the envelope and already resolved
+// the gate argv; until now neither knew about the other, so the first
+// notice an agent got that its envelope did not cover a gate was an
+// envelope_denied from MCP run_checks, mid-task. This is the one finding
+// that predicts that denial beforehand.
+//
+// Only an envelope that EXISTS is cross-examined. An absent envelope is
+// already a warning of its own and must stay exactly that: `pika check`
+// consults no envelope, so a human running the ladder by hand is blocked
+// by nothing, and a per-gate denial on every repository without an
+// envelope would bury the one finding that means something.
+//
+// The comparison is the whole argv line, because that is what
+// envelope.matchesExec compares: entries match element-wise with an
+// optional trailing "*", so a grant of "go" authorizes the bare command
+// `go` and not `go test ./...`. Asking about g.Cmd[0] alone would agree
+// with the envelope only by accident, and would call an uncovered gate
+// covered — the exact failure this finding exists to prevent.
+//
+// Warn, not error. The repository is not broken: every human path
+// through it works. Flipping Report.OK false would make `pika doctor`
+// exit non-zero on a repository whose only fault is that nobody widened
+// an envelope for a tool they may never use.
+func checkGateAuthorized(rep *Report, root *repopath.Root, env *envelope.Envelope, g verify.Gate) {
+	if env == nil {
+		return
+	}
+	line := strings.Join(g.Cmd, " ")
+	if env.Allows(envelope.Operation{Kind: envelope.KindExec, Target: line}) {
+		return
+	}
+	rep.add("envelope.gate."+g.ID, SeverityWarn,
+		fmt.Sprintf("the capability envelope does not authorize %q; MCP run_checks will answer envelope_denied for the %s gate", line, g.ID),
+		fmt.Sprintf("add %q to allow.exec in %s; exec grants match the whole argv line, so an entry naming only %q does not cover it",
+			line, root.Envelope(), g.Cmd[0]))
 }
 
 func checkGit(rep *Report) {

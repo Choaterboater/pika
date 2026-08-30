@@ -1,5 +1,5 @@
 {
-  "digest": "8d6fb7fd40302d54605262833bab78a7edaf2de2476a98a97b67a9f1b536d34c",
+  "digest": "e892fb2a12938e299c7ce695af2c298879aa8ea100b83d0472db68cd0f8d0bc6",
   "packs": {
     "core": {
       "version": "1",
@@ -9,7 +9,7 @@
     "go": {
       "version": "1",
       "source": "embedded",
-      "digest": "7661f93f7e120c858f9484117f38b51c7bd70935f24c488aabfd615f6886c6d7"
+      "digest": "967f340ac5587468ca26df78655357d6edeee94a0c404f6d26a0ef96d2ffcc3e"
     }
   }
 }
