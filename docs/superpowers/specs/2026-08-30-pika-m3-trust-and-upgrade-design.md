@@ -52,7 +52,7 @@ Verified read-only against `main` at `3a53feb`.
 | `board.jsonl` is written unredacted from agent-supplied strings | `internal/mcp/server.go:795, 812, 856` |
 | The raw agent transcript is unredacted on disk from the moment Codex writes it until `createHandoff` returns, and survives forever if the process is killed | `internal/improve/handoff.go:133` |
 | Only `fs_write` and `exec` have enforcement call sites — nine in total, all behind one choke point | `internal/mcp/server.go:833` |
-| **pika imports no networking package at all.** Zero matches for `net/http`, `net/url`, `net.Dial`, `http.Client` across `internal` and `cmd`; `go.mod` has two direct deps, neither networked | repo-wide |
+| **No pika source imports any `net/*` package directly**, and `net`, `net/http`, `net/rpc` and `crypto/tls` are absent from the build closure entirely. `net/url` and `net/netip` ARE in the closure — reached via `jsonschema/v6` format validation and `text/template`'s urlquery escaper — but both are pure parsers with no dialing capability. Corrected from an earlier, overstated draft of this row during implementation | repo-wide; verified at implementation time |
 | It reads no credential, passes none to a child, and performs no GitHub operation — `contract.github.merge` is scaffolded and never acted upon | repo-wide |
 | `fs_read` is the one unenforced kind whose operation class **does** occur: `inspect_repo` walks the tree and `read_contract` loads a caller-supplied path | `internal/mcp/server.go` |
 
