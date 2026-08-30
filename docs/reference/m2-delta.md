@@ -81,7 +81,11 @@ pika does.
 
 `publish_evidence` still exists for agents that have something else to attest.
 It is no longer the only writer, and it is no longer the writer for a run pika
-itself drove.
+itself drove. It also cannot become that writer after the fact: publishing to
+a path that already holds a receipt is refused with `invalid_params` and the
+existing file is left untouched. A receipt issued by the component that ran
+the gates is evidence; one supplied by the agent whose work it attests is a
+claim, and a claim must not be able to overwrite the evidence.
 
 ---
 

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -695,9 +696,51 @@ func (r receiptJSON) input() evidence.ReceiptInput {
 	return in
 }
 
+// errReceiptExists marks an occupied receipt path, so the tool can answer
+// invalid_params — the caller named a path that is already spoken for —
+// rather than internal, which would say the kernel had failed.
+var errReceiptExists = errors.New("mcp: evidence receipt already exists")
+
+// writeReceiptOnce writes the receipt to abs, refusing to replace one that
+// is already there.
+//
+// evidence.Write renames over an existing target without complaint, and
+// improve.issueReceipt depends on exactly that to fill the file it claimed
+// — so the refusal cannot move into evidence.Write without breaking the
+// kernel's own issuer. It lives here instead, and it is built the same way
+// issueReceipt builds it: a single O_EXCL create, so the refusal is a
+// property of the filesystem rather than of a check that raced.
+func writeReceiptOnce(abs string, r *evidence.Receipt) error {
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return err
+	}
+	claim, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return errReceiptExists
+		}
+		return err
+	}
+	if err := claim.Close(); err != nil {
+		os.Remove(abs)
+		return err
+	}
+	if err := evidence.Write(abs, r); err != nil {
+		// The claim is an empty file this call created; a failed write
+		// must not leave it behind pretending to be a receipt.
+		os.Remove(abs)
+		return err
+	}
+	return nil
+}
+
 // toolPublishEvidence implements publish_evidence: evidence.Build (redaction
-// and schema validation enforced inside the kernel) followed by the atomic
-// evidence.Write.
+// and schema validation enforced inside the kernel) followed by a
+// write that will not overwrite an existing receipt.
+//
+// The refusal is what keeps this tool from undoing the milestone: a receipt
+// the kernel issued is evidence, one the agent supplies about its own work
+// is a claim, and a claim must not be able to replace the evidence.
 func (s *server) toolPublishEvidence(args json.RawMessage) (map[string]any, *toolError) {
 	var params struct {
 		Path    string          `json:"path"`
@@ -727,7 +770,10 @@ func (s *server) toolPublishEvidence(args json.RawMessage) (map[string]any, *too
 	if terr := s.authorize(envelope.KindFSWrite, rel); terr != nil {
 		return nil, terr
 	}
-	if err := evidence.Write(filepath.Join(s.repoRoot, filepath.FromSlash(rel)), receipt); err != nil {
+	if err := writeReceiptOnce(filepath.Join(s.repoRoot, filepath.FromSlash(rel)), receipt); err != nil {
+		if errors.Is(err, errReceiptExists) {
+			return nil, toolErrf(errInvalidParams, "a receipt already exists at %s; a receipt is issued once and never replaced", rel)
+		}
 		return nil, toolErrf(errInternal, "write receipt: %v", err)
 	}
 	return map[string]any{"path": rel, "workId": receipt.WorkID}, nil
