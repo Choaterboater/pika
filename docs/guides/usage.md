@@ -22,15 +22,64 @@ pika init --profile go --name my-service
 | `--profile` | Language stack: `go`, `typescript`, `python`, `swift`, `rust` (repeatable for multi-stack) |
 | `--name` | Project name (default: directory name, kebab-cased) |
 | `--module` | Go module path (default: derived from name) |
-| `--force` | Regenerate managed files in an already-initialized repo (never touches your own files outside `.project/`) |
+| `--force` | Regenerate the managed files in an already-initialized repository — read the warning below before using it |
 | `--json` | Emit the created-file manifest as JSON |
 
 What you get: `.project/contract.yaml` (the project contract), `.project/profiles.lock`, `.project/exceptions.yaml`, a `docs/` spine, `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, a GitHub Actions workflow, a `.gitignore` protecting `.project/state/`, and a language-owned source scaffold.
+
+The scaffolded workflow pins the kernel that judges the repository to the pika
+release that scaffolded it (`PIKA_REF`), rather than installing `@latest`. A
+verifier that can change with no commit in the repository is a verifier that
+turns a green pull request red on merge with nothing in the diff to explain
+it. Bump `PIKA_REF` deliberately, in its own commit.
 
 Then verify:
 
 ```sh
 pika check --all
+```
+
+### `--force` regenerates more than the lock
+
+`--force` is the only way to refresh a `.project/profiles.lock` that an older
+pika wrote, so it is the remedy every upgrade note points at. It is a blunter
+instrument than that framing suggests, and it is worth knowing exactly what it
+rewrites before you run it in a repository you care about.
+
+It rewrites **every file `init` manages**, unconditionally and without asking:
+
+| Rewritten by `--force` | Left alone |
+|---|---|
+| `.project/contract.yaml`, `.project/profiles.lock` | Every file `init` did not create |
+| `.project/exceptions.yaml` — **reset to `{}`** | `.project/state/` |
+| `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.gitignore` | `.project/evidence/` |
+| `.github/pull_request_template.md`, `.github/workflows/ci.yml` | |
+| the `docs/` spine placeholders | |
+| the language scaffold — `go.mod`, `cmd/<name>/main.go`, `Package.swift`, … — whenever a `--profile` selects that pack | |
+
+Three consequences that bite:
+
+- **The contract is rebuilt from the profiles you pass on *this* invocation,
+  not from the contract on disk.** A bare `pika init --force` in a `go@1`
+  repository rewrites it as core-only, with `commands: {}` — every
+  verification gate gone.
+- **The project name comes from `--name`, or from the directory's basename.**
+  It is not read back from the contract. If they differ, `--force` writes
+  `module <dirname>` into `go.mod` and scaffolds a second
+  `cmd/<dirname>/main.go` beside the real one.
+- **Anything hand-edited into a managed file is regenerated away**: the
+  `agents:` block, extra `commands:`, `extensions:`, your `README.md`, and
+  every record in `.project/exceptions.yaml`.
+
+So the honest upgrade recipe is: run it on a clean tree, pass the same
+`--profile` and `--name` the repository was scaffolded with, and read the diff
+before committing.
+
+```sh
+git status --porcelain                            # clean: the diff below is then only --force's work
+pika init --force --profile go --name my-service  # the profiles and name this repository actually uses
+git diff                                          # restore anything you had hand-edited
+pika check --all                                  # gate 1 goes green again
 ```
 
 ---
@@ -110,6 +159,47 @@ The verification ladder: contract integrity → formatting/lint/compile → test
 
 Gate 1 also validates that your `profiles.lock` matches the contract and the embedded pack digests — a hand-edited lock or drifted contract fails here.
 
+### The gates report; they do not fix
+
+A verification gate never edits the tree it is verifying. The format gate in
+particular is a *checking* command — `gofmt -l .` for Go,
+`ruff format --check .` for Python — and formatting drift comes back as a
+failure you fix, not as files pika rewrote under you:
+
+```
+PASS contract   2ms
+FAIL format     exit=0 drift.go
+
+SKIP lint       skipped: gate format failed
+```
+
+`exit=0` in that line is not a typo. `gofmt -l` exits 0 whether or not it
+found anything; the file it printed *is* the finding. Packs mark such slots
+`fail-on-output`, and a gate carrying that flag fails when it prints, whatever
+its exit status. Before M2 the gate was `gofmt -l -w .`, which rewrote your
+files and then exited 0 — a gate that could not fail. See
+[../reference/m2-delta.md](../reference/m2-delta.md#2-the-format-gate-can-now-fail--and-no-longer-rewrites-your-files).
+
+### A gate may not re-enter the ladder that spawned it
+
+If your `test` command runs a suite that itself invokes `pika check` on the
+same repository, the ladder is refused rather than recursed:
+
+```
+pika check: verify: refusing to re-enter a running ladder: /path/to/repo
+(enclosing ladders: /path/to/repo); a gate re-entered the ladder that
+spawned it — pin the inner command to a different root
+```
+
+Exit 2, `code: "config"` under `--json`. It is refused rather than skipped on
+purpose: a skipped gate still reports `pass`, so skipping would hand you a
+green report for a ladder that never ran.
+
+The guard is scoped to the **tree under verification**, carried down to gates
+in `PIKA_CHECK_LADDER`, not to the process. A test that runs `pika check`
+inside a fixture or temp repository is fine — it terminates. Only pointing the
+inner run back at the tree the outer run is already verifying is the loop.
+
 ### What `--changed` actually narrows
 
 The change set is a real git diff: everything differing from the merge base with the upstream default branch (`@{upstream}`, then `origin/HEAD`, `origin/main`, `origin/master`), plus staged, unstaged and untracked changes.
@@ -159,7 +249,7 @@ What it inspects:
 | lock | Whether `profiles.lock` pins the contract's profiles at digests matching this binary's embedded packs |
 | exceptions | Whether `.project/exceptions.yaml` loads and every record is complete |
 | envelope | The grants in `.project/state/envelope.yaml`, or a warning that agents will be denied |
-| `gate.*` | Per gate: the command that will run, or the pack's suggested hint when no command is configured |
+| `gate.*` | Per gate: the command that will run, or the pack's suggested hint when no command is configured — plus a warning when an envelope exists and does not authorize that gate's whole argv line, which is otherwise not discovered until an agent hits `envelope_denied` mid-task |
 | git | Whether git is available |
 
 Worked example, on this repository:
@@ -304,7 +394,7 @@ rollback_boundary: repository
 
 `.project/state/envelope.yaml` is **written at mode 0600, lives under the gitignored `.project/state/`, and is never committed.** It records what *you* have authorized on *this* machine; it is not a project-level policy others inherit. Re-running `authorize` on an existing envelope tightens the file back to 0600 and, unless `--force` is given, prints the delta and refuses rather than silently widening or narrowing what an agent may do.
 
-`budget` is deliberately never written. No code in the binary compares spend against a ceiling, and a ceiling nothing enforces is a lie in a file whose entire job is to be true. `network`, `credential`, `github` and `fs_read` are written when you ask for them but have no enforcement call site yet — see [../reference/m1-5-delta.md](../reference/m1-5-delta.md).
+`budget` is deliberately never written. No code in the binary compares spend against a ceiling, and a ceiling nothing enforces is a lie in a file whose entire job is to be true. `network`, `credential`, `github` and `fs_read` are written when you ask for them but have no enforcement call site yet — see [../reference/m1-5-delta.md](../reference/m1-5-delta.md). M2 did not change this; the table is restated in [../reference/m2-delta.md](../reference/m2-delta.md#6-still-true-from-m15-envelope-enforcement-did-not-move) so nothing that milestone added is read as having widened it.
 
 Only the **MCP surface** authorizes. `pika check` from your shell runs its gates directly and needs no envelope: the envelope exists to bound what an agent may do on your behalf, not to make you ask permission to run your own tests.
 
@@ -420,6 +510,18 @@ A run showing `in-flight?` has no terminal outcome. That is genuinely ambiguous 
 
 The split is deliberate. The record is operational state — it exists so a run can be resumed and diagnosed on the machine that ran it, and it holds unredacted agent transcripts. The receipt is the public attestation: schema-validated, redacted, and issued by the kernel rather than written by the agent whose work it describes.
 
+Two details about the receipt that are easier to read here than to discover:
+
+- **A blocked run gets one too.** The receipt attests the run's terminal
+  state, whatever that state is; a document that only ever describes successes
+  attests the wrong half of what pika does. The one run that gets no receipt
+  is a repair run whose baseline ladder was already green — no agent, no
+  commit, nothing attempted, and issuing one there would leave a healthy
+  repository's working tree dirty after every no-op run.
+- **It is written after the commit, so it is not in it.** The receipt lands as
+  a new untracked file under `.project/evidence/`. Committing it is your
+  move — the kernel does not amend the commit it just verified.
+
 ---
 
 ## 14. Continue an interrupted run (`pika resume`)
@@ -506,6 +608,22 @@ This rolls every journaled operation back in reverse order, restores each file b
 | the lock names no holder at all | **refuses**, exit 2 — an empty lock cannot be proved stale, so it says so and names the file to remove once you are certain |
 | a journal entry does not match the disk | stops that journal with an error naming the entry; something outside pika edited those files between the crash and now |
 | nothing pending | exits 0 saying so; a repository with no interrupted transaction is a normal state |
+
+### On Windows, `--apply` always refuses
+
+Deciding whether a lock is stale means deciding whether its holder is still
+running, and there is no portable standard-library way to ask that on Windows.
+pika answers conservatively rather than wrongly: **every positive pid reads as
+alive**, so `pika recover --apply` refuses every wedged repository there with
+`the holder process is still running`.
+
+The report is unaffected — the journal walk, the `undo`/`skip` classification
+and the file listing are all platform-independent, so `pika recover` still
+tells you exactly what happened and what a rollback would touch. Only the
+liveness verdict, and therefore the authorization to act on it, cannot be
+trusted. Once you have confirmed by other means that the holder is gone,
+delete `.project/state/recovery/lock` by hand and re-run. This is a known gap:
+[../reference/m2-delta.md](../reference/m2-delta.md#gap-2--pika-recover---apply-cannot-prove-a-holder-dead-on-windows).
 
 `pika doctor` reports the same state as a `recovery` finding and points here, so the situation is discoverable without already knowing this command exists.
 
@@ -616,11 +734,34 @@ A usage or configuration error (exit `2`) replaces `result` with `error` and pri
 
 ## Upgrading: `profiles.lock` written by an older pika
 
-M1.5 edited the embedded profile packs, which rotated the pack digests. Any `.project/profiles.lock` written by an earlier build now fails gate 1 with a digest mismatch — the lock is doing its job; the packs really did change.
+M1.5 and then M2 each edited the embedded profile packs, which rotated the
+pack digests both times. Any `.project/profiles.lock` written by an earlier
+build fails gate 1 with a digest mismatch — the lock is doing its job; the
+packs really did change. M2's edits were to `go@1` (`gofmt -l .` with the new
+`fail-on-output` flag) and `python@1` (`ruff format --check .`, and `pytest`
+in place of `python -m pytest`).
 
 ```sh
-pika init --force     # rewrites the managed files, including profiles.lock
-pika check --all      # gate 1 goes green again
+git status --porcelain                            # clean: the diff below is then only --force's work
+pika init --force --profile go --name my-service  # the profiles and name this repository actually uses
+git diff                                          # restore anything you had hand-edited
+pika check --all                                  # gate 1 goes green again
 ```
 
-`--force` regenerates the managed files under `.project/` and never touches your own files outside it. There is deliberately no in-place lock repair: a lock you can hand-edit back to green proves nothing.
+Pass the same `--profile` and `--name` the repository was scaffolded with.
+`--force` rebuilds the contract from the profiles on *that* command line, not
+from the contract on disk, and takes the project name from `--name` or the
+directory's basename rather than reading it back. It regenerates every other
+managed file too — including `README.md`, `AGENTS.md`,
+`.github/workflows/ci.yml`, the language scaffold, and
+`.project/exceptions.yaml`, which is reset to `{}`.
+[§1 has the full list](#--force-regenerates-more-than-the-lock).
+
+There is deliberately no in-place lock repair: a lock you can hand-edit back
+to green proves nothing.
+
+Also worth knowing when upgrading: a pack change that only touches `core@1`'s
+**templates** rotates no digest at all, so gate 1 cannot tell you your CI
+workflow is out of date, and `pika apply` will not replace a file that already
+exists. `pika init --force` is what rewrites it. See
+[../reference/m2-delta.md](../reference/m2-delta.md#gap-1--a-template-only-pack-change-is-invisible-to-every-adopted-repository).

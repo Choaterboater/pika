@@ -21,14 +21,16 @@ The repository contract (`.project/contract.yaml`) is the project-level source o
 
 > ### Upgrade note — regenerate `profiles.lock`
 >
-> Milestone 1.5 edited the embedded profile packs, which rotated `profiles.PackDigest()`. **Every `.project/profiles.lock` written by an earlier pika build now fails gate 1** with a digest mismatch — the lock is doing its job, the packs really did change. Regenerate it:
+> Milestones 1.5 and 2 each edited the embedded profile packs, which rotated `profiles.PackDigest()` both times. **Every `.project/profiles.lock` written by an earlier pika build now fails gate 1** with a digest mismatch — the lock is doing its job, the packs really did change. Regenerate it:
 >
 > ```sh
-> pika init --force     # rewrites the managed files, including profiles.lock
-> pika check --all      # gate 1 goes green again
+> git status --porcelain                            # clean: the diff below is then only --force's work
+> pika init --force --profile go --name my-service  # the profiles and name this repository actually uses
+> git diff                                          # restore anything you had hand-edited
+> pika check --all                                  # gate 1 goes green again
 > ```
 >
-> `--force` never touches your own files outside `.project/`. There is no in-place lock repair: a lock you can hand-edit back to green is a lock that proves nothing.
+> `--force` rebuilds the contract from the profiles on *that* command line, not from the contract on disk, and takes the project name from `--name` or the directory's basename rather than reading it back. It regenerates every other file `init` manages — `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.gitignore`, the PR template, the CI workflow, the language scaffold — and resets `.project/exceptions.yaml` to `{}`. Read [the flag's full behavior](docs/guides/usage.md#--force-regenerates-more-than-the-lock) before running it. There is no in-place lock repair: a lock you can hand-edit back to green is a lock that proves nothing.
 
 **Milestone 1 (deterministic kernel) complete.** Shipped:
 
@@ -60,7 +62,24 @@ The repository contract (`.project/contract.yaml`) is the project-level source o
 | Scoped checks | `check --changed` resolves a real git diff and degrades loudly — it never silently narrows verification |
 | Self-governance | pika's own `.project/contract.yaml`, `profiles.lock` and `exceptions.yaml` are committed, and CI runs `pika check --ci` with the binary built from the commit under test |
 
-Envelope enforcement coverage and the pack-digest rotation are recorded in [docs/reference/m1-5-delta.md](docs/reference/m1-5-delta.md).
+Envelope enforcement coverage and the M1.5 pack-digest rotation are recorded in [docs/reference/m1-5-delta.md](docs/reference/m1-5-delta.md).
+
+**Milestone 2 (durable work) complete.** Added:
+
+| Area | What works |
+|---|---|
+| Run records | Every run writes a durable record at `.project/state/work/<work-id>/`, saved atomically at each phase transition, with the handoff bundle inside it. Corruption is reported, never repaired |
+| Work ids | Minted from `crypto/rand`. They were derived from the clock and the slug, so two runs of the same kind within one second shared an id — and the second one's receipt overwrote the first's |
+| One lifecycle | Repair (`improve`) and feature (`work`) work run the same state machine and differ in exactly one decision: a green baseline means repair is already done, and says nothing about whether a goal has been met |
+| Kernel-issued evidence | The kernel writes `.project/evidence/<work-id>.json` from the finished run record — commit and tree read back out of Git. Previously only an agent over MCP could, supplying every field itself |
+| Work commands | `pika work` (goal → verified commit), `pika status` (what has run), `pika resume` (finish an interrupted run), `pika recover` (unwedge a crashed transaction) |
+| Ladder re-entrancy | `verify.Run` refuses a nested ladder structurally, scoped to the tree under verification — not by convention, and never by silently skipping into a green report |
+| Gates that can fail | Packs carry `fail-on-output`, so `gofmt -l .` fails on drift instead of `gofmt -l -w .` rewriting the tree it was verifying. pika's compensating `git diff --exit-code` CI step is gone |
+| Scaffolded CI | The generated workflow pins the kernel to the pika release that scaffolded the repository instead of installing `@latest`, drops the `paths:` filter that silently exempted every directory added after scaffold time, and checks out with full history so `check --changed` can resolve a merge base |
+| Doctor | `pika doctor` cross-checks the envelope against each gate's whole argv, so a grant that would not cover a gate is a warning now rather than an `envelope_denied` mid-task |
+| End-to-end | `internal/e2e` drives the real binary through `work`, `status`, `resume` and `recover` inside temp repositories, with a fake agent binary standing in for `codex` — no model, credential or network anywhere |
+
+What M2 changed underneath existing repositories, what is unchanged from M1.5 — `fs_read`, `network`, `credential`, `github` and `budget` are **still schema-only, with no enforcement call site** — and two known gaps that were deliberately left open are recorded in [docs/reference/m2-delta.md](docs/reference/m2-delta.md).
 
 
 ## Install
@@ -139,7 +158,7 @@ Every command accepts `--root <dir>`. Without it, the repository root is discove
 2. **AI decides; the kernel transacts** — agents may decide what should change; only the kernel decides whether and how it is safely applied.
 3. **Evidence beats consensus** — source state, executable checks, and recorded decisions determine completion.
 4. **Parallelize independent work** — read-only exploration fans out; writers get exclusive scopes or isolated workspaces.
-5. **Public-safe history** — sanitized evidence is committed; raw transcripts stay local under `.project/state/` (gitignored by `init`).
+5. **Public-safe history** — the kernel-issued evidence receipt under `.project/evidence/` is redacted, schema-validated and committed; the run record it was issued from, with its prompts and raw agent output, stays local under `.project/state/` (gitignored by `init`). Operational state and public attestation are separate on purpose.
 
 ## Development
 
@@ -153,6 +172,8 @@ CGO_ENABLED=0 go build ./...   # the shipped binary is CGO-free
 
 This repository is adopted by its own kernel. `.project/contract.yaml`, `.project/profiles.lock` and `.project/exceptions.yaml` are committed; `.project/state/` is gitignored. `.github/workflows/ci.yml` builds the binary **from the commit under test** — never `go install ...@latest` — and runs `pika check --ci` on this repository, so a change that would break the verifier is caught by the verifier it breaks.
 
+The suite CI runs includes `internal/e2e`, which drives the real binary through the whole durable lifecycle inside temp repositories, with a fake agent binary on `PATH` in place of `codex`. No model, credential or network is involved anywhere, so `pika check --ci` stays provably LLM-free while still covering the path that spawns an agent.
+
 ```sh
 go build -o /tmp/pika ./cmd/pika
 /tmp/pika doctor
@@ -161,7 +182,7 @@ go build -o /tmp/pika ./cmd/pika
 
 pika's own naming and file-size rules skip dot-prefixed path segments, so `.project/`, `.github/` and `.superpowers/` are exempt from the rules pika applies to itself. See [AGENTS.md](AGENTS.md).
 
-Cross-platform: macOS, Linux, Windows. The txn/verify fsync paths use build-tagged sync implementations (Windows tolerates read-mode `FlushFileBuffers` denials, documented in `internal/fsutil`).
+Cross-platform: macOS, Linux, Windows. The txn/verify fsync paths use build-tagged sync implementations (Windows tolerates read-mode `FlushFileBuffers` denials, documented in `internal/fsutil`). Process liveness is build-tagged too, and on Windows it cannot be determined — see the known gaps in [docs/reference/m2-delta.md](docs/reference/m2-delta.md#7-known-gaps-deliberately-not-closed).
 
 ## License
 
