@@ -181,6 +181,7 @@ var jsonCases = map[string]jsonCase{
 		}
 	}},
 	"check":     {args: []string{"--all"}, setup: writeMinimalProject},
+	"status":    {},
 	"doctor":    {setup: writeMinimalProject},
 	"explain":   {args: []string{"typecheck"}},
 	"authorize": {args: []string{"--scope", "read"}},

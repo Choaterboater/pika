@@ -108,6 +108,12 @@ var commands = []command{
 		run:     runCheck,
 	},
 	{
+		name:    "status",
+		summary: "list durable work runs, or report one run in full",
+		usage:   "pika status [<work-id>] [--json] [--root <dir>]",
+		run:     runStatus,
+	},
+	{
 		name:    "doctor",
 		summary: "diagnose contract, lock, envelope, gates, and toolchain",
 		usage:   "pika doctor [--json] [--root <dir>]",
