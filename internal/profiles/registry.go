@@ -98,14 +98,18 @@ type Naming struct {
 	Rules []namingSpec `yaml:"rules" yamlx:"strict"`
 }
 
-// namingSpec is the pack-side form of a naming rule.
+// namingSpec is the pack-side form of a naming rule. Rationale and
+// Remediation are required for `pika explain`: a rule that cannot explain
+// itself is a rule nobody can act on (design spec goal 10).
 type namingSpec struct {
-	RuleID   string   `yaml:"rule-id"`
-	Severity string   `yaml:"severity"`
-	Scope    string   `yaml:"scope"`
-	Pattern  string   `yaml:"pattern"`
-	Banned   []string `yaml:"banned"`
-	Exempt   []string `yaml:"exempt-stems"`
+	RuleID      string   `yaml:"rule-id"`
+	Severity    string   `yaml:"severity"`
+	Scope       string   `yaml:"scope"`
+	Pattern     string   `yaml:"pattern"`
+	Banned      []string `yaml:"banned"`
+	Exempt      []string `yaml:"exempt-stems"`
+	Rationale   string   `yaml:"rationale"`
+	Remediation string   `yaml:"remediation"`
 }
 
 // Verification groups the checks a profile declares.
@@ -188,14 +192,17 @@ type CheckSet struct {
 }
 
 // NamingRule is a resolved naming rule: an ID and severity plus matcher
-// data (a regex pattern and/or banned path segments).
+// data (a regex pattern and/or banned path segments) and the prose
+// `pika explain` reports — why the rule exists and how to satisfy it.
 type NamingRule struct {
-	RuleID   string
-	Severity string
-	Scope    string
-	Pattern  string
-	Banned   []string
-	Exempt   []string
+	RuleID      string
+	Severity    string
+	Scope       string
+	Pattern     string
+	Banned      []string
+	Exempt      []string
+	Rationale   string
+	Remediation string
 }
 
 // Resolved is the composition result consumed by downstream tasks.
@@ -354,12 +361,14 @@ func namingRules(specs []namingSpec) []NamingRule {
 	rules := make([]NamingRule, 0, len(specs))
 	for _, s := range specs {
 		rules = append(rules, NamingRule{
-			RuleID:   s.RuleID,
-			Severity: s.Severity,
-			Scope:    s.Scope,
-			Pattern:  s.Pattern,
-			Banned:   s.Banned,
-			Exempt:   s.Exempt,
+			RuleID:      s.RuleID,
+			Severity:    s.Severity,
+			Scope:       s.Scope,
+			Pattern:     s.Pattern,
+			Banned:      s.Banned,
+			Exempt:      s.Exempt,
+			Rationale:   s.Rationale,
+			Remediation: s.Remediation,
 		})
 	}
 	return rules

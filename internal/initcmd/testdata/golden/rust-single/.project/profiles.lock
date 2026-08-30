@@ -1,10 +1,10 @@
 {
-  "digest": "4ffe70d74b5af939597d1240b07a977cde75a0888efbdfa1c2430385e417e3de",
+  "digest": "f8040097874af40884a6596cc482a242bb83e71048962ef136ff0d368ce3bb8f",
   "packs": {
     "core": {
       "version": "1",
       "source": "embedded",
-      "digest": "9d0c2f301cef9b4e57b7582a29778513b98c0e6cfc39c64c2c1e5c5b22145e88"
+      "digest": "e8240007f5f61ea872ad727a695441bdef3a343b7046ab5aa08528c6b6ff2fdf"
     },
     "rust": {
       "version": "1",

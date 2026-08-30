@@ -132,3 +132,24 @@ func TestGate1DigestMismatchFails(t *testing.T) {
 		t.Errorf("output %q must name the digest mismatch", output)
 	}
 }
+
+// The lock's top-level digest pins the whole embedded pack registry. It
+// is written by profiles.WriteLock, so a value that disagrees with this
+// binary's registry means the lock came from elsewhere — a gate failure
+// naming both digests, never a silent pass.
+func TestGate1TopLevelDigestMismatchFails(t *testing.T) {
+	root := lockFixture(t, []string{"core@1"})
+	tamperLock(t, root, func(m map[string]any) {
+		m["digest"] = "0000000000000000000000000000000000000000000000000000000000000000"
+	})
+	exit, output := gate1Exit(root)
+	if exit != 1 {
+		t.Fatalf("Gate1 exit = %d, want 1", exit)
+	}
+	if !strings.Contains(output, "0000000000000000000000000000000000000000000000000000000000000000") {
+		t.Errorf("output %q must name the stored digest", output)
+	}
+	if !strings.Contains(output, profiles.PackDigest()) {
+		t.Errorf("output %q must name the embedded registry digest", output)
+	}
+}

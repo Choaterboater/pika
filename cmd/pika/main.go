@@ -50,6 +50,12 @@ var commands = []command{
 		run:     runCheck,
 	},
 	{
+		name:    "explain",
+		summary: "explain a naming rule, gate, or error code",
+		usage:   "pika explain <rule-id> [--json] [--root <dir>]",
+		run:     runExplain,
+	},
+	{
 		name:    "mcp",
 		summary: "serve the kernel to agents over stdio JSON-RPC",
 		usage:   "pika mcp [--root <dir>]",

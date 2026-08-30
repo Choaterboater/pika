@@ -42,19 +42,65 @@ naming:
       # Makefile, Cargo.toml, Package.swift, Apple's Sources/Tests/ dirs,
       # Python's __init__) are exempt from the rule.
       exempt-stems: [README, AGENTS, CONTRIBUTING, Makefile, LICENSE, Dockerfile, Cargo, Package, Sources, Tests, __init__]
+      rationale: >-
+        Mixed-case path segments are the classic cross-platform trap: macOS
+        and Windows checkouts are case-insensitive, Linux and CI are not, so
+        a rename that differs only in case builds locally and fails in CI.
+        One lowercase separator convention also makes paths predictable to
+        grep, to tab-completion, and to agents (design spec §6.2).
+      remediation: >-
+        Rename the offending segment to lowercase with dash, dot, or
+        underscore separators (git mv -f is needed on a case-insensitive
+        filesystem). If the stem is an ecosystem convention that cannot be
+        lowercased, add it to this rule's exempt-stems in the profile pack;
+        if this one path must keep its name, record an exception in
+        .project/exceptions.yaml with a rationale, an owner, and the
+        condition under which it is revisited.
     - rule-id: naming-catch-all
       severity: error
       scope: path-segments
       banned: [utils, helpers, common, misc, manager]
+      rationale: >-
+        A catch-all name states no domain responsibility, so the file
+        accumulates unrelated code and no owner boundary survives review
+        (design spec §6.2).
+      remediation: >-
+        Rename the path to the responsibility it actually owns, or record
+        an exception in .project/exceptions.yaml with a rationale, an
+        owner, and the condition under which it is revisited.
     - rule-id: file-size-review
       severity: warning
       scope: file-lines
       pattern: "500"
+      rationale: >-
+        Past roughly 500 lines a file usually holds more than one
+        responsibility: diffs stop being reviewable, merge conflicts
+        concentrate, and the tests that cover it get coarse. This is a
+        review signal, not a hard limit — it warns, it never fails a gate.
+      remediation: >-
+        Split the file along the seam that is already there — one type or
+        one responsibility per file — or, if the size is inherent (a
+        generated table, a single large state machine, an embedded
+        fixture), record an exception in .project/exceptions.yaml with a
+        rationale, an owner, and the condition under which it is revisited.
     # M1 has no generated files; the rule mechanism ships with no
     # patterns, so it matches nothing until a language pack declares them.
     - rule-id: generated-owner
       severity: error
       scope: generated-patterns
+      rationale: >-
+        Generated files must name the generator that owns them, otherwise
+        someone edits the output by hand and the next regeneration silently
+        reverts the fix. The rule is the enforcement point for that
+        ownership claim. It ships with no patterns and matches nothing in
+        M1: a language or capability pack declares the generated-file
+        patterns for its stack, and this rule then holds them to an owner.
+      remediation: >-
+        Edit the generator's input and regenerate rather than editing the
+        output, and declare the generated paths in the owning profile pack
+        so the rule can see them. If a generated file must be hand-held,
+        record an exception in .project/exceptions.yaml with a rationale,
+        an owner, and the condition under which it is revisited.
 
 verification:
   checks:
