@@ -696,11 +696,27 @@ func TestResumeTreatsADeliverGitDisprovesAsACrash(t *testing.T) {
 	if ladder != 1 {
 		t.Fatalf("the ladder ran %d times, want exactly one recheck", ladder)
 	}
-	if result.Commit == "" || result.Commit == lost {
-		t.Fatalf("result.Commit = %q, want a new commit: the recorded one is gone", result.Commit)
+	// What the crash path has to prove is that the branch moved: the
+	// reset left it on the base commit, and resume put a commit of its
+	// own back on top. Whether that commit's hash differs from the
+	// discarded one proves nothing either way — resume recreates an
+	// identical tree on an identical parent under the same author and
+	// message, so landing in the same wall-clock second yields a
+	// byte-identical hash. That is Git addressing content correctly,
+	// not the run failing to re-run, and an assertion that reads it as
+	// failure is a race against the clock.
+	if result.Commit == "" {
+		t.Fatal("result.Commit is empty, want the commit resume made")
 	}
-	if got := gitOutput(t, root, "rev-parse", branch); got != result.Commit {
-		t.Fatalf("%s = %s, want the commit resume made, %s", branch, got, result.Commit)
+	head := gitOutput(t, root, "rev-parse", branch)
+	if head == base {
+		t.Fatalf("%s is still on the base %s, want resume to have delivered again", branch, base)
+	}
+	if head != result.Commit {
+		t.Fatalf("%s = %s, want the commit resume made, %s", branch, head, result.Commit)
+	}
+	if parent := gitOutput(t, root, "rev-parse", result.Commit+"^"); parent != base {
+		t.Fatalf("result.Commit sits on %s, want it one commit ahead of the base %s", parent, base)
 	}
 	if got := gitOutput(t, root, "show", "--name-only", "--format=", branch); got != "fixed.txt" {
 		t.Fatalf("commit contents = %q, want the agent's file", got)
