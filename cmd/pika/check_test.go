@@ -190,6 +190,25 @@ func TestCheckUsageAndConfigErrorsExit2(t *testing.T) {
 	}
 }
 
+// TestCheckChangedFlagHelpMatchesActualSemantics pins the flag's own
+// documented behavior against its help text: --changed does no
+// per-package attribution at all (scopeSelectsGates is empty-vs-non-
+// empty only, exactly as docs/guides/usage.md's own table states), so
+// the help string must not promise "packages touched" narrowing the
+// kernel deliberately does not do.
+func TestCheckChangedFlagHelpMatchesActualSemantics(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var stdout, stderr bytes.Buffer
+	runCheck([]string{"--bogus"}, strings.NewReader(""), &stdout, &stderr)
+	help := stderr.String()
+	if !strings.Contains(help, "skip the package gates only when the tree is provably clean") {
+		t.Errorf("--changed help text does not match its actual semantics:\n%s", help)
+	}
+	if strings.Contains(help, "packages touched") {
+		t.Errorf("--changed help text still promises package-level attribution it does not do:\n%s", help)
+	}
+}
+
 // writeChangedFixture lays down a contract that declares one package at
 // apps/api, plus the profile lock, in a fresh temp directory, and changes
 // into it. The commands block is fixed: five trivially passing gates, so

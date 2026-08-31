@@ -28,7 +28,7 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	all := fs.Bool("all", false, "run every gate")
-	changedFlag := fs.Bool("changed", false, "run gates for packages touched since the merge base")
+	changedFlag := fs.Bool("changed", false, "resolve a change set from git; skip the package gates only when the tree is provably clean")
 	ci := fs.Bool("ci", false, "CI mode: implies --all; no interactive prompts")
 	jsonOut := fs.Bool("json", false, "emit the JSON report on stdout")
 	contractPath := fs.String("contract", "", "path to the contract file (default <root>/.project/contract.yaml)")
