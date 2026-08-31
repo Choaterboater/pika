@@ -55,7 +55,7 @@ func inspectRegionFile(target string, b body) (state, detail string) {
 		return StateAbsent, "carries no pika skills region; write it with " + b.from.command
 	}
 	if err := verifyRegion(region); err != nil {
-		return StateTampered, tamperedDetail(err, b.from)
+		return StateTampered, tamperedDetail(err, region, b)
 	}
 	if bytes.Equal(region, b.region) {
 		return StateCurrent, ""

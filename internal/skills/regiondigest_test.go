@@ -15,6 +15,21 @@ import (
 // prose outside them is neither digested nor checked, and that a region
 // the kernel cannot locate or verify fails closed.
 
+// lastReplace replaces the LAST occurrence of old in s. It exists
+// because project-maintain's own skill text quotes the marker syntax
+// inline to explain it — a real, deliberate use of prose naming the
+// mechanism — so the marker string appears more than once in a
+// composed region and a first-match strings.Replace can no longer be
+// trusted to find the actual structural marker these fixtures mean to
+// edit around.
+func lastReplace(s, old, new string) string {
+	i := strings.LastIndex(s, old)
+	if i < 0 {
+		return s
+	}
+	return s[:i] + new + s[i+len(old):]
+}
+
 // A region with no digest line is one the kernel cannot check, and it
 // must fail on exactly that ground. Calling it a hand edit would assert
 // something the kernel has no evidence for, and blaming a source would
@@ -141,7 +156,7 @@ func TestHandEditedRegionIsReportedAsTampered(t *testing.T) {
 	}
 	target := filepath.Join(root.Dir(), "AGENTS.md")
 	doc := readFile(t, target)
-	edited := strings.Replace(doc, endMarker, "A line the kernel never issued.\n"+endMarker, 1)
+	edited := lastReplace(doc, endMarker, "A line the kernel never issued.\n"+endMarker)
 	if edited == doc {
 		t.Fatal("fixture did not find the end marker")
 	}
@@ -155,6 +170,15 @@ func TestHandEditedRegionIsReportedAsTampered(t *testing.T) {
 	p := st.Projections[0]
 	if p.State != StateTampered {
 		t.Fatalf("state = %s, want %s (detail %q)", p.State, StateTampered, p.Detail)
+	}
+	// The detail must not stop at "these two digests differ": it must
+	// point at the actual inserted line, the one difference version
+	// control would otherwise be the only way to find.
+	if !strings.Contains(p.Detail, "A line the kernel never issued.") {
+		t.Errorf("detail does not attribute the tamper to the actual edited line: %q", p.Detail)
+	}
+	if !strings.Contains(p.Detail, "first difference is at line") {
+		t.Errorf("detail does not localize the edit to a line: %q", p.Detail)
 	}
 	if !strings.Contains(p.Detail, "DISCARD") || !strings.Contains(p.Detail, ".agents/skills/") {
 		t.Errorf("detail does not warn that regenerating destroys the edit, nor name where it belongs: %q", p.Detail)
@@ -180,7 +204,7 @@ func TestTamperIsNotMaskedByAMovedSource(t *testing.T) {
 	}
 	target := filepath.Join(root.Dir(), "AGENTS.md")
 	doc := readFile(t, target)
-	if err := os.WriteFile(target, []byte(strings.Replace(doc, endMarker, "Mine.\n"+endMarker, 1)), 0o644); err != nil {
+	if err := os.WriteFile(target, []byte(lastReplace(doc, endMarker, "Mine.\n"+endMarker)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	skill := root.Skill("project-work")
@@ -239,7 +263,7 @@ func TestOperatorProseOutsideTheMarkersIsFreeAndInsideIsNot(t *testing.T) {
 		t.Fatalf("Verify = %v after an edit outside the markers, want nil", err)
 	}
 
-	inside := strings.Replace(outside, endMarker, "One word inside.\n"+endMarker, 1)
+	inside := lastReplace(outside, endMarker, "One word inside.\n"+endMarker)
 	if err := os.WriteFile(target, []byte(inside), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +304,7 @@ func TestDamagedRegionsFailClosed(t *testing.T) {
 		{"end marker deleted", strings.Replace(good, endMarker+"\n", "", 1), StateUnreadable},
 		{"begin marker deleted", strings.Replace(good, beginMarker+"\n", "", 1), StateUnreadable},
 		{"region duplicated", good + "\n" + good, StateUnreadable},
-		{"markers reordered", strings.Replace(strings.Replace(good, beginMarker, "\x00", 1), endMarker, beginMarker, 1), StateUnreadable},
+		{"markers reordered", lastReplace(strings.Replace(good, beginMarker, "\x00", 1), endMarker, beginMarker), StateUnreadable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := strings.ReplaceAll(tc.doc, "\x00", endMarker)
@@ -315,7 +339,7 @@ func TestInstallReportsThatItDiscardedAHandEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := readFile(t, target)
-	if err := os.WriteFile(target, []byte(strings.Replace(doc, endMarker, "Mine.\n"+endMarker, 1)), 0o644); err != nil {
+	if err := os.WriteFile(target, []byte(lastReplace(doc, endMarker, "Mine.\n"+endMarker)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	st, err := Install(root, c, resolved, false)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // This file holds one mechanism: the digest a projection's kernel-owned
@@ -139,13 +140,89 @@ func verifyRegion(region []byte) error {
 // fail and both risk the same loss on regenerate, so both are tampered
 // — but only the first is reported as a hand edit, because the second
 // would be the kernel asserting a fact it does not have.
-func tamperedDetail(err error, from origin) string {
+//
+// tampered is the on-disk region the digest check just failed on;
+// rendered is what b's current sources produce. When the check failed
+// outright (errUnverifiable — the digest line itself is missing,
+// doubled or unreadable) there is no verified "before" to diff against,
+// so no diff is offered; a diff is only shown once the region is known
+// to disagree with its own recorded digest, which is what makes the
+// comparison meaningful rather than a guess.
+func tamperedDetail(err error, tampered []byte, b body) string {
 	lead := "was edited by hand inside the pika skills markers: it " + err.Error()
+	diff := ""
 	if errors.Is(err, errUnverifiable) {
 		lead = "holds a kernel-owned region that " + err.Error() +
 			", so the kernel cannot tell whether it still says what it generated"
+	} else {
+		diff = regionDiff(tampered, b.region)
 	}
-	return lead +
-		"; that region is kernel-owned, and " + from.command + " would DISCARD whatever is there rather than keep it — " +
-		from.source
+	return lead + diff +
+		"; that region is kernel-owned, and " + b.from.command + " would DISCARD whatever is there rather than keep it — " +
+		b.from.source
+}
+
+// regionDiffContext bounds how many differing lines regionDiff shows on
+// each side: enough to identify the change, not so many that a rewrite
+// touching most of the region reproduces the region a second time.
+const regionDiffContext = 6
+
+// regionDiff localizes where a tampered region's bytes diverge from
+// what its declared sources currently render: the first line number
+// where they disagree, and up to regionDiffContext lines from each
+// side starting there. It has no full diff algorithm behind it —
+// finding the common prefix and the common suffix and reporting
+// whatever is left between them is enough to point at a single edited,
+// inserted, or deleted line without pretending to reconcile arbitrary
+// rewrites. want and got need not be the same length; only what
+// remains between the matching prefix and suffix is reported.
+//
+// rendered is what the sources cited in the region's OWN provenance
+// header would currently produce — which may itself have moved since
+// the region was generated, if a source changed in the same working
+// tree the hand edit happened in. This is therefore what changed, not
+// guaranteed to be only what an operator typed; that ambiguity is
+// exactly why the tamper check runs independent of the source-digest
+// check rather than trying to separate the two causes here.
+func regionDiff(tampered, rendered []byte) string {
+	before := strings.Split(string(tampered), "\n")
+	after := strings.Split(string(rendered), "\n")
+	prefix := 0
+	for prefix < len(before) && prefix < len(after) && before[prefix] == after[prefix] {
+		prefix++
+	}
+	suffix := 0
+	for suffix < len(before)-prefix && suffix < len(after)-prefix &&
+		before[len(before)-1-suffix] == after[len(after)-1-suffix] {
+		suffix++
+	}
+	oldMid := before[prefix : len(before)-suffix]
+	newMid := after[prefix : len(after)-suffix]
+	if len(oldMid) == 0 && len(newMid) == 0 {
+		return "" // the caller only reaches here when the two differ
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "; the first difference is at line %d", prefix+1)
+	writeDiffSide(&out, "on disk", oldMid)
+	writeDiffSide(&out, "the current render", newMid)
+	return out.String()
+}
+
+// writeDiffSide appends one labelled, capped side of a regionDiff.
+func writeDiffSide(out *strings.Builder, label string, lines []string) {
+	if len(lines) == 0 {
+		fmt.Fprintf(out, ", %s: (nothing — the other side inserts here)", label)
+		return
+	}
+	fmt.Fprintf(out, ", %s:\n", label)
+	shown := lines
+	if len(shown) > regionDiffContext {
+		shown = shown[:regionDiffContext]
+	}
+	for _, l := range shown {
+		fmt.Fprintf(out, "    %s\n", l)
+	}
+	if extra := len(lines) - len(shown); extra > 0 {
+		fmt.Fprintf(out, "    ... and %d more line(s)\n", extra)
+	}
 }
