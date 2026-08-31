@@ -248,7 +248,27 @@ func Preview(repoRoot string, opts ...Option) (*Report, error) {
 		return nil, fmt.Errorf("adopt: %w", err)
 	}
 	detected := detectedProfiles(inv.DetectedLanguages)
-	resolved, err := profiles.Resolve(detected)
+	// profiles.Resolve composes at most [core@1, <one language>@1]
+	// (M1's own composition rule) — the same rule that keeps a single
+	// package's Profiles list valid. detected can have more than one
+	// language when the repository has two packages sharing the
+	// repository root (a Go module and a TypeScript package both
+	// declared at ".", say); resolving that combined list would be
+	// asking for a resolution that does not correspond to any one
+	// package. There is no single principled answer for which
+	// language's pack hints belong in the repository-level Commands
+	// map in that case either — the same ambiguity, not a new one —
+	// so this falls back to core@1 alone (matching what a
+	// single-language repository's every-slot-empty case already
+	// resolved to before autofill baselining existed) rather than
+	// asking Resolve a question it correctly refuses to answer.
+	resolveSelection := []string{profiles.CoreRef}
+	if len(inv.DetectedLanguages) == 1 {
+		if ref, ok := profiles.LanguagePack(inv.DetectedLanguages[0]); ok {
+			resolveSelection = append(resolveSelection, ref)
+		}
+	}
+	resolved, err := profiles.Resolve(resolveSelection)
 	if err != nil {
 		return nil, fmt.Errorf("adopt: %w", err)
 	}
@@ -382,10 +402,33 @@ func buildDraft(repoRoot string, inv *discover.Inventory, detected []string) *co
 		Skills:     &contract.Skills{Projections: []contract.Projection{{Harness: "codex", Path: "AGENTS.md"}}},
 		Extensions: map[string]any{},
 	}
-	for _, p := range inv.Packages {
+	// Two packages can share a root — a Go module and a TypeScript
+	// package both declared at the repository root is an ordinary
+	// shape, not an exotic one — and profiles.Resolve enforces at most
+	// one language pack per package, so they cannot be merged into one
+	// entry either. c.Packages is keyed by name, not by root, so a
+	// name collision is disambiguated by suffixing the language on
+	// every package that shares it — symmetrically, not just the
+	// second one processed, so neither package looks like the
+	// "primary" one by accident of iteration order. Leaving this
+	// unhandled silently dropped every package but the last one
+	// discover's fixed language ladder (go, rust, swift, python,
+	// typescript) produced, with the review bundle and printed report
+	// still claiming the true count.
+	keys := make([]string, len(inv.Packages))
+	counts := map[string]int{}
+	for i, p := range inv.Packages {
 		key := p.Root
 		if key == "." {
 			key = c.Project.Name
+		}
+		keys[i] = key
+		counts[key]++
+	}
+	for i, p := range inv.Packages {
+		key := keys[i]
+		if counts[key] > 1 {
+			key = key + "-" + p.Language
 		}
 		profilesList := []string{profiles.CoreRef}
 		if ref, ok := profiles.LanguagePack(p.Language); ok {

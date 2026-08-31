@@ -533,6 +533,53 @@ func TestPreviewAutofillBaselinePassesOnCleanCode(t *testing.T) {
 	}
 }
 
+// Two packages sharing the repository root — a Go module and a
+// TypeScript package both declared at "." — must not collapse onto
+// one contract package: buildDraft's map key used to be the project
+// name for both, so the second package processed silently overwrote
+// the first, while the printed report and review bundle went on
+// claiming the true package count. profiles.Resolve also composes at
+// most one language pack, so detecting two languages at once must not
+// crash Preview either — it has no single principled resolution and
+// must fall back rather than error.
+func TestPreviewKeepsBothPackagesWhenTwoLanguagesShareTheRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "go.mod", "module example.com/multilang\n\ngo 1.26\n")
+	writeFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
+	writeFile(t, root, "package.json", `{"name": "multilang", "version": "1.0.0"}`+"\n")
+
+	rep, err := Preview(root)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if len(rep.Inventory.Packages) != 2 {
+		t.Fatalf("expected 2 packages, got %+v", rep.Inventory.Packages)
+	}
+	if len(rep.DraftContract.Packages) != 2 {
+		t.Fatalf("draft contract collapsed the packages: %+v (inventory found 2)", rep.DraftContract.Packages)
+	}
+	var sawGo, sawTS bool
+	for _, pkg := range rep.DraftContract.Packages {
+		for _, ref := range pkg.Profiles {
+			switch ref {
+			case "go@1":
+				sawGo = true
+			case "typescript@1":
+				sawTS = true
+			}
+		}
+	}
+	if !sawGo || !sawTS {
+		t.Errorf("draft contract packages = %+v, want one go@1 package and one typescript@1 package", rep.DraftContract.Packages)
+	}
+	if !slices.Contains(rep.DetectedProfiles, "go@1") || !slices.Contains(rep.DetectedProfiles, "typescript@1") {
+		t.Errorf("DetectedProfiles = %v, want both go@1 and typescript@1", rep.DetectedProfiles)
+	}
+}
+
 func TestPreviewCommittedContractRejected(t *testing.T) {
 	root := messyFixture(t)
 	writeFile(t, root, ".project/contract.yaml",
