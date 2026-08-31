@@ -169,6 +169,15 @@ func scopeSelectsGates(set *changed.Set) bool {
 }
 
 // printReport writes the human-readable check report.
+//
+// A failed gate leads with its Reason rather than with `exit=%d`. The
+// reason names the exit status whenever an exit status is what decided
+// the gate ("gate exited with status 1"), and says what decided it when
+// nothing did — a timeout, or a gate judged on the report it printed.
+// The old line could render `FAIL format exit=0`, which told the operator
+// the command succeeded and the gate failed in the same six characters.
+// The JSON report still carries the exit code as a field, where it is
+// labelled and cannot be read as the verdict.
 func printReport(rep *verify.Report, stdout io.Writer) {
 	for _, w := range rep.Warnings {
 		fmt.Fprintf(stdout, "warning: %s\n", w)
@@ -176,7 +185,7 @@ func printReport(rep *verify.Report, stdout io.Writer) {
 	for _, g := range rep.Gates {
 		switch g.Status {
 		case verify.StatusFail:
-			fmt.Fprintf(stdout, "FAIL %-10s exit=%d %s\n", g.ID, g.Exit, g.OutputTail)
+			fmt.Fprintf(stdout, "FAIL %-10s %s\n%s", g.ID, g.Reason, g.OutputTail)
 		case verify.StatusSkip:
 			fmt.Fprintf(stdout, "SKIP %-10s %s\n", g.ID, g.Reason)
 		default:

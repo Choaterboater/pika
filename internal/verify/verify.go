@@ -94,15 +94,58 @@ const (
 	StatusSkip = "skip"
 )
 
+// Exit codes a GateResult carries when no process exit status produced
+// the verdict. Both are negative, which is the invariant the report rests
+// on: a failed gate never reports exit 0. `FAIL format exit=0` is a
+// contradiction on its face — it tells an operator the command succeeded
+// and the gate failed in the same breath — and the fix is not to explain
+// the contradiction in prose but to stop constructing it. Every failing
+// path records either the real nonzero status of a process that exited,
+// or one of these sentinels plus a Reason that says in words what
+// happened instead.
+const (
+	// ExitNoStatus records a gate whose command produced no exit status
+	// at all: it timed out and was killed, or it never started.
+	ExitNoStatus = -1
+
+	// ExitOutputReport records a gate whose command exited 0 and failed
+	// anyway because the gate is judged on output (Gate.FailOnOutput).
+	// The process really did exit 0; that number is simply not the
+	// verdict, and reporting it as the gate's exit code was the whole
+	// incoherence.
+	ExitOutputReport = -2
+)
+
 // ScopeSkipReason records a gate skipped because the change set is empty:
 // the tree is clean, so there is nothing for that gate to check. It is
 // deliberately distinct from the discovery reason ("no command discovered
-// for <id>") and the cascade reason ("skipped: gate <id> failed"): a
-// reader of the report must be able to tell "this gate had nothing to
-// check" from "this gate had no command" and from "an earlier gate
-// failed". Narrowed verification is only trustworthy when it says so in
-// its own words.
+// for <id>"), the cascade reason ("skipped: gate <id> failed") and the
+// missing-toolchain reason (MissingToolSkipReason): a reader of the
+// report must be able to tell "this gate had nothing to check" from "this
+// gate had no command", from "this gate had no tool" and from "an earlier
+// gate failed". Narrowed verification is only trustworthy when it says so
+// in its own words.
 const ScopeSkipReason = "no changed files in scope"
+
+// MissingToolSkipReason prefixes a gate skipped because the command's own
+// binary is not installed. The full reason names the binary, so the
+// report says which toolchain is missing rather than that one is.
+//
+// The line this draws is narrow on purpose, and it is the only line that
+// can be drawn honestly for an arbitrary command: exec resolved argv[0]
+// against PATH, found nothing, and returned before forking. No process
+// ran, so there is no output to mistake for a finding and no exit status
+// to mistake for a verdict — absence is provable rather than inferred. A
+// tool that is missing further in (`make fmt` calling a golangci-lint
+// that is not installed) starts a real process with a real exit status,
+// and pika cannot tell that from a genuine failure; it stays a failure.
+// Reading exit 127 as "not found" would make every gate one convention
+// away from reporting its own failures as skips.
+//
+// `pika doctor` reports the same absence at error severity, which is what
+// keeps the skip honest rather than convenient: check tells you the rung
+// did not run, doctor tells you to fix it.
+const MissingToolSkipReason = "toolchain not installed"
 
 // Gate is one verification rung: an external command (argv, run via exec
 // with no shell and no environment expansion) or an in-process Func.
@@ -126,6 +169,14 @@ type Gate struct {
 	// has reported drift. A gate that already failed keeps its
 	// exit-status reason, which says more. Func gates decide their own
 	// status and are never pack-declared, so this governs command gates.
+	//
+	// It is a statement about THIS argv and nothing else. "Output means
+	// failure" is true of `gofmt -l .` and false of `make fmt`,
+	// `prettier --write`, `black .` and `cargo fmt`, all of which print
+	// while succeeding; it is a property of a command, never of the
+	// format slot. FromProfiles is what decides whether a pack's
+	// declaration reaches a given gate, and it only does so when the
+	// gate's argv is the argv the pack declared.
 	FailOnOutput bool
 
 	// SkipReason, when non-empty, records the gate as skipped with this
@@ -276,13 +327,21 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 	if g.Func != nil {
 		start := time.Now()
 		exit, output := g.Func(ctx)
-		return GateResult{
+		res := GateResult{
 			ID:         g.ID,
 			Exit:       exit,
 			DurationMs: time.Since(start).Milliseconds(),
 			OutputTail: tail(output),
 			Status:     status(exit),
-		}, nil
+		}
+		// Every failed gate says why in words, in-process ones included:
+		// the report renders Reason, and a blank one would print a gate
+		// name with no verdict beside it. status() already makes fail
+		// and a zero exit mutually exclusive here.
+		if res.Status == StatusFail {
+			res.Reason = fmt.Sprintf("gate reported status %d", exit)
+		}
+		return res, nil
 	}
 	if len(g.Cmd) == 0 {
 		return GateResult{}, fmt.Errorf("verify: gate %q has neither cmd nor func", g.ID)
@@ -319,13 +378,26 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 		DurationMs: time.Since(start).Milliseconds(),
 		OutputTail: tail(string(output)),
 	}
+	// Before any verdict: a command whose own binary is not on PATH never
+	// ran. exec resolved argv[0], found nothing, and returned without
+	// forking, so there is no exit status and no output — the evidence
+	// that a gate failed simply does not exist, and calling it a failure
+	// reports a missing toolchain as a broken repository. See
+	// MissingToolSkipReason for why this is the only absence pika claims
+	// to recognize.
+	if errors.Is(err, exec.ErrNotFound) {
+		res.Status = StatusSkip
+		res.Reason = fmt.Sprintf("%s: %s is not on PATH", MissingToolSkipReason, argv[0])
+		res.OutputTail = ""
+		return res, nil
+	}
 	var exitErr *exec.ExitError
 	switch {
 	case err == nil:
 		res.Exit = 0
 		res.Status = StatusPass
 	case ctx.Err() != nil:
-		res.Exit = -1
+		res.Exit = ExitNoStatus
 		res.Status = StatusFail
 		res.Reason = fmt.Sprintf("gate timed out after %s", rc.gateTimeout)
 	default:
@@ -334,7 +406,7 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 			res.Exit = exitErr.ExitCode()
 			res.Reason = fmt.Sprintf("gate exited with status %d", res.Exit)
 		} else {
-			res.Exit = -1
+			res.Exit = ExitNoStatus
 			res.Reason = err.Error()
 		}
 	}
@@ -342,9 +414,24 @@ func runGate(ctx context.Context, g Gate, rc runConfig) (GateResult, error) {
 	// failed keeps the reason that names its exit status. Whitespace
 	// alone is not a report — a gate that printed only a newline has
 	// said nothing.
+	//
+	// The recorded exit code becomes ExitOutputReport rather than the
+	// process's 0. The process did exit 0 and the Reason says so in
+	// words; what it did not do is decide this gate, and a report line
+	// reading `FAIL format exit=0` claims the opposite of the verdict
+	// beside it.
 	if g.FailOnOutput && res.Status == StatusPass && strings.TrimSpace(string(output)) != "" {
 		res.Status = StatusFail
-		res.Reason = "gate exited 0 but produced output, which this gate reports as failure"
+		res.Exit = ExitOutputReport
+		res.Reason = "gate command exited 0 and printed a report; this gate is judged on its output, not its exit status, so the report is the failure"
+	}
+	// The invariant, enforced where every branch has already run: a
+	// failed command gate never reports exit 0. Each branch above sets a
+	// real nonzero status or a sentinel, so this changes nothing today;
+	// it is here so that a branch added later cannot quietly reintroduce
+	// the contradiction.
+	if res.Status == StatusFail && res.Exit == 0 {
+		res.Exit = ExitNoStatus
 	}
 	return res, nil
 }

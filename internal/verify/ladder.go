@@ -2,6 +2,7 @@ package verify
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Choaterboater/pika/internal/profiles"
@@ -20,14 +21,23 @@ var slotOrder = []string{"format", "lint", "typecheck", "test", "smoke"}
 // overrides a discovery sentinel; a discovery sentinel with no discovered
 // command becomes a skip with a recorded reason, not a failure.
 //
-// A slot's FailOnOutput rides onto its gate whatever the command turned
-// out to be, including a contract override. The flag is the pack's
-// statement about the slot's success criterion for this stack — in Go, a
-// format gate that has anything to say has found drift — and a contract
-// that adopts the slot adopts that criterion. Dropping it on override
-// would silently restore the gate that cannot fail, which is the whole
-// defect: `pika init` writes the pack's own hint into contract.commands,
-// so the override path is the ordinary path, not the exotic one.
+// A slot's FailOnOutput reaches the gate only when the gate's argv is the
+// argv the pack declared for that slot — its command, or the hint a
+// discovery sentinel carries. The flag is not a property of the format
+// slot; it is the pack saying how to read the output of ONE command it
+// named. `gofmt -l .` lists misformatted files and exits 0, so its output
+// is the finding. `make fmt`, `prettier --write`, `black .` and
+// `cargo fmt` all print while succeeding, and judging them by the same
+// rule failed gates whose commands had just succeeded — reported, with no
+// possible reading, as `FAIL format exit=0`.
+//
+// The scaffolded path is unaffected, which is the point of comparing argv
+// rather than dropping the flag on override: `pika init` and `pika apply`
+// write the pack's own hint into contract.commands verbatim, so for a
+// pika-scaffolded repository the override IS the pack's command and the
+// flag rides along. It is `pika adopt`, which writes whatever command the
+// foreign repository already had, that must not inherit a criterion
+// written for a command it replaced.
 func FromProfiles(cs profiles.CheckSet, commands map[string]string) (CheckSet, error) {
 	slots := map[string]profiles.Check{
 		"format":    cs.Format,
@@ -44,7 +54,11 @@ func FromProfiles(cs profiles.CheckSet, commands map[string]string) (CheckSet, e
 			if err != nil {
 				return nil, err
 			}
-			gates = append(gates, Gate{ID: id, Cmd: argv, FailOnOutput: slot.FailOnOutput})
+			gates = append(gates, Gate{
+				ID:           id,
+				Cmd:          argv,
+				FailOnOutput: slot.FailOnOutput && slices.Equal(argv, declaredCommand(slot)),
+			})
 			continue
 		}
 		switch {
@@ -60,6 +74,18 @@ func FromProfiles(cs profiles.CheckSet, commands map[string]string) (CheckSet, e
 		}
 	}
 	return gates, nil
+}
+
+// declaredCommand is the argv the pack named for a slot: its command, or
+// the hint a discovery sentinel offers in place of one. It is the only
+// argv a pack's fail-on-output declaration can be about, because it is
+// the only argv the pack ever saw. A sentinel with no hint declares
+// nothing, and profiles.checkSet already refuses fail-on-output there.
+func declaredCommand(slot profiles.Check) []string {
+	if len(slot.Cmd) > 0 {
+		return slot.Cmd
+	}
+	return slot.Hint
 }
 
 // splitCommand splits a contract command string into argv on whitespace.

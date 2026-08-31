@@ -419,14 +419,18 @@ func grantedKinds(env *envelope.Envelope) string {
 // diagnostic command would make doctor slow and side-effecting, so the
 // binary is probed with exec.LookPath instead.
 //
-// The two negative outcomes carry the severity `pika check` would give
-// the same repository, because a diagnostic that disagrees with the
-// kernel it diagnoses is worse than no diagnostic. An undiscovered slot
-// is a warning: verify records it as StatusSkip, which does not fail the
-// ladder. A resolved command whose binary is absent is an error: verify
-// builds a real gate for it either way, exec.CommandContext fails with
-// something that is not an *exec.ExitError, and runGate's default branch
-// scores it StatusFail — exit 1.
+// An undiscovered slot is a warning: verify records it as StatusSkip,
+// which does not fail the ladder.
+//
+// A resolved command whose binary is absent is an error, and this is the
+// one place doctor is deliberately louder than check. `pika check` now
+// skips such a gate with verify.MissingToolSkipReason rather than failing
+// it — a missing toolchain is not a defect in the repository, and calling
+// it one was the bug. But a skipped rung is a rung that did not run, and
+// a ladder that goes green while a declared gate never executed is worth
+// exactly one loud sentence somewhere. Here is that sentence. check tells
+// you the rung did not run; doctor tells you to fix it, and exits
+// nonzero until you do.
 func checkGates(rep *Report, root *repopath.Root, c *contract.Contract, resolved *profiles.Resolved, env *envelope.Envelope) {
 	if c == nil || resolved == nil {
 		return
@@ -457,7 +461,7 @@ func checkGates(rep *Report, root *repopath.Root, c *contract.Contract, resolved
 		if _, err := exec.LookPath(g.Cmd[0]); err != nil {
 			rep.add(id, SeverityError,
 				fmt.Sprintf("%s: %s is not on PATH", strings.Join(g.Cmd, " "), g.Cmd[0]),
-				"install the toolchain; \"pika check\" runs this gate here and fails when the binary is absent")
+				"install the toolchain; \"pika check\" skips this gate while the binary is absent, so the ladder goes green without ever running this rung")
 		} else {
 			rep.add(id, SeverityOK, strings.Join(g.Cmd, " "), "")
 		}

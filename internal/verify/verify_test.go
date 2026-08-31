@@ -630,8 +630,14 @@ func TestFailOnOutputFailsAGateThatPrintsAndExitsZero(t *testing.T) {
 	if got.Status != StatusFail {
 		t.Fatalf("format status = %q, want fail", got.Status)
 	}
-	if got.Exit != 0 {
-		t.Errorf("format exit = %d, want the real 0: the flag changes the verdict, not the recorded status", got.Exit)
+	if got.Exit == 0 {
+		t.Errorf("format exit = 0 beside status %q: `FAIL ... exit=0` is a contradiction, not a report", got.Status)
+	}
+	if got.Exit != ExitOutputReport {
+		t.Errorf("format exit = %d, want ExitOutputReport (%d): no process status decided this gate", got.Exit, ExitOutputReport)
+	}
+	if !strings.Contains(got.Reason, "exited 0") || !strings.Contains(got.Reason, "output") {
+		t.Errorf("format reason = %q, want it to say in words that the command exited 0 and the gate is judged on output", got.Reason)
 	}
 	if got.Reason == "" {
 		t.Error("format failed without a reason; a gate that fails on output must say so")
@@ -710,5 +716,135 @@ func TestFailOnOutputKeepsTheExitStatusReason(t *testing.T) {
 	}
 	if !strings.Contains(got.Reason, "status 3") {
 		t.Errorf("reason = %q, want the exit-status diagnosis preserved", got.Reason)
+	}
+}
+
+// A formatter that prints while succeeding is the ordinary case, not the
+// exotic one: `make fmt`, `prettier --write`, `black .` and `cargo fmt`
+// all narrate their work and exit 0. Only a gate that was told its
+// command reports by printing may read that narration as a verdict, and
+// spf13/cobra's `make fmt` — which exits 0 and prints — was reported
+// `FAIL format exit=0` because the format slot carried the flag onto a
+// command nobody had made the claim about.
+func TestFormatCommandThatPrintsAndExitsZeroPasses(t *testing.T) {
+	cs := CheckSet{
+		{ID: "format", Cmd: []string{"echo", "reformatting 12 files"}},
+		{ID: "lint", Cmd: []string{"true"}},
+	}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rep.Gates[0]
+	if got.Status != StatusPass {
+		t.Fatalf("format = %+v, want pass: the command exited 0 and nothing declared its output a verdict", got)
+	}
+	if !rep.Pass {
+		t.Fatalf("report = %+v, want pass", rep)
+	}
+	if rep.Gates[1].Status != StatusPass {
+		t.Errorf("lint = %+v, want pass: nothing failed, so nothing cascades", rep.Gates[1])
+	}
+}
+
+// The invariant an operator reads first. `FAIL <gate> exit=0` says the
+// command succeeded and the gate failed in one line; whichever half is
+// true, the line is useless. Every way a command gate can fail is
+// enumerated here, and each must carry both a nonzero exit and a reason
+// in words.
+func TestNoCommandGateFailsWithExitZero(t *testing.T) {
+	cases := []struct {
+		name string
+		gate Gate
+		opts []Option
+	}{
+		{
+			name: "nonzero exit status",
+			gate: Gate{ID: "lint", Cmd: []string{"false"}},
+		},
+		{
+			name: "exited 0 but the gate is judged on output",
+			gate: Gate{ID: "format", Cmd: []string{"echo", "drift.go"}, FailOnOutput: true},
+		},
+		{
+			name: "killed at the deadline",
+			gate: Gate{ID: "test", Cmd: []string{"sleep", "30"}},
+			opts: []Option{WithGateTimeout(50 * time.Millisecond), WithReapDelay(50 * time.Millisecond)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rep, err := Run(context.Background(), CheckSet{tc.gate}, All, tc.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := rep.Gates[0]
+			if got.Status != StatusFail {
+				t.Fatalf("gate = %+v, want fail; this case exists to produce one", got)
+			}
+			if got.Exit == 0 {
+				t.Errorf("gate = %+v: status fail with exit 0 renders as `FAIL %s exit=0`, which contradicts itself", got, got.ID)
+			}
+			if strings.TrimSpace(got.Reason) == "" {
+				t.Errorf("gate = %+v failed without saying why; a nonzero-by-sentinel exit is only honest beside a reason", got)
+			}
+		})
+	}
+}
+
+// The missing-toolchain skip, and the reason it names. pika's usage guide
+// promises honest skips for missing toolchains; before this, a gate whose
+// binary was absent was scored a failure, so an unrelated tool nobody had
+// installed read as a broken repository and stopped the ladder.
+func TestAbsentBinarySkipsWithANamedReason(t *testing.T) {
+	const missing = "pika-tool-that-is-not-installed-9f3a1c"
+	cs := CheckSet{
+		{ID: "format", Cmd: []string{missing, "--check"}},
+		{ID: "lint", Cmd: []string{"true"}},
+	}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rep.Gates[0]
+	if got.Status != StatusSkip {
+		t.Fatalf("format = %+v, want skip: the command never ran, so it cannot have failed", got)
+	}
+	if !strings.Contains(got.Reason, MissingToolSkipReason) || !strings.Contains(got.Reason, missing) {
+		t.Errorf("format reason = %q, want %q naming %q", got.Reason, MissingToolSkipReason, missing)
+	}
+	// A skip does not stop the ladder, and it is not a regression.
+	if rep.Gates[1].Status != StatusPass {
+		t.Errorf("lint = %+v, want pass: a missing tool upstream is not a failure", rep.Gates[1])
+	}
+	if len(rep.Regressions) != 0 {
+		t.Errorf("regressions = %+v, want none", rep.Regressions)
+	}
+	if rep.Summary.Skip != 1 || rep.Summary.Fail != 0 {
+		t.Errorf("summary = %+v, want one skip and no failures", rep.Summary)
+	}
+}
+
+// The line the skip must not cross. A tool missing deeper inside a
+// command — cobra's `make fmt` invoking a golangci-lint that is not
+// installed — starts a real process that produces a real exit status, and
+// no rule distinguishes that from the same command failing on its merits.
+// It stays a failure. Only argv[0], which exec resolved against PATH and
+// did not find, is provably absent.
+func TestFailureThatMerelyMentionsAMissingToolStaysAFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no sh to print and exit nonzero in one command")
+	}
+	cs := CheckSet{{ID: "lint", Cmd: []string{"sh", "-c", "echo 'could not find golangci-lint in PATH'; exit 127"}}}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rep.Gates[0]
+	if got.Status != StatusFail || got.Exit != 127 {
+		t.Fatalf("lint = %+v, want fail with exit 127: a process that ran and failed is a failure, whatever it printed", got)
+	}
+	if strings.Contains(got.Reason, MissingToolSkipReason) {
+		t.Errorf("lint reason = %q, want no missing-toolchain claim: exit 127 is a convention, not proof", got.Reason)
 	}
 }

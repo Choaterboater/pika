@@ -59,6 +59,22 @@ exit-status branch: a gate that exits 0 having printed anything fails anyway.
 `go@1`'s hint is `gofmt -l .` with the flag; `python@1`'s is
 `ruff format --check .`, which already exits nonzero and needs no flag.
 
+> **Narrowed after 0.5.0 — this paragraph describes the flag as it behaved at
+> M2.** At M2 the flag was read as a property of the *slot*, so it rode onto
+> whatever command filled that slot, including one a repository already had.
+> The first foreign repository pika adopted (`spf13/cobra`) got
+> `format: make fmt` from its own Makefile and was reported
+> `FAIL format exit=0` for a command that had succeeded: `make fmt` prints
+> while exiting 0, as do `prettier --write`, `black .` and `cargo fmt`. The
+> flag now reaches a gate only when the gate's argv is the argv the pack
+> declared — `verify.FromProfiles` compares them — so it means what it always
+> read as: "this is how to judge *this* command." `pika init` and `pika apply`
+> write the pack's hint verbatim, so a scaffolded repository is unaffected;
+> `pika adopt` writes the repository's own command, and that command is judged
+> on its exit status. The text is kept as written because it is the record the
+> narrowing was built from. See
+> [../guides/usage.md](../guides/usage.md#the-gates-report-they-do-not-fix).
+
 Two things change for a user:
 
 - **Verification no longer edits your working tree.** Formatting drift is

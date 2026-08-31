@@ -128,11 +128,21 @@ This is **read-only analysis**. It inventories the repository, detects the stack
 | Draft contract | `.project/contract.yaml.draft` |
 | Draft profile lock | `.project/profiles.lock.draft` |
 
-The review file lists detected profiles, conventions (match / conflict / exception), proposed changes as a checklist, and proposed naming exceptions with a suggested action per path.
+The review file lists detected profiles, conventions (match / conflict / exception), proposed changes as a checklist, and every naming exception adopt recorded — printed in full, with the rule id, the path, the rationale, the owner and the review condition.
+
+### Adoption records the names it inherits
+
+A naming deviation that already exists when `pika adopt` walks the repository is not a decision pika is making; it is one pika is inheriting from code it did not write. Adopt records **every** such deviation as an exception, so the contract it drafts passes the `pika check` it tells you to run next. That includes `naming-catch-all`, the error-severity rule: a `utils/`, `helpers/` or `common/` path is present in a large share of real projects, and refusing them all — after reporting that adoption succeeded — would hand you a contract that is dead on arrival.
+
+Recording is not forgiving. Each record is keyed to the **exact path adopt found**, so:
+
+- a catch-all name added *after* adoption is a new decision and still fails gate 1, by name;
+- an inherited catch-all is additionally reported as a **conflict** by `pika adopt` and in the review bundle, so it is in front of you before you approve `pika apply`;
+- the recorded reason says plainly that the name is pre-existing, and the review condition says when to reopen it. Rename the path and delete the record whenever you are ready — nothing about the record makes the name permanent.
 
 **Before applying, review two things:**
 
-1. `review/adoption-review.md` — decide per proposed exception whether to keep it or rename the file instead (edit `.project/contract.yaml.draft` to change the decision).
+1. `review/adoption-review.md` — running `pika apply` accepts every exception listed there, so read the reasons and decide per record whether to keep it or rename the file instead (edit `.project/contract.yaml.draft` to change the decision).
 2. The draft contract itself, if you want to adjust verification commands or agent mappings.
 
 ---
@@ -236,17 +246,60 @@ failure you fix, not as files pika rewrote under you:
 
 ```
 PASS contract   2ms
-FAIL format     exit=0 drift.go
-
+FAIL format     gate command exited 0 and printed a report; this gate is
+                judged on its output, not its exit status, so the report is
+                the failure
+drift.go
 SKIP lint       skipped: gate format failed
 ```
 
-`exit=0` in that line is not a typo. `gofmt -l` exits 0 whether or not it
-found anything; the file it printed *is* the finding. Packs mark such slots
-`fail-on-output`, and a gate carrying that flag fails when it prints, whatever
-its exit status. Before M2 the gate was `gofmt -l -w .`, which rewrote your
-files and then exited 0 — a gate that could not fail. See
+`gofmt -l` exits 0 whether or not it found anything; the file it printed *is*
+the finding. A pack can say so with `fail-on-output` on the command it
+declares, and a gate carrying that flag fails when it prints, whatever its
+exit status. Before M2 the gate was `gofmt -l -w .`, which rewrote your files
+and then exited 0 — a gate that could not fail. See
 [../reference/m2-delta.md](../reference/m2-delta.md#2-the-format-gate-can-now-fail--and-no-longer-rewrites-your-files).
+
+**`fail-on-output` describes one command, not the format slot.** It reaches a
+gate only when the gate's argv is the argv the pack declared. `pika init` and
+`pika apply` write the pack's own hint into `commands:` verbatim, so a
+scaffolded repository keeps it; a repository whose `commands.format` is
+something else — `make fmt`, `prettier --write`, `black .`, `cargo fmt`, all
+of which narrate their work and exit 0 — is judged on its exit status, which
+is the only portable signal a command that pika has never seen can offer. A
+formatter that prints while succeeding passes.
+
+A failed gate leads with its reason, and the reason names the exit status
+whenever an exit status is what decided it (`gate exited with status 1`). It
+will never read `FAIL format exit=0`: a line that says the command succeeded
+and the gate failed in the same breath is not a report. Under `--json` the
+exit code is a labelled field, and a failed gate never carries `"exit": 0` —
+a verdict no process status produced records a negative sentinel (`-1` for a
+gate that never finished, `-2` for one judged on its output) beside a reason
+that says which.
+
+### A missing toolchain skips; it does not fail
+
+If a gate's own binary is not on `PATH`, the command never ran, so there is no
+output to read as a finding and no status to read as a verdict. That gate is
+recorded as a skip naming the tool, and the ladder continues:
+
+```
+SKIP format     toolchain not installed: golangci-lint is not on PATH
+```
+
+The line pika draws is narrow, and it is the only one that can be drawn
+honestly for an arbitrary command: **`argv[0]` was resolved against `PATH` and
+not found.** A tool missing deeper inside a command — `make fmt` invoking a
+`golangci-lint` that is not installed — starts a real process with a real exit
+status, and nothing distinguishes that from the same command failing on its
+merits. It stays a failure. `exit 127` is a shell convention, not proof, and
+is not read as absence: treating it as one would let any gate report its own
+failures as skips.
+
+A skipped rung is a rung that did not run, so `pika doctor` reports the same
+absence as an **error** and exits nonzero. `check` tells you the rung did not
+run; `doctor` tells you to install it.
 
 ### A gate may not re-enter the ladder that spawned it
 
