@@ -416,6 +416,45 @@ func TestNamingSkipsGitignoredDirectories(t *testing.T) {
 	}
 }
 
+// TestNamingSkipsTrackedVendoredDirectories closes the gap
+// TestNamingSkipsGitignoredDirectories does not cover: a real
+// repository routinely commits its vendored/build-output tree on
+// purpose (`go mod vendor`, a built `dist/` for a static site,
+// CocoaPods' own Pods/) with no .gitignore entry for it at all, since
+// there is nothing to ignore about a path git is meant to track. git
+// ls-files then reports these paths exactly like the repository's own
+// source, and gate 1's own file walk asked git first must exclude them
+// on its own terms rather than relying on a .gitignore rule that was
+// never written because none was needed.
+func TestNamingSkipsTrackedVendoredDirectories(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"src/BadTracked.go":               "package src\n",
+		"vendor/github.com/x/BadName.go":  "package x\n",
+		"web/dist/assets/BadName-h4sh.js": "// built asset\n",
+		"Pods/SomePod/BadName.m":          "// cocoapods\n",
+	})
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+	var got []string
+	for _, v := range Naming(dir, coreRules(), nil) {
+		got = append(got, v.Path)
+	}
+	for _, bad := range []string{"vendor/github.com/x/BadName.go", "web/dist/assets/BadName-h4sh.js", "Pods/SomePod/BadName.m"} {
+		if slices.Contains(got, bad) {
+			t.Errorf("tracked vendored/build-output path %s produced a finding: %+v", bad, got)
+		}
+	}
+	if !slices.Contains(got, "src/BadTracked.go") {
+		t.Errorf("the repository's own tracked source was not walked at all: %+v", got)
+	}
+}
+
 // runGit runs a git command in dir, failing the test on error.
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()

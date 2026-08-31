@@ -68,6 +68,15 @@ const maxDepth = 3
 // .gitignore, since a virtualenv copied, rsynced, or created by an
 // older tool has no such guard, and every path inside becomes
 // thousands of naming findings owned by nobody at the repository.
+//
+// vendor, dist, build, Pods, Carthage and third_party name build
+// output and vendored dependency trees that real repositories commit
+// deliberately (`go mod vendor`, a built `dist/` checked in for a
+// static site, CocoaPods' own convention) — git's own answer would
+// list every one of them, since a tracked path is not a gitignored
+// one, and it is exactly why checks.walkFiles also applies this same
+// set as a filter over git's own tracked-file list, not only as the
+// fallback walk's own exclusion.
 var SkipDirs = map[string]bool{
 	".git":         true,
 	"node_modules": true,
@@ -78,6 +87,12 @@ var SkipDirs = map[string]bool{
 	"target":       true,
 	".build":       true,
 	"DerivedData":  true,
+	"vendor":       true,
+	"dist":         true,
+	"build":        true,
+	"Pods":         true,
+	"Carthage":     true,
+	"third_party":  true,
 }
 
 // markers maps a file or directory name to a marker category.

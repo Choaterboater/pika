@@ -280,6 +280,14 @@ func walkFiles(repoRoot string) []string {
 // the caller must fall back rather than treat an empty answer as "no
 // files" — an environmental failure here must never silently narrow
 // what naming checks.
+//
+// discover.SkipDirs is applied here too, not only in the fallback
+// walk: a tracked path is not a gitignored one, so git's own answer
+// includes a committed vendor/, dist/, build/, Pods/ or third_party/
+// tree exactly as readily as the repository's own source — real
+// repositories commit `go mod vendor` output, a built `dist/` for a
+// static site, or CocoaPods' own Pods/ deliberately, and none of it is
+// this repository's own naming to judge.
 func gitTrackedFiles(repoRoot string) (files []string, ok bool) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return nil, false
@@ -296,7 +304,7 @@ func gitTrackedFiles(repoRoot string) (files []string, ok bool) {
 			continue
 		}
 		rel := filepath.ToSlash(p)
-		if hasDotSegment(rel) {
+		if hasDotSegment(rel) || hasSkippedDirSegment(rel) {
 			continue
 		}
 		// git lists what the index and the working tree agree exists;
@@ -367,6 +375,21 @@ func filesystemWalkFiles(repoRoot string) []string {
 func hasDotSegment(rel string) bool {
 	for _, seg := range strings.Split(rel, "/") {
 		if strings.HasPrefix(seg, ".") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSkippedDirSegment reports whether rel (a "/"-separated file path)
+// passes through a directory discover.SkipDirs names — the same
+// per-segment check filesystemWalkFiles applies live, mirrored here
+// for a flat path list rather than a directory walk. The last segment
+// is the file itself, never a directory, and is not checked.
+func hasSkippedDirSegment(rel string) bool {
+	segs := strings.Split(rel, "/")
+	for _, seg := range segs[:len(segs)-1] {
+		if discover.SkipDirs[seg] {
 			return true
 		}
 	}
