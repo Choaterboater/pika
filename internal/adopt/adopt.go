@@ -19,11 +19,19 @@
 //     contract under extensions.conventions as {name, detail} entries; the
 //     extensions map is schema-legal free-form and round-trips through
 //     contract.Load.
-//   - Warning-severity naming deviations (kebab-case) become proposed
-//     exceptions: returned in Report.Exceptions and recorded in the draft
-//     contract's exceptions list. Error-severity deviations (banned
-//     catch-alls) become Conflicts — they need a human decision, not a
-//     recorded exception.
+//   - Every naming deviation that already exists at adoption time becomes
+//     a proposed exception: returned in Report.Exceptions and recorded in
+//     the draft contract's exceptions list. That is adoption's whole job —
+//     record the repository as it is — and it is what keeps the contract
+//     adopt writes able to pass the check adopt tells you to run next. The
+//     exception is keyed to the exact path adopt found, so a deviation
+//     introduced after adoption is a new decision and still fails gate 1.
+//     Severity picks the rationale and the review condition, not whether a
+//     record is written: a banned catch-all (error) is recorded with the
+//     stronger language a reviewer needs, and the review bundle prints
+//     every record's reason, owner and review condition so approving
+//     `pika apply` is an informed act. An error-severity deviation is
+//     additionally reported as a Conflict, so recording it never hides it.
 //   - Baseline checks are the discovered command strings executed
 //     sequentially with a 30s deadline each; failures are recorded as
 //     baseline data, never as adopt errors.
@@ -69,14 +77,40 @@ const (
 	StatusException = "exception" // deviates; adopt proposes a recorded exception
 )
 
-// exception boilerplate for proposed naming exceptions (spec §5.3: every
+// Exception boilerplate for proposed naming exceptions (spec §5.3: every
 // exception needs rule ID, rationale, owner, and review condition).
+// Severity picks which rationale and review condition a deviation gets;
+// it never decides whether a record is written. A warning-severity
+// deviation is a style choice adoption inherits; an error-severity one is
+// a banned name adoption inherits, which is a stronger claim and gets the
+// wording a reviewer needs to judge it.
 const (
-	exceptionOwner   = "pika adopt"
-	exceptionReason  = "pre-existing repository layout; adopt records the convention instead of renaming files for style conformity"
-	exceptionReview  = "re-review when the path is next modified or at the next convention audit"
+	exceptionOwner = "pika adopt"
+
+	exceptionReason = "pre-existing repository layout; adopt records the convention instead of renaming files for style conformity"
+	exceptionReview = "re-review when the path is next modified or at the next convention audit"
+
+	catchAllReason = "pre-existing catch-all name in code pika did not write: adopt found this path already carrying a banned catch-all segment and records it as found rather than renaming a file it does not own. The record covers this exact path only, so a catch-all name introduced after adoption is a new decision and still fails gate 1."
+	catchAllReview = "reopen when this path is next split, renamed, or given a narrower responsibility, or at the first convention audit after adoption; this record does not extend to any catch-all path added later"
+
 	baselineDeadline = 30 * time.Second
 )
+
+// proposedException builds the exception record adopt proposes for one
+// pre-existing naming deviation.
+func proposedException(v checks.Violation) checks.Exception {
+	reason, review := exceptionReason, exceptionReview
+	if v.Severity == checks.SeverityError {
+		reason, review = catchAllReason, catchAllReview
+	}
+	return checks.Exception{
+		RuleID:          v.RuleID,
+		Path:            v.Path,
+		Reason:          reason,
+		Owner:           exceptionOwner,
+		ReviewCondition: review,
+	}
+}
 
 // baselineTimeout is a package variable so tests can shrink the deadline.
 var baselineTimeout = baselineDeadline
@@ -116,8 +150,11 @@ type Change struct {
 	Detail string `json:"detail"`
 }
 
-// Conflict is one disagreement with core@1 that recording alone cannot
-// resolve.
+// Conflict is one disagreement with core@1 that a human must sign off on.
+// An error-severity naming deviation is both: adopt records an exception
+// so the contract it writes can pass its own check, and reports the path
+// here so the record is not the last word. Recording keeps the repository
+// working; the conflict keeps the inherited name visible.
 type Conflict struct {
 	RuleID string `json:"ruleId"`
 	Path   string `json:"path"`
@@ -397,26 +434,26 @@ func classifyConventions(repoRoot string, inv *discover.Inventory, resolved *pro
 			paths = append(paths, v.Path)
 		}
 		list := strings.Join(paths, ", ")
+		detail := fmt.Sprintf("%d path(s) deviate; exceptions proposed: %s", len(vs), list)
 		if rule.Severity == checks.SeverityError {
-			// Banned catch-alls need a narrower name or a human decision;
-			// adopt never quietly excepts them.
-			cm = append(cm, Convention{Name: name, Status: StatusConflict,
-				Detail: fmt.Sprintf("%d path(s) need narrower names: %s", len(vs), list)})
+			// A banned name that predates adoption is not a decision
+			// adopt is making; it is one it is inheriting. Recording it
+			// is what lets the contract adopt writes pass the check
+			// adopt tells the operator to run next, and the record is
+			// keyed to this exact path, so the rule keeps its teeth for
+			// every catch-all added afterwards. The record still needs a
+			// human: it is reported as a conflict as well, so `pika
+			// adopt` and the review bundle both put the inherited name
+			// in front of whoever approves `pika apply`.
+			detail = fmt.Sprintf("%d pre-existing path(s) carry a banned name; exceptions recorded for review: %s", len(vs), list)
 			for _, v := range vs {
-				conflicts = append(conflicts, Conflict{RuleID: v.RuleID, Path: v.Path, Detail: v.Message})
+				conflicts = append(conflicts, Conflict{RuleID: v.RuleID, Path: v.Path,
+					Detail: v.Message + "; adopt recorded a pre-existing-name exception in " + checks.ExceptionsFile + " — accept it or narrow the name before `pika apply`"})
 			}
-			continue
 		}
-		cm = append(cm, Convention{Name: name, Status: StatusException,
-			Detail: fmt.Sprintf("%d path(s) deviate; exceptions proposed: %s", len(vs), list)})
+		cm = append(cm, Convention{Name: name, Status: StatusException, Detail: detail})
 		for _, v := range vs {
-			exceptions = append(exceptions, checks.Exception{
-				RuleID:          v.RuleID,
-				Path:            v.Path,
-				Reason:          exceptionReason,
-				Owner:           exceptionOwner,
-				ReviewCondition: exceptionReview,
-			})
+			exceptions = append(exceptions, proposedException(v))
 		}
 	}
 

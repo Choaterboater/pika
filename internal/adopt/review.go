@@ -150,15 +150,24 @@ func renderApplied(b *strings.Builder, data ReviewData) {
 	b.WriteString("\n")
 }
 
+// renderExceptions prints every exception adopt recorded in full — rule,
+// path, reason, owner and review condition. The short form this replaced
+// listed only path and rule, which made an auto-recorded waiver something
+// an operator approved without ever reading it. `pika apply` is where a
+// human accepts these records, so this is the page that has to carry
+// them.
 func renderExceptions(b *strings.Builder, exceptions []checks.Exception) {
 	if len(exceptions) == 0 {
 		b.WriteString("## Exceptions\n\nNone — no naming deviations were recorded.\n\n")
 		return
 	}
 	fmt.Fprintf(b, "## Exceptions (%d recorded naming deviations)\n\n", len(exceptions))
-	fmt.Fprintf(b, "| Path | Rule | Suggested action |\n|---|---|---|\n")
+	b.WriteString("`pika adopt` wrote these records into `.project/exceptions.yaml`; each waives one naming rule for one path, and each is keyed to that exact path — a path added later is not covered and will still fail gate 1. Approving `pika apply` accepts every record below, so read the reasons first: keep the record, or rename the path to satisfy the rule and delete the record.\n\n")
 	for _, ex := range exceptions {
-		fmt.Fprintf(b, "| `%s` | `%s` | keep as an exception, or rename the path to satisfy the rule |\n", ex.Path, ex.RuleID)
+		fmt.Fprintf(b, "- `%s` — rule `%s`\n", ex.Path, ex.RuleID)
+		fmt.Fprintf(b, "  - reason: %s\n", escapeDetail(ex.Reason))
+		fmt.Fprintf(b, "  - owner: %s\n", escapeDetail(ex.Owner))
+		fmt.Fprintf(b, "  - review condition: %s\n", escapeDetail(ex.ReviewCondition))
 	}
 	b.WriteString("\n")
 }

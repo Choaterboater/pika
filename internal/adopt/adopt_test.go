@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/profiles"
 )
 
 // writeFile creates rel (slash-separated) under root with the given content.
@@ -188,29 +191,44 @@ func TestPreviewMessyFixture(t *testing.T) {
 		t.Errorf("draft evidence.publish = %q, want sanitized", draft.Evidence.Publish)
 	}
 
-	// Naming deviations become recorded exceptions.
-	var excPaths []string
+	// Every naming deviation present at adoption becomes a recorded
+	// exception with all four spec §5.3 fields — including the banned
+	// catch-all, which is what lets the drafted contract pass gate 1.
+	byPath := map[string]checks.Exception{}
 	for _, ex := range rep.Exceptions {
-		if ex.RuleID != "naming-kebab-case" {
-			t.Errorf("unexpected exception rule %q on %s", ex.RuleID, ex.Path)
-		}
-		for _, field := range []string{ex.Reason, ex.Owner, ex.ReviewCondition} {
+		for _, field := range []string{ex.RuleID, ex.Reason, ex.Owner, ex.ReviewCondition} {
 			if strings.TrimSpace(field) == "" {
-				t.Errorf("exception for %s has an empty required field", ex.Path)
+				t.Errorf("exception for %s has an empty required field: %+v", ex.Path, ex)
 			}
 		}
-		excPaths = append(excPaths, ex.Path)
+		byPath[ex.Path] = ex
 	}
-	for _, want := range []string{"MyNotes.md", "Common/tools.go"} {
-		if !slices.Contains(excPaths, want) {
-			t.Errorf("expected a naming exception for %s, got %v", want, excPaths)
+	for path, rule := range map[string]string{
+		"MyNotes.md":       "naming-kebab-case",
+		"Common/tools.go":  "naming-kebab-case",
+		"utils/helpers.go": "naming-catch-all",
+	} {
+		ex, ok := byPath[path]
+		if !ok {
+			t.Errorf("expected a naming exception for %s, got %v", path, slices.Sorted(maps.Keys(byPath)))
+			continue
 		}
+		if ex.RuleID != rule {
+			t.Errorf("exception for %s has rule %q, want %q", path, ex.RuleID, rule)
+		}
+	}
+	// The catch-all rationale must say why this one is recordable —
+	// it predates adoption — so a reviewer can tell it from a new one.
+	if ex := byPath["utils/helpers.go"]; !strings.Contains(ex.Reason, "pre-existing") ||
+		!strings.Contains(ex.Reason, "still fails gate 1") {
+		t.Errorf("catch-all exception reason does not justify itself as pre-existing: %q", ex.Reason)
 	}
 	if len(draft.Exceptions) == 0 {
 		t.Error("draft contract records no exceptions")
 	}
 
-	// Banned catch-alls are conflicts, never exceptions.
+	// Recording never hides: the inherited banned name is still reported
+	// as a conflict so a human sees it before approving `pika apply`.
 	var conflictPaths []string
 	for _, c := range rep.Conflicts {
 		if c.RuleID != "naming-catch-all" {
@@ -220,11 +238,6 @@ func TestPreviewMessyFixture(t *testing.T) {
 	}
 	if !slices.Contains(conflictPaths, "utils/helpers.go") {
 		t.Errorf("expected a conflict for utils/helpers.go, got %v", conflictPaths)
-	}
-	for _, ex := range rep.Exceptions {
-		if slices.Contains(strings.Split(ex.Path, "/"), "utils") {
-			t.Errorf("banned segment excepted instead of conflicted: %s", ex.Path)
-		}
 	}
 
 	// Proposed changes cover missing required files and the draft records.
@@ -242,8 +255,10 @@ func TestPreviewMessyFixture(t *testing.T) {
 	if c := findConvention(t, rep.ConventionMap, "naming/naming-kebab-case"); c.Status != StatusException {
 		t.Errorf("kebab-case convention status = %q, want %q", c.Status, StatusException)
 	}
-	if c := findConvention(t, rep.ConventionMap, "naming/naming-catch-all"); c.Status != StatusConflict {
-		t.Errorf("catch-all convention status = %q, want %q", c.Status, StatusConflict)
+	if c := findConvention(t, rep.ConventionMap, "naming/naming-catch-all"); c.Status != StatusException {
+		t.Errorf("catch-all convention status = %q, want %q", c.Status, StatusException)
+	} else if !strings.Contains(c.Detail, "pre-existing") {
+		t.Errorf("catch-all convention detail does not say the names are inherited: %q", c.Detail)
 	}
 	if c := findConvention(t, rep.ConventionMap, "file/README.md"); c.Status != StatusMatch {
 		t.Errorf("README.md convention status = %q, want %q", c.Status, StatusMatch)
@@ -271,6 +286,44 @@ func TestPreviewMessyFixture(t *testing.T) {
 	}
 	if bc := findBaseline(t, rep.BaselineChecks, "lint"); bc.Status != "fail" || bc.Exit == 0 {
 		t.Errorf("baseline lint = %+v, want fail with nonzero exit", bc)
+	}
+}
+
+// TestAdoptedExceptionsDoNotCoverACatchAllAddedLater pins the boundary
+// that makes auto-recording defensible: the records adopt writes waive the
+// exact paths it inventoried and nothing else, so a catch-all name someone
+// introduces after adoption is a new decision the rule still fires on.
+func TestAdoptedExceptionsDoNotCoverACatchAllAddedLater(t *testing.T) {
+	root := messyFixture(t)
+	rep, err := Preview(root)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	recorded := map[string]checks.Exception{}
+	for _, ex := range rep.Exceptions {
+		recorded[ex.Path] = ex
+	}
+	resolved, err := profiles.Resolve([]string{profiles.CoreRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Everything adopt inventoried is covered: the drafted contract is
+	// one a `pika check` in this repository can pass.
+	if vs := checks.Naming(root, resolved.NamingRules, recorded); len(vs) > 0 {
+		t.Fatalf("adopted repository still has naming findings: %+v", vs)
+	}
+
+	// A catch-all written after the inventory is not covered by any record.
+	writeFile(t, root, "internal/utils/parse.go", "package utils\n")
+	var found bool
+	for _, v := range checks.Naming(root, resolved.NamingRules, recorded) {
+		if v.RuleID == "naming-catch-all" && v.Path == "internal/utils/parse.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a catch-all added after adoption was silently covered by the adopted exceptions")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -369,12 +370,22 @@ func TestApplyRollbackOnMidPlanFailure(t *testing.T) {
 	}
 }
 
-// TestApplyGate1FailureIsHonest pins the post-apply sanity contract: a
-// failing gate 1 is reported but does NOT roll back, because the applied
-// state is valid — it just carries findings.
-func TestApplyGate1FailureIsHonest(t *testing.T) {
-	root := adoptionFixture(t)
-	writeFile(t, root, "utils/helpers.go", "package helpers\n")
+// TestApplyAdoptedCatchAllPassesGate1 is the adoption contract in one
+// test: a repository that already contains a catch-all name — the shape
+// psf/requests and sindresorhus/got have — adopts and applies into a
+// contract that passes its own gate 1. Before adopt recorded pre-existing
+// catch-alls, gate 1 failed here and skipped the whole rest of the
+// ladder, so the adopted repository was dead on arrival.
+func TestApplyAdoptedCatchAllPassesGate1(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "go.mod", "module example.com/inherited\n\ngo 1.26\n")
+	writeFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
+	writeFile(t, root, "README.md", "# inherited\n")
+	writeFile(t, root, "src/utils.go", "package src\n")
+	writeFile(t, root, "internal/helpers/parse.go", "package helpers\n")
 	if _, err := adopt.Preview(root); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
@@ -383,11 +394,59 @@ func TestApplyGate1FailureIsHonest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if rep.Gate1.Pass {
-		t.Fatal("gate 1 passed on a banned catch-all, want failure")
+	if !rep.Gate1.Pass {
+		t.Fatalf("gate 1 failed on a freshly adopted repository: %s", rep.Gate1.Output)
 	}
-	if !strings.Contains(rep.Gate1.Output, "naming-catch-all") {
-		t.Errorf("gate 1 output = %q, want the catch-all finding", rep.Gate1.Output)
+
+	// The pass is bought by real records, not by a weakened rule.
+	exc, err := checks.LoadExceptions(root)
+	if err != nil {
+		t.Fatalf("exceptions record failed to load: %v", err)
+	}
+	for _, path := range []string{"src/utils.go", "internal/helpers/parse.go"} {
+		ex, ok := exc[path]
+		if !ok {
+			t.Fatalf("no recorded exception for %s; got %v", path, slices.Sorted(maps.Keys(exc)))
+		}
+		if ex.RuleID != "naming-catch-all" || ex.Path != path ||
+			ex.Reason == "" || ex.Owner == "" || ex.ReviewCondition == "" {
+			t.Errorf("exception for %s is incomplete: %+v", path, ex)
+		}
+	}
+
+	// The operator who approves `pika apply` is shown what was recorded.
+	review := string(readBytes(t, root, adopt.ReviewPath))
+	for _, want := range []string{
+		"- `src/utils.go` — rule `naming-catch-all`",
+		"pre-existing catch-all name in code pika did not write",
+		"reopen when this path is next split",
+	} {
+		if !strings.Contains(review, want) {
+			t.Errorf("review bundle does not surface the recorded exception (%q):\n%s", want, review)
+		}
+	}
+}
+
+// TestApplyGate1FailureIsHonest pins two things at once: a catch-all name
+// that did NOT exist at adoption is a new decision and still fails gate 1
+// — adoption records what it inherits, it does not disarm the rule — and
+// a failing gate 1 is reported without rolling back, because the applied
+// state is valid, it just carries findings.
+func TestApplyGate1FailureIsHonest(t *testing.T) {
+	root := adoptionFixture(t)
+	// Written after adopt inventoried the tree, so no record covers it.
+	writeFile(t, root, "utils/helpers.go", "package helpers\n")
+
+	rep, err := Run(RunOptions{Dir: root})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if rep.Gate1.Pass {
+		t.Fatal("gate 1 passed on a catch-all added after adoption, want failure")
+	}
+	if !strings.Contains(rep.Gate1.Output, "naming-catch-all") ||
+		!strings.Contains(rep.Gate1.Output, "utils/helpers.go") {
+		t.Errorf("gate 1 output = %q, want the catch-all finding on the new path", rep.Gate1.Output)
 	}
 	if rep.Rollback {
 		t.Error("gate-1 failure must not roll back")

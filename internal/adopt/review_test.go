@@ -35,8 +35,8 @@ func TestPreviewWritesReviewBundle(t *testing.T) {
 		"## Proposed changes",
 		"- [ ] create `AGENTS.md`",
 		"## Exceptions",
-		"| `MyNotes.md` |",
-		"keep as an exception, or rename the path to satisfy the rule",
+		"- `MyNotes.md` — rule `naming-kebab-case`",
+		"keep the record, or rename the path to satisfy the rule and delete the record",
 		"## Next step",
 		"Run `pika apply`",
 	} {
