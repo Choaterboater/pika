@@ -2131,3 +2131,214 @@ func writeMCPEnvelope(t *testing.T, root string, paths ...string) {
 		t.Fatal(err)
 	}
 }
+
+// The defect, reproduced from the top. A run that fails leaves its
+// branch behind — nothing on the failure path deletes it — and before
+// this, every later run in that repository died on Git's own `a branch
+// named 'chore/pika-improve' already exists`, exit 128, naming no
+// remedy. The repository stayed poisoned until an operator happened to
+// know that the fix was to delete a branch by hand.
+//
+// The leftover of a run that committed nothing carries nothing, so there
+// is nothing to refuse over: the next run takes the branch and gets on
+// with it.
+func TestALeftoverBranchWithNoRecordedCommitsDoesNotBlockALaterRun(t *testing.T) {
+	root := fixtureRepository(t)
+	first, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check:  func() (*verify.Report, error) { return failingBaseline(), nil },
+		Runner: failingMessageRunner{},
+	})
+	if err == nil {
+		t.Fatal("the first run must fail: its failure is what leaves the branch behind")
+	}
+	if rec := runRecord(t, root, first.WorkID); rec.Commit != "" {
+		t.Fatalf("the first run committed %s; this case is the leftover of one that did not", rec.Commit)
+	}
+	if got := gitOutput(t, root, "branch", "--list", "chore/pika-improve"); got == "" {
+		t.Fatal("the first run left no branch behind, so there is no leftover to test")
+	}
+
+	// What the operator does next: go back to where they were and
+	// commit the receipt the failed run issued, which is committable
+	// content rather than local state. It also moves HEAD, so the
+	// leftover branch is now strictly behind the commit the second run
+	// starts from — the ordinary shape of this, not a contrived one.
+	gitRun(t, root, "switch", "--", "main")
+	gitRun(t, root, "add", "--", ".project/evidence")
+	gitRun(t, root, "commit", "-qm", "chore: keep the failed run's receipt")
+
+	checks := []*verify.Report{failingBaseline(), passingLadder()}
+	second, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check: func() (*verify.Report, error) {
+			report := checks[0]
+			checks = checks[1:]
+			return report, nil
+		},
+		Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"},
+	})
+	if err != nil {
+		t.Fatalf("the second run failed on a branch that carried nothing: %v", err)
+	}
+	if second.Commit == "" {
+		t.Fatalf("result = %+v, want the second run's verified commit", second)
+	}
+	// The reused branch starts where THIS run started. Switching to the
+	// leftover where it stood would have put the tree on the abandoned
+	// run's commit while the record claimed the newer one.
+	base := runRecord(t, root, second.WorkID).BaseCommit
+	if parent := gitOutput(t, root, "rev-parse", second.Commit+"^"); parent != base {
+		t.Fatalf("the delivered commit's parent is %s, want the second run's base commit %s", parent, base)
+	}
+}
+
+// The other world, and the reason deleting a leftover unasked is not an
+// option: a run can stop after its commit has landed, and the branch is
+// then the only place that work exists. The refusal names the branch,
+// the run that made it, what it holds, and what to do about it — the
+// last of which the old failure named not at all.
+func TestALeftoverBranchHoldingRecordedWorkIsRefusedByBranchRunAndRemedy(t *testing.T) {
+	root := fixtureRepository(t)
+	checks := []*verify.Report{failingBaseline(), passingLadder()}
+	first, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check: func() (*verify.Report, error) {
+			report := checks[0]
+			checks = checks[1:]
+			return report, nil
+		},
+		Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Commit == "" {
+		t.Fatalf("result = %+v, want a delivered commit for the branch to hold", first)
+	}
+	// The operator goes back to their own branch without merging or
+	// deleting anything, which is exactly the state a delivered run is
+	// designed to leave: publishing is a human choice.
+	gitRun(t, root, "switch", "--", "main")
+	gitRun(t, root, "add", "--", ".project/evidence")
+	gitRun(t, root, "commit", "-qm", "chore: keep the delivered run's receipt")
+
+	second, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check:  func() (*verify.Report, error) { return failingBaseline(), nil },
+		Runner: refusingRunner{t: t, why: "the branch it would work on already holds committed work"},
+	})
+	if !errors.Is(err, ErrBranchHoldsWork) {
+		t.Fatalf("error = %v, want ErrBranchHoldsWork", err)
+	}
+	for _, want := range []string{
+		"chore/pika-improve",
+		first.WorkID,
+		first.Commit,
+		"git branch -D chore/pika-improve",
+		"--branch",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err.Error(), want)
+		}
+	}
+	// Nothing was destroyed and nothing was moved: a refusal that
+	// rearranged the repository on its way out would be the defect
+	// wearing a better message.
+	if head := gitOutput(t, root, "rev-parse", "chore/pika-improve"); head != first.Commit {
+		t.Fatalf("branch head = %s, want the first run's commit %s untouched", head, first.Commit)
+	}
+	if got := gitOutput(t, root, "branch", "--show-current"); got != "main" {
+		t.Fatalf("branch = %q, want main", got)
+	}
+	if second.StoppedOn != "main" {
+		t.Fatalf("StoppedOn = %q, want main: the refused run never left it", second.StoppedOn)
+	}
+}
+
+// Git is the ground truth about what is at risk, not the run record. A
+// `chore/pika-improve` an operator made themselves holds work too, and
+// no record will ever mention it — so the refusal has to be able to say
+// that it found commits nobody here claims rather than assume that an
+// unclaimed branch is Pika's to overwrite.
+func TestALeftoverBranchNoRunRecordClaimsIsRefusedToo(t *testing.T) {
+	root := fixtureRepository(t)
+	gitRun(t, root, "switch", "-c", "chore/pika-improve")
+	if err := os.WriteFile(filepath.Join(root, "mine.txt"), []byte("my own work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, root, "add", "mine.txt")
+	gitRun(t, root, "commit", "-qm", "work of my own")
+	head := gitOutput(t, root, "rev-parse", "HEAD")
+	gitRun(t, root, "switch", "--", "main")
+
+	_, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check:  func() (*verify.Report, error) { return failingBaseline(), nil },
+		Runner: refusingRunner{t: t, why: "the branch it would work on holds an operator's own commit"},
+	})
+	if !errors.Is(err, ErrBranchHoldsWork) {
+		t.Fatalf("error = %v, want ErrBranchHoldsWork", err)
+	}
+	for _, want := range []string{"chore/pika-improve", head, "which no run record claims"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err.Error(), want)
+		}
+	}
+	if got := gitOutput(t, root, "rev-parse", "chore/pika-improve"); got != head {
+		t.Fatalf("branch head = %s, want the operator's own commit %s untouched", got, head)
+	}
+}
+
+// A run that stopped before it ever created a branch still stopped
+// somewhere. Result.Branch is empty there by construction, and reporting
+// only that is what printed `stopped on branch -` — a line whose whole
+// job is to say where the run stopped, saying nothing.
+func TestARunThatStoppedBeforeBranchingReportsTheBranchItWasOn(t *testing.T) {
+	root := fixtureRepository(t)
+	gitRun(t, root, "switch", "-c", "feature/mine")
+
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check:  func() (*verify.Report, error) { return nil, errors.New("check: no contract") },
+		Runner: refusingRunner{t: t, why: "the baseline ladder never produced a report"},
+	})
+	if err == nil {
+		t.Fatal("Run error = nil, want the baseline failure")
+	}
+	if result.Branch != "" {
+		t.Fatalf("Branch = %q, want none: the run stopped before it branched", result.Branch)
+	}
+	if result.StoppedOn != "feature/mine" {
+		t.Fatalf("StoppedOn = %q, want feature/mine: the branch the repository was actually on", result.StoppedOn)
+	}
+}
+
+// And where the two branches disagree, the reported one is Git's. An
+// agent that switches away mid-handoff leaves the run stopped somewhere
+// other than its own branch, and that disagreement is the most useful
+// thing the report can carry.
+func TestARunTheAgentSwitchedAwayFromReportsTheBranchGitWasOn(t *testing.T) {
+	root := fixtureRepository(t)
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check:  func() (*verify.Report, error) { return failingBaseline(), nil },
+		Runner: switchingRunner{},
+	})
+	if err == nil {
+		t.Fatal("Run error = nil, want the branch guard")
+	}
+	if result.Branch != "chore/pika-improve" {
+		t.Fatalf("Branch = %q, want the branch the run created", result.Branch)
+	}
+	if result.StoppedOn != "main" {
+		t.Fatalf("StoppedOn = %q, want main: the branch the agent left the repository on", result.StoppedOn)
+	}
+}

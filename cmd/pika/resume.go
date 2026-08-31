@@ -126,8 +126,14 @@ func usageError(jsonOut bool, stdout, stderr io.Writer, message string) int {
 func printResumeResult(stdout io.Writer, result improve.Result, err error) {
 	switch {
 	case err != nil:
-		fmt.Fprintf(stdout, "resume: run %s stopped on branch %s; no commit created\nhandoff: %s\n",
-			result.WorkID, orDash(result.Branch), result.Handoff.Dir)
+		// Same contract as improve's stopped report, for the same
+		// reason: the branch is the one Git was actually on, and the
+		// bundle line is omitted rather than printed empty.
+		fmt.Fprintf(stdout, "resume: run %s stopped on branch %s; no commit created\n",
+			result.WorkID, stoppedBranch(result))
+		if result.Handoff.Dir != "" {
+			fmt.Fprintf(stdout, "handoff: %s\n", result.Handoff.Dir)
+		}
 	case result.Commit != "" && len(result.ChangedFiles) == 0:
 		// A resume that commits always knows what it committed, so a
 		// commit with no changed files is the reconciled deliver: Git

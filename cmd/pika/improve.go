@@ -227,9 +227,17 @@ func printRunResult(stdout io.Writer, name string, result improve.Result, err er
 		// A run that stopped is a run that stopped, whatever it had or
 		// had not reached. This is read before the branch so a run that
 		// died before branching is never mistaken for one that found
-		// nothing to do; the branch clause degrades to a dash rather
-		// than printing "stopped on branch " with nothing after it.
-		fmt.Fprintf(stdout, "%s: stopped on branch %s; run %s; no commit created\nhandoff: %s\n", name, orDash(result.Branch), result.WorkID, result.Handoff.Dir)
+		// nothing to do.
+		//
+		// The bundle line is printed only when there is a bundle. A run
+		// that stopped before its handoff has no path to give, and
+		// `handoff: ` with nothing after it reads as a lost value
+		// rather than an absent one — in the one report whose whole job
+		// is to say truthfully where the run got to.
+		fmt.Fprintf(stdout, "%s: stopped on branch %s; run %s; no commit created\n", name, stoppedBranch(result), result.WorkID)
+		if result.Handoff.Dir != "" {
+			fmt.Fprintf(stdout, "handoff: %s\n", result.Handoff.Dir)
+		}
 	case result.Branch == "":
 		// Nothing was attempted. The branch is the marker: the
 		// lifecycle creates it immediately before the handoff and
@@ -253,6 +261,27 @@ func printRunResult(stdout io.Writer, name string, result improve.Result, err er
 	default:
 		fmt.Fprintf(stdout, "%s: verified work committed on %s; run %s\ncommit: %s\nchanged: %v\n", name, result.Branch, result.WorkID, result.Commit, result.ChangedFiles)
 	}
+}
+
+// stoppedBranch names the branch a stopped run was actually on.
+//
+// improve.Result carries two branches and they are not the same claim.
+// StoppedOn is read from Git as the run is closed out, so it is what the
+// repository was really on at the end; Branch is the branch the run set
+// out to work in, and stays empty until the run reaches it. Reporting
+// Branch alone is how a run that stopped before it ever branched came to
+// print `stopped on branch -`: the report's one job is to say where the
+// run stopped, and it said nothing.
+//
+// The dash survives for the case where neither field knows, which is a
+// repository this process could not read at all — a placeholder for a
+// question with no answer, not a stand-in for an answer nobody looked
+// for.
+func stoppedBranch(result improve.Result) string {
+	if result.StoppedOn != "" {
+		return result.StoppedOn
+	}
+	return orDash(result.Branch)
 }
 
 // configuredRunner delays contract-agent validation until Pika has confirmed

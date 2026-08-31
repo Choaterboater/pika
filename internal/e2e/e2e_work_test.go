@@ -298,17 +298,30 @@ func TestE2EWorkDeliversAVerifiedCommitAndAReceipt(t *testing.T) {
 		t.Errorf("the goal never reached the agent's prompt:\n%s", prompt)
 	}
 	// And it was asked under the sandbox the production runner promises.
+	//
+	// workspace-write is spelled once, not twice. codex rejects
+	// `--sandbox` alongside `--approve-for-me` — approve-for-me already
+	// runs the model's shell commands under the workspace-write sandbox
+	// — so sending both made `codex exec` exit 2 while parsing its own
+	// arguments, and every handoff died before the agent read a byte of
+	// the prompt. The absence of `--sandbox` is asserted here for the
+	// same reason its presence used to be: this is the boundary where a
+	// wrong argv costs a whole run.
 	argv, err := os.ReadFile(argvPath)
 	if err != nil {
 		t.Fatalf("the agent recorded no argv: %v", err)
 	}
 	for _, want := range []string{
 		"sandbox_workspace_write.network_access=false",
-		"--sandbox",
-		"workspace-write",
+		"--approve-for-me",
 	} {
 		if !strings.Contains(string(argv), want) {
 			t.Errorf("pika spawned the agent without %q:\n%s", want, argv)
+		}
+	}
+	for _, line := range strings.Split(string(argv), "\n") {
+		if strings.TrimSpace(line) == "--sandbox" {
+			t.Errorf("pika spawned the agent with --sandbox, which codex refuses next to --approve-for-me:\n%s", argv)
 		}
 	}
 
@@ -587,4 +600,154 @@ func waitForFile(t *testing.T, path, why string, log func() string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s:\n%s", why, log())
+}
+
+// A leftover run branch used to poison a repository permanently.
+//
+// Every run that reaches its handoff creates `chore/pika-improve`, and
+// nothing on any path deletes it. Once one was there, the next run in
+// that repository died on Git's own `a branch named 'chore/pika-improve'
+// already exists` — exit 128, no remedy named anywhere — and so did
+// every run after it, until an operator happened to know that the fix
+// was to delete a branch by hand.
+//
+// The two tests below are the two worlds a leftover can be in, driven
+// through the real binary: one where the branch carries nothing anybody
+// can lose, and one where it is the only copy of a run's committed work.
+
+// The branch is still there, and the work it carried is in the
+// operator's own history: they merged it and did not delete the branch,
+// which is what every forge's merge button leaves behind by default.
+// Nothing on that branch is at risk, so the next run takes it and gets
+// on with the job.
+func TestE2EAMergedRunBranchDoesNotBlockTheNextRun(t *testing.T) {
+	if why := gitAbsent(); why != "" {
+		t.Skip(why)
+	}
+	dir := workRepo(t)
+	first := runWorkAgent(t, dir, 0, agentEditPath, agentEditContent)
+	if first.Commit == "" {
+		t.Fatalf("the first run made no commit: %+v", first)
+	}
+
+	// The operator merges the run's work, keeps the receipt it issued,
+	// and carries on. The branch stays where it was.
+	git(t, dir, "switch", "main")
+	git(t, dir, "merge", "--ff-only", improveBranch)
+	git(t, dir, "add", ".project/evidence")
+	git(t, dir, "commit", "-m", "chore: keep the run receipt")
+	if git(t, dir, "branch", "--list", improveBranch) == "" {
+		t.Fatal("the merged branch is gone, so there is no leftover to test")
+	}
+	base := git(t, dir, "rev-parse", "HEAD")
+
+	second := runWorkAgent(t, dir, 0, "SECOND.md", "# Second\n\nA later run's edit.\n")
+	if second.Commit == "" {
+		t.Fatalf("the second run made no commit: %+v", second)
+	}
+	if second.Branch != improveBranch {
+		t.Errorf("branch = %q, want %q", second.Branch, improveBranch)
+	}
+	// The reused branch was brought onto where THIS run started rather
+	// than left standing on the previous run's commit: the record says
+	// the run began at base, and the tree has to agree with it.
+	if parent := git(t, dir, "rev-parse", second.Commit+"^"); parent != base {
+		t.Errorf("the delivered commit's parent is %s, want the second run's base commit %s", parent, base)
+	}
+	if second.WorkID == first.WorkID {
+		t.Errorf("both runs reported work id %s", second.WorkID)
+	}
+}
+
+// The branch holds a commit that exists nowhere else, because the
+// operator has not published or merged it — which is the state a
+// delivered run is designed to leave, since publishing is a human
+// choice. Reusing the branch would write into that work and deleting it
+// would destroy it, so the run refuses, and the refusal says what is
+// there, which run put it there, and what the operator can do.
+func TestE2EAnUnmergedRunBranchRefusesTheNextRunAndNamesTheRemedy(t *testing.T) {
+	if why := gitAbsent(); why != "" {
+		t.Skip(why)
+	}
+	dir := workRepo(t)
+	first := runWorkAgent(t, dir, 0, agentEditPath, agentEditContent)
+	if first.Commit == "" {
+		t.Fatalf("the first run made no commit: %+v", first)
+	}
+	git(t, dir, "switch", "main")
+	git(t, dir, "add", ".project/evidence")
+	git(t, dir, "commit", "-m", "chore: keep the run receipt")
+
+	out := runCLIEnv(t, dir, codexEnv(
+		"FAKE_CODEX_FILE=SECOND.md",
+		"FAKE_CODEX_CONTENT=# Second\n",
+	), 1, "work", workGoal, "--json")
+	env := unwrap(t, out, "work")
+	if env.OK {
+		t.Fatalf("work reported ok on a branch holding unmerged work:\n%s", out)
+	}
+	var failure struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(env.Result, &failure); err != nil {
+		t.Fatalf("parse work failure: %v\n%s", err, out)
+	}
+	// The old failure was Git's, and it named nothing an operator could
+	// act on. Every one of these is a thing they now do not have to
+	// already know.
+	for _, want := range []string{
+		improveBranch,
+		first.WorkID,
+		first.Commit,
+		"git branch -D " + improveBranch,
+		"--branch",
+	} {
+		if !strings.Contains(failure.Error, want) {
+			t.Errorf("error = %q, want it to name %q", failure.Error, want)
+		}
+	}
+	// And what an operator used to get instead: Git's own `fatal: a
+	// branch named 'chore/pika-improve' already exists`, arriving as a
+	// wrapped exit-128 git error with no remedy anywhere in it.
+	for _, gone := range []string{"a branch named", "exit status 128", "git switch -c"} {
+		if strings.Contains(failure.Error, gone) {
+			t.Errorf("error = %q still carries Git's bare refusal %q", failure.Error, gone)
+		}
+	}
+
+	// A refusal changes nothing. The branch still holds the first run's
+	// commit and the operator is still standing where they were.
+	if head := git(t, dir, "rev-parse", improveBranch); head != first.Commit {
+		t.Errorf("branch %s is at %s, want the first run's commit %s untouched", improveBranch, head, first.Commit)
+	}
+	if got := git(t, dir, "rev-parse", "--abbrev-ref", "HEAD"); got != "main" {
+		t.Errorf("HEAD is on %q, want main: a refused run must not move the tree", got)
+	}
+
+	// And the remedy the refusal named actually works: the operator
+	// deletes the branch, and the repository runs again.
+	git(t, dir, "branch", "-D", improveBranch)
+	again := runWorkAgent(t, dir, 0, "SECOND.md", "# Second\n\nA later run's edit.\n")
+	if again.Commit == "" {
+		t.Fatalf("the run after the named remedy made no commit: %+v", again)
+	}
+}
+
+// runWorkAgent drives one `pika work` through the fake agent and returns
+// the result it reported.
+func runWorkAgent(t *testing.T, dir string, wantExit int, path, content string) workResult {
+	t.Helper()
+	out := runCLIEnv(t, dir, codexEnv(
+		"FAKE_CODEX_FILE="+path,
+		"FAKE_CODEX_CONTENT="+content,
+	), wantExit, "work", workGoal, "--json")
+	env := unwrap(t, out, "work")
+	if !env.OK {
+		t.Fatalf("work reported not ok:\n%s", out)
+	}
+	var result workResult
+	if err := json.Unmarshal(env.Result, &result); err != nil {
+		t.Fatalf("parse work result: %v\n%s", err, out)
+	}
+	return result
 }

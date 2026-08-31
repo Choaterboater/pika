@@ -64,7 +64,11 @@ func (r CodexRunner) args(root, outputPath string) []string {
 	if r.Effort != "" {
 		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", r.Effort))
 	}
-	return append(args, "--sandbox", "workspace-write", "--approve-for-me", "--cd", root, "--output-last-message", outputPath, "-")
+	// --approve-for-me already runs the model's shell commands under the
+	// workspace-write sandbox, and codex rejects it alongside an explicit
+	// --sandbox. Passing both made every handoff exit 2 before the agent
+	// was ever reached. The network stays disabled by the -c above.
+	return append(args, "--approve-for-me", "--cd", root, "--output-last-message", outputPath, "-")
 }
 
 // Handoff identifies the private, redacted files created for an agent run.

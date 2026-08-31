@@ -599,6 +599,25 @@ agents:
     runtime: codex
 ```
 
+### The run branch a stopped run leaves behind
+
+Nothing deletes `chore/pika-improve` when a run fails, so the next run finds it already there. What happens then depends on what the branch actually holds, which Pika reads from Git and from the durable run records rather than from the branch name:
+
+| The branch | What the next run does |
+|---|---|
+| holds no commit your starting point does not already have — the leftover of a run that stopped before it committed, or one whose work you have since merged | takes it, moves it onto the commit this run starts from, and carries on |
+| holds commits that are not in your history — a run that committed and stopped afterwards, or a `chore/pika-improve` of your own | refuses, and names the branch, the commit, the run that delivered it, and the remedy |
+
+```
+pika work: improve: the run branch already exists and holds work: chore/pika-improve is at
+cb74d5529dd518f8183debb07c4568a473a96584, delivered there by run 20260831-feature-b49c2cd2;
+read it with `git log chore/pika-improve`, then delete it with `git branch -D
+chore/pika-improve` once the work is merged or unwanted, or send this run elsewhere with
+--branch
+```
+
+Pika does not delete the branch for you, for the same reason [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) clears only a holder it can prove is dead: a run can stop *after* its commit lands, and the branch is then the only place that work exists. `pika status <work-id>` shows what the named run did before you decide.
+
 ---
 
 ## 12. Hand a goal to the agent (`pika work`)

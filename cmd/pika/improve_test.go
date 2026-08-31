@@ -307,3 +307,78 @@ func (refusingRunner) Run(_ context.Context, _, _, outputPath string) error {
 	}
 	return errors.New("codex refused")
 }
+
+// The stopped report is the whole of what an operator gets from a failed
+// run, and it was wrong about where the run stopped in two separate
+// ways: `stopped on branch -` for a run that had not branched yet, and
+// `handoff: ` with nothing after it for one that had no bundle. M3 and
+// M4 both closed defects of exactly that kind — a report that is wrong
+// about where it stopped is worse than no report — so this pins both
+// printers over every shape a stopped run can have.
+func TestStoppedReportNeverPrintsAnEmptyBranchOrAnEmptyHandoffPath(t *testing.T) {
+	printers := []struct {
+		name  string
+		print func(*bytes.Buffer, improve.Result, error)
+	}{
+		{"improve", func(out *bytes.Buffer, r improve.Result, err error) { printRunResult(out, "improve", r, err) }},
+		{"resume", func(out *bytes.Buffer, r improve.Result, err error) { printResumeResult(out, r, err) }},
+	}
+	cases := []struct {
+		name   string
+		result improve.Result
+		branch string
+	}{
+		{
+			// The reported run: it died in the handoff, before it had a
+			// branch of its own or a bundle to point at.
+			name:   "stopped before branching, with no bundle",
+			result: improve.Result{WorkID: "20260830-repair-aaaaaaaa", StoppedOn: "main"},
+			branch: "main",
+		},
+		{
+			name: "stopped on the branch it created",
+			result: improve.Result{
+				WorkID: "20260830-repair-bbbbbbbb", Branch: defaultImproveBranch,
+				StoppedOn: defaultImproveBranch, Handoff: improve.Handoff{Dir: "/tmp/bundle"},
+			},
+			branch: defaultImproveBranch,
+		},
+		{
+			// The two branches disagree, and Git's is the true one: the
+			// agent switched away during its handoff.
+			name: "the agent left the repository somewhere else",
+			result: improve.Result{
+				WorkID: "20260830-feature-cccccccc", Branch: defaultImproveBranch,
+				StoppedOn: "main", Handoff: improve.Handoff{Dir: "/tmp/bundle"},
+			},
+			branch: "main",
+		},
+	}
+	for _, printer := range printers {
+		for _, tc := range cases {
+			t.Run(printer.name+"/"+tc.name, func(t *testing.T) {
+				var stdout bytes.Buffer
+				printer.print(&stdout, tc.result, errors.New("improve: post-handoff checks failed"))
+				got := stdout.String()
+
+				if !strings.Contains(got, "stopped on branch "+tc.branch+";") {
+					t.Errorf("output = %q, want it to name the branch %q the run was actually on", got, tc.branch)
+				}
+				if strings.Contains(got, "stopped on branch -") {
+					t.Errorf("output = %q: the branch is known, so the placeholder is a lie", got)
+				}
+				for _, line := range strings.Split(got, "\n") {
+					if strings.TrimSpace(line) == "handoff:" {
+						t.Errorf("output = %q: an empty bundle path reads as a value that got lost", got)
+					}
+				}
+				if want := "handoff: " + tc.result.Handoff.Dir; tc.result.Handoff.Dir != "" && !strings.Contains(got, want) {
+					t.Errorf("output = %q, want %q", got, want)
+				}
+				if tc.result.Handoff.Dir == "" && strings.Contains(got, "handoff:") {
+					t.Errorf("output = %q, want no handoff line at all: this run made no bundle", got)
+				}
+			})
+		}
+	}
+}

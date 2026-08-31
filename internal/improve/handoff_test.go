@@ -166,6 +166,28 @@ func TestCodexRunnerArgsUseConfiguredModelAndEffort(t *testing.T) {
 	}
 }
 
+// codex rejects --sandbox alongside --approve-for-me, because approve-for-me
+// already runs shell commands under the workspace-write sandbox. Passing both
+// made `codex exec` exit 2 on argument parsing, so every handoff failed before
+// the agent read a single byte of the prompt — four milestones of plumbing
+// ending at a dead invocation. Sending workspace-write is still the intent;
+// it just may not be spelled twice.
+func TestCodexRunnerNeverSendsSandboxAlongsideApproveForMe(t *testing.T) {
+	args := (CodexRunner{Binary: "codex", Model: "gpt-5.6-sol", Effort: "high"}).args("/repo", "/tmp/result.md")
+	var sawApprove bool
+	for _, a := range args {
+		switch a {
+		case "--approve-for-me":
+			sawApprove = true
+		case "--sandbox", "-s":
+			t.Fatalf("args carry %q, which codex refuses next to --approve-for-me: %q", a, args)
+		}
+	}
+	if !sawApprove {
+		t.Fatalf("args no longer request automatic approval: %q", args)
+	}
+}
+
 // Warnings are not repair work. The refusal happens before the bundle
 // directory is created, so a run with nothing to fix leaves nothing behind.
 func TestCreateHandoffRefusesAReportWithNoFailedGates(t *testing.T) {

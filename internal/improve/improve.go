@@ -52,6 +52,28 @@ var ErrScopeLeaseHeld = errors.New("improve: a scope lease holds part of this re
 // ErrNoChanges prevents a misleading empty commit after an agent run.
 var ErrNoChanges = errors.New("improve: Codex made no changes to commit")
 
+// ErrBranchHoldsWork refuses a fresh run whose branch is already in the
+// repository and carries commits the run's own starting point does not.
+//
+// A run that stops leaves its branch behind: `git switch -c` is the
+// first thing the lifecycle does with it and nothing on the failure path
+// deletes it. Before this refusal existed the leftover was fatal in the
+// most useless way available — the next `pika improve` in that
+// repository died on Git's own `a branch named 'chore/pika-improve'
+// already exists`, exit 128, naming no remedy — and every run after it
+// died the same way until an operator guessed that the fix was to delete
+// a branch by hand.
+//
+// Deleting it automatically is the other wrong answer. A run can stop
+// after its commit has landed — the receipt fails to write, the terminal
+// save fails, the process is killed between the commit and the stamp —
+// and the branch is then the only place that work exists. Pika does not
+// destroy work it cannot prove is worthless: `pika recover` clears only
+// a holder it can show is dead, and evidence publication refuses to
+// overwrite. So a branch carrying commits gets this refusal, and the
+// refusal names the remedy rather than leaving the operator to find one.
+var ErrBranchHoldsWork = errors.New("improve: the run branch already exists and holds work")
+
 // ErrPrivateStateMoved refuses a run whose agent moved Pika's private
 // state out of the subtree that protects it.
 //
@@ -152,6 +174,20 @@ type Result struct {
 	Handoff      Handoff        `json:"handoff,omitempty"`
 	ChecksBefore *verify.Report `json:"checksBefore,omitempty"`
 	ChecksAfter  *verify.Report `json:"checksAfter,omitempty"`
+	// StoppedOn is the branch the repository was actually on when the
+	// run stopped, read from Git as the run is closed out rather than
+	// inferred from how far it got.
+	//
+	// It is a separate field from Branch because it is a separate fact.
+	// Branch is the branch the run set out to work in and stays empty
+	// until the run reaches it, so a failure earlier than that had no
+	// branch to report and the report said `stopped on branch -` — a
+	// line whose one job is to say where the run stopped, saying
+	// nothing. The two also legitimately disagree: an agent that
+	// switched branches during its handoff makes the branch in effect
+	// something other than the run's own, and that disagreement is the
+	// most useful thing the report can say.
+	StoppedOn string `json:"stoppedOn,omitempty"`
 }
 
 // Run executes the safe local lifecycle: verify, hand an agent only the
@@ -241,7 +277,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 		return Result{}, err
 	}
 
-	result, runErr := lifecycle(ctx, cfg, kind, handle, stageBaseline, "")
+	result, runErr := lifecycle(ctx, cfg, root, kind, handle, stageBaseline, "")
 	result.WorkID = workID
 	// A fresh run's receipt cannot already exist: the work id is new and
 	// workrec.Create has already refused to reuse a run directory. One
@@ -484,7 +520,7 @@ func Resume(ctx context.Context, root, workID string, cfg Config) (result Result
 			ErrTreeDiverged, workID, orNoBaseCommit(rec.BaseCommit), now)
 	}
 
-	result, runErr := lifecycle(ctx, cfg, kind, handle, resumeStage(rec), resumedNote)
+	result, runErr := lifecycle(ctx, cfg, repo, kind, handle, resumeStage(rec), resumedNote)
 	result.WorkID = workID
 	// This run's receipt may already be on disk: a run whose terminal
 	// save failed had already issued one. Under the run's own id that is
@@ -536,7 +572,7 @@ func resumeStage(rec workrec.Record) stage {
 // the record and Git prove the interrupted run got to, inherits the
 // baseline report the record already holds, and marks everything it
 // stamps as resumed.
-func lifecycle(ctx context.Context, cfg Config, kind string, handle *workrec.Handle, from stage, note string) (Result, error) {
+func lifecycle(ctx context.Context, cfg Config, repo *repopath.Root, kind string, handle *workrec.Handle, from stage, note string) (Result, error) {
 	// What the record already proved. A resumed run must not re-derive
 	// its baseline: by the time it rejoins, the agent's edits are in the
 	// working tree, and a ladder run over them is not the baseline they
@@ -573,14 +609,14 @@ func lifecycle(ctx context.Context, cfg Config, kind string, handle *workrec.Han
 		if cfg.Runner == nil {
 			return result, errors.New("improve: agent runner is required")
 		}
-		// A fresh run creates its branch, and `switch -c` failing on a
-		// branch that already exists is the guarantee that a run never
-		// writes into work it did not do. A resumed run reconciles
-		// instead: its branch may already be there because the
-		// interrupted process created it and died before the record
-		// could name it.
+		// A fresh run claims its branch, which is also where a run that
+		// stopped earlier left one behind; claimBranch decides whether
+		// that leftover carries anything before it reuses it. A resumed
+		// run reconciles instead: its branch may already be there
+		// because the interrupted process created it and died before
+		// the record could name it.
 		if from == stageBaseline {
-			if _, err := runGit(ctx, cfg.Root, "switch", "-c", cfg.Branch); err != nil {
+			if err := claimBranch(ctx, repo, cfg.Root, cfg.Branch, rec.BaseCommit); err != nil {
 				return result, err
 			}
 		} else if err := enterBranch(ctx, cfg.Root, cfg.Branch); err != nil {
@@ -692,6 +728,14 @@ func lifecycle(ctx context.Context, cfg Config, kind string, handle *workrec.Han
 // run whose terminal save failed had already issued it — so writing it
 // again is a no-op rather than a collision.
 func settle(ctx context.Context, root *repopath.Root, handle *workrec.Handle, result Result, runErr error, resuming bool) (Result, error) {
+	// Where the run stopped is read here, from the run's own error and
+	// before anything else is written: settle is the one point every
+	// exit passes through, and nothing between the stop and this line
+	// moves a branch. A run that ended well has not stopped anywhere and
+	// is not asked.
+	if runErr != nil {
+		result.StoppedOn = currentBranch(ctx, root.Dir())
+	}
 	runErr = finish(handle, runErr)
 	if err := issueReceipt(ctx, root, handle.Record()); err != nil {
 		if resuming && errors.Is(err, ErrReceiptExists) {
@@ -890,6 +934,159 @@ func branchCommit(ctx context.Context, root, branch string) (string, bool, error
 		}
 	}
 	return "", false, nil
+}
+
+// claimBranch puts a fresh run on the branch it is going to work in, and
+// decides what to do about one that is already there.
+//
+// `git switch -c` on its own refuses an existing branch, and that
+// refusal is load-bearing: it is what stops a run committing into work
+// it did not do. What it never did was say anything an operator could
+// act on, and a repository whose last run failed has that branch in it
+// permanently. See ErrBranchHoldsWork for why deleting it unasked is not
+// the answer either.
+//
+// So the branch is read before it is touched, and Git answers the only
+// question that decides anything: is anything on it at risk. A branch
+// head already contained in the commit this run starts from carries
+// nothing — every commit reachable from it is reachable from the base,
+// so moving it loses nothing the repository does not still have. That is
+// exactly the leftover of a run that committed nothing, and it is reused
+// without ceremony. Anything else holds commits, and holding them is
+// enough to refuse whether or not Pika made them: an operator's own
+// `chore/pika-improve` is not Pika's to write into.
+//
+// The run record is what turns that refusal into something actionable.
+// Git can say a branch holds commits; only workrec can say which run put
+// them there, and `git branch -D chore/pika-improve` is a very different
+// instruction to an operator who can look the run up first.
+func claimBranch(ctx context.Context, repo *repopath.Root, root, branch, baseCommit string) error {
+	head, exists, err := branchCommit(ctx, root, branch)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		_, err := runGit(ctx, root, "switch", "-c", branch)
+		return err
+	}
+	spare, err := carriesNothing(ctx, root, head, baseCommit)
+	if err != nil {
+		return err
+	}
+	if !spare {
+		return branchHoldsWork(repo, branch, head)
+	}
+	// `-C` rather than `-c`, and it is a reset rather than a create: the
+	// leftover is level with or behind the base commit, and the run has
+	// already recorded that base commit as where its work starts.
+	// Switching to the branch where it stands would put the tree on an
+	// older commit while the record claims the newer one — a lie in the
+	// one document `pika resume` reads to decide what world it is
+	// rejoining. It takes no separator, for the same reason `-c` takes
+	// none: the flag consumes the next argument as its value whatever
+	// that argument starts with.
+	_, err = runGit(ctx, root, "switch", "-C", branch)
+	return err
+}
+
+// carriesNothing reports whether a branch head holds no commit the base
+// commit does not already have.
+//
+// `git merge-base --is-ancestor A B` is that question exactly, and it
+// answers in an exit code: 0 for yes, 1 for no, anything else for a
+// repository Git could not read. runGit collapses all three into one
+// error, so this asks the process directly — reading "not an ancestor"
+// as a Git failure would turn a reusable leftover branch into an
+// unexplained refusal, which is the defect this whole path exists to
+// close. Both operands are object names Git itself produced in this
+// process, but `--end-of-options` is passed anyway so no value can ever
+// be read as a flag.
+//
+// A run with no recorded base commit cannot answer the question at all,
+// and an unanswerable safety question is a no. Nothing here may assume a
+// branch is empty.
+func carriesNothing(ctx context.Context, root, head, baseCommit string) (bool, error) {
+	if strings.TrimSpace(head) == "" || strings.TrimSpace(baseCommit) == "" {
+		return false, nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", "--end-of-options", head, baseCommit)
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("improve: git merge-base --is-ancestor %s %s: %w: %s",
+		head, baseCommit, err, strings.TrimSpace(string(output)))
+}
+
+// branchHoldsWork is the refusal a leftover branch carrying commits
+// earns: what is there, who put it there, and what to do about it.
+//
+// The remedy is stated because the absence of one is the defect. An
+// operator who reads only that a branch exists has to already know that
+// Pika's run branch is disposable, that deleting it is safe once the
+// work is merged, and that `--branch` exists at all.
+func branchHoldsWork(repo *repopath.Root, branch, head string) error {
+	rec, found, err := runOnBranch(repo, branch)
+	if err != nil {
+		return err
+	}
+	// The common case is the branch sitting on exactly the commit a run
+	// recorded, and saying the same hash twice in one sentence buries
+	// the run id between two copies of it. Where they differ both are
+	// named, without claiming which came first: this code knows the
+	// branch holds work, not what rearranged it.
+	held := fmt.Sprintf("is at %s, which no run record claims", head)
+	if found && rec.Commit == head {
+		held = fmt.Sprintf("is at %s, delivered there by run %s", head, rec.WorkID)
+	} else if found {
+		held = fmt.Sprintf("is at %s; the last run to deliver there, %s, committed %s", head, rec.WorkID, rec.Commit)
+	}
+	return fmt.Errorf("%w: %s %s; read it with `git log %s`, then delete it with `git branch -D %s` once the work is merged or unwanted, or send this run elsewhere with --branch",
+		ErrBranchHoldsWork, branch, held, branch, branch)
+}
+
+// runOnBranch finds the run that delivered work on a branch: the most
+// recent record that names it and carries a commit.
+//
+// workrec.List is newest-first, so the first match is the last run to
+// deliver there — the commit the branch is most likely sitting on, and
+// the run an operator asking `pika status` about it wants. A record
+// naming the branch with no commit is not an answer: that is a run which
+// reached the branch and stopped before committing anything, which is
+// precisely the leftover this refusal is not about.
+func runOnBranch(repo *repopath.Root, branch string) (workrec.Record, bool, error) {
+	runs, err := workrec.List(repo)
+	if err != nil {
+		return workrec.Record{}, false, err
+	}
+	for _, rec := range runs {
+		if rec.Branch == branch && rec.Commit != "" {
+			return rec, true, nil
+		}
+	}
+	return workrec.Record{}, false, nil
+}
+
+// currentBranch names the branch a repository is on, or "" when this
+// process cannot say — a detached HEAD, or a repository it can no longer
+// read at all.
+//
+// It is best effort by design. Its only use is making a report about a
+// failure more accurate, so a Git call that fails here must never
+// replace the reason the run actually stopped: the caller falls back to
+// what it already knew rather than reporting Git's problem instead of
+// the run's.
+func currentBranch(ctx context.Context, root string) string {
+	out, err := runGit(ctx, root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // orNoBaseCommit names an absent base commit in a refusal message.
