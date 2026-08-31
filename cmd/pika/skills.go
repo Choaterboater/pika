@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
@@ -155,8 +156,30 @@ func printSkillsStatus(st *skills.Status, root *repopath.Root, mode string, stdo
 		}
 	}
 	if mode == skillsReport && !st.OK {
-		fmt.Fprintln(stdout, "\nrun `pika skills install` to regenerate the drifted projections")
+		fmt.Fprintln(stdout, "\n"+skillsRemedy(st))
 	}
+}
+
+// skillsRemedy is the closing line of a report that found something
+// wrong. It is not one fixed line, because the two ways a projection
+// fails have opposite consequences: regenerating a stale copy costs
+// nothing, and regenerating a tampered one throws away whatever
+// somebody typed inside the markers. Printing "run `pika skills
+// install`" under a tampered projection would be the kernel
+// recommending the destructive move without saying it is one.
+func skillsRemedy(st *skills.Status) string {
+	var tampered []string
+	for _, p := range st.Projections {
+		if p.State == skills.StateTampered {
+			tampered = append(tampered, p.Path)
+		}
+	}
+	if len(tampered) == 0 {
+		return "run `pika skills install` to regenerate the projections above"
+	}
+	return "hand-edited kernel-owned region in " + strings.Join(tampered, ", ") + ":\n" +
+		"  `pika skills install` will DISCARD those edits. Move the change into the\n" +
+		"  canonical skill under .agents/skills/ first, then regenerate."
 }
 
 // writtenMark marks the rows this invocation actually wrote, so an

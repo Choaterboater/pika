@@ -69,13 +69,27 @@ const (
 )
 
 // The state of one declared projection.
+//
+// A projection that is not current fails in one of two ways, and they
+// are named apart because their remedies are opposites. Collapsing them
+// into one "drifted" label would tell an operator whose edit is about
+// to be destroyed to run the command that destroys it.
 const (
-	// StateCurrent means the file's managed region is byte-identical to
-	// what its sources render to right now.
+	// StateCurrent means the file's managed region hashes to the digest
+	// it records and is byte-identical to what its sources render to
+	// right now.
 	StateCurrent = "current"
-	// StateDrifted means it is not: a source moved, or the region was
-	// hand-edited.
-	StateDrifted = "drifted"
+	// StateStale means the region is authentic kernel output — it still
+	// hashes to its own recorded digest — but a source has moved since
+	// it was written. `pika skills install` regenerates it and no
+	// operator work is at risk.
+	StateStale = "stale"
+	// StateTampered means the region no longer hashes to the digest it
+	// carries: somebody edited kernel-owned bytes, or removed or
+	// doubled the digest line that records them. Regenerating DISCARDS
+	// that edit, so it is reported as its own state and never as
+	// something a regenerate quietly fixes.
+	StateTampered = "tampered"
 	// StateAbsent means the file carries no managed region at all.
 	StateAbsent = "absent"
 	// StateUnreadable means the file exists but could not be read or
@@ -117,14 +131,19 @@ type SkillStatus struct {
 
 // ProjectionStatus is one declared projection: which harness reads it,
 // the file it reads, and whether that file's managed region still
-// matches its sources.
+// matches its sources and its own recorded digest.
 type ProjectionStatus struct {
 	Harness string   `json:"harness"`
 	Path    string   `json:"path"`
 	State   string   `json:"state"`
 	Sources []Source `json:"sources"`
-	Written bool     `json:"written,omitempty"`
-	Detail  string   `json:"detail,omitempty"`
+	// Region is the digest the kernel-owned region hashes to when it is
+	// rendered from the sources above. A consumer comparing it against
+	// the `pika:region` line in the file reproduces the tamper check
+	// without re-implementing the render.
+	Region  string `json:"region"`
+	Written bool   `json:"written,omitempty"`
+	Detail  string `json:"detail,omitempty"`
 }
 
 // Shipped returns the canonical skills this binary carries, in name
@@ -239,9 +258,15 @@ func Install(root *repopath.Root, c *contract.Contract, resolved *profiles.Resol
 }
 
 // Verify reports every declared projection that is not current, as one
-// error naming each projection, the source that explains it, and the
-// command that fixes it. It is what gate 1 calls, so `pika check` and
-// `pika skills check` cannot disagree about what drift is.
+// error naming each projection, HOW it failed, the source that explains
+// it, and the command that fixes it. It is what gate 1 calls, so
+// `pika check` and `pika skills check` cannot disagree about what drift
+// is.
+//
+// The state leads each entry because gate 1 output is what an operator
+// acts on: `stale` and `tampered` want different next moves, and a
+// single label for both would send someone whose edit is at risk to the
+// command that overwrites it.
 func Verify(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) error {
 	if len(projections(c)) == 0 {
 		return nil
@@ -259,7 +284,7 @@ func Verify(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) 
 		if p.State == StateCurrent {
 			continue
 		}
-		problems = append(problems, fmt.Sprintf("%s (harness %s) %s", p.Path, p.Harness, p.Detail))
+		problems = append(problems, fmt.Sprintf("%s %s (harness %s) %s", p.State, p.Path, p.Harness, p.Detail))
 	}
 	if len(problems) == 0 {
 		return nil

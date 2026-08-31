@@ -354,26 +354,3 @@ func TestIndentedMarkerIsNotARegionDelimiter(t *testing.T) {
 		t.Errorf("an indented marker was read as a region delimiter at %d", start)
 	}
 }
-
-// A region whose provenance header was removed cannot be blamed on a
-// source, and inventing one would send the operator to a file that never
-// changed. It reads as the hand edit it is.
-func TestRegionWithNoProvenanceReadsAsAHandEdit(t *testing.T) {
-	root := rootAt(t)
-	c, resolved := codexContract(), resolve(t, profiles.CoreRef)
-	target := filepath.Join(root.Dir(), "AGENTS.md")
-	if err := os.WriteFile(target, []byte(beginMarker+"\nSomething somebody typed.\n"+endMarker+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	st, err := Inspect(root, c, resolved)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := st.Projections[0]
-	if p.State != StateDrifted {
-		t.Fatalf("state = %s, want %s", p.State, StateDrifted)
-	}
-	if !strings.Contains(p.Detail, "edited by hand") {
-		t.Errorf("detail = %q, want the hand-edit remedy", p.Detail)
-	}
-}

@@ -176,7 +176,7 @@ Running `pika` with no arguments prints the same help.
 
 All commands support `--json` for automation, and every payload is the same envelope — `{"schema":1,"command":…,"ok":…,"result":{…}}` — so a consumer can tell which command answered, and whether it succeeded, before knowing the report's shape. See [docs/guides/usage.md](docs/guides/usage.md#json-output).
 
-### Skills, and why a projection carries a digest
+### Skills, and why a projection carries two digests
 
 How to drive pika is written once, under `.agents/skills/<name>/SKILL.md` — the canonical, harness-neutral location. Harnesses that cannot read it get a **projection**: the same guidance rendered into a file they do read, declared in the contract:
 
@@ -189,9 +189,11 @@ skills:
     path: CLAUDE.md
 ```
 
-`pika skills install` writes any canonical skill the repository is missing and regenerates every declared projection. A projection is a marked-off region inside the file, not the whole file, so operator prose above and below it survives; the region names each source and its sha256 digest, and gate 1 recomputes them. A stale copy therefore fails `pika check` with the projection, the source that moved, and the remedy — rather than sitting there looking current, which is how parallel handwritten copies come to exist in the first place.
+`pika skills install` writes any canonical skill the repository is missing and regenerates every declared projection. A projection is a marked-off region inside the file, not the whole file, so operator prose above and below it survives untouched and undigested.
 
-The split is ownership. A canonical skill is the operator's: it is written when missing and replaced only under `--force`. A projection region is the kernel's: regenerated freely, never hand-edited. Which harnesses receive one is contract-declared, not compiled in — an unknown harness is a schema error, and a new harness whose requirement is "a file at this path" needs a contract line and no kernel change.
+The region carries two kinds of digest, and gate 1 recomputes both, because a projection can go wrong in two directions whose remedies are opposites. The `pika:source` lines name each source and its sha256, so a **stale** copy — the source moved, the copy did not follow — fails `pika check` naming the source and the remedy; regenerating costs nothing. The `pika:region` line is the sha256 of the region's own bytes, taken over everything between the markers except that line, so a **tampered** region — somebody edited kernel-owned bytes in the file the harness actually reads — fails on its own evidence, without consulting any source. That independence is what keeps a hand edit visible when a source moved at the same time, and it is why the two are never reported under one label: `pika skills install` regenerates a stale copy for free and DISCARDS a hand edit, so telling an operator to run it has to depend on which one they have.
+
+The split is ownership. A canonical skill is the operator's: it is written when missing and replaced only under `--force`. A projection region is the kernel's: regenerated freely, never hand-edited — and now verified rather than merely asserted. Which harnesses receive one is contract-declared, not compiled in — an unknown harness is a schema error, and a new harness whose requirement is "a file at this path" needs a contract line and no kernel change.
 
 ### `--root`, and the one command that does not discover
 

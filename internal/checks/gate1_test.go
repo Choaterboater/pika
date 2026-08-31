@@ -185,8 +185,10 @@ func projectionFixture(t *testing.T) (string, *contract.Contract, *profiles.Reso
 // rejects drift rather than maintaining parallel handwritten copies.
 // Gate 1 is where that rejection happens, so a projection generated from
 // a source that has since moved must fail it — naming the projection,
-// the source, and the command that regenerates it.
-func TestGate1DriftedProjectionFails(t *testing.T) {
+// the source, and the command that regenerates it. It must say `stale`
+// and not `tampered`: nothing an operator wrote is at risk here, and
+// regenerating is the whole remedy.
+func TestGate1StaleProjectionFails(t *testing.T) {
 	root, c, resolved := projectionFixture(t)
 	if exit, output, _ := Gate1(root, c, resolved); exit != 0 {
 		t.Fatalf("Gate1 exit = %d on a freshly generated projection, want 0 (output %q)", exit, output)
@@ -203,12 +205,15 @@ func TestGate1DriftedProjectionFails(t *testing.T) {
 
 	exit, output, _ := Gate1(root, c, resolved)
 	if exit != 1 {
-		t.Fatalf("Gate1 exit = %d on a drifted projection, want 1", exit)
+		t.Fatalf("Gate1 exit = %d on a stale projection, want 1", exit)
 	}
-	for _, want := range []string{"AGENTS.md", ".agents/skills/project-work/SKILL.md", "pika skills install"} {
+	for _, want := range []string{"stale", "AGENTS.md", ".agents/skills/project-work/SKILL.md", "pika skills install"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output %q must name %q", output, want)
 		}
+	}
+	if strings.Contains(output, "tampered") {
+		t.Errorf("a moved source was reported to gate 1 as a hand edit: %q", output)
 	}
 
 	// Regenerating is the whole remedy: nothing else has to be touched.
@@ -221,6 +226,70 @@ func TestGate1DriftedProjectionFails(t *testing.T) {
 	}
 	if exit, output, _ := Gate1(root, c, resolved); exit != 0 {
 		t.Fatalf("Gate1 exit = %d after regenerating, want 0 (output %q)", exit, output)
+	}
+}
+
+// The projection is the file the harness actually reads, so a hand edit
+// inside the kernel-owned region feeds an agent instructions the kernel
+// never issued. Gate 1 must catch that as its own failure and not as a
+// stale copy: the remedies are opposites, and `pika skills install`
+// would destroy the edit rather than adopt it.
+func TestGate1TamperedProjectionFailsAsItsOwnState(t *testing.T) {
+	root, c, resolved := projectionFixture(t)
+	target := filepath.Join(root, "AGENTS.md")
+	doc, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(string(doc), "<!-- pika:skills:end -->", "A line nobody generated.\n<!-- pika:skills:end -->", 1)
+	if edited == string(doc) {
+		t.Fatal("fixture did not find the end marker it meant to edit inside")
+	}
+	if err := os.WriteFile(target, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exit, output, _ := Gate1(root, c, resolved)
+	if exit != 1 {
+		t.Fatalf("Gate1 exit = %d on a tampered projection, want 1 (output %q)", exit, output)
+	}
+	for _, want := range []string{"tampered", "AGENTS.md", "DISCARD"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output %q must name %q", output, want)
+		}
+	}
+}
+
+// A hand edit must stay visible when a source moved in the same working
+// tree. Inferring "hand-edited" by elimination — the region differs and
+// no source moved — reports exactly this case as the one where nothing
+// is at risk, and sends the operator to the command that erases it.
+func TestGate1TamperIsNotMaskedByAMovedSource(t *testing.T) {
+	root, c, resolved := projectionFixture(t)
+	target := filepath.Join(root, "AGENTS.md")
+	doc, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(string(doc), "<!-- pika:skills:end -->", "A line nobody generated.\n<!-- pika:skills:end -->", 1)
+	if err := os.WriteFile(target, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skill := filepath.Join(root, ".agents", "skills", "project-work", "SKILL.md")
+	body, err := os.ReadFile(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, append(body, []byte("\nA rule added at the same time.\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exit, output, _ := Gate1(root, c, resolved)
+	if exit != 1 {
+		t.Fatalf("Gate1 exit = %d, want 1 (output %q)", exit, output)
+	}
+	if !strings.Contains(output, "tampered") || strings.Contains(output, "stale") {
+		t.Errorf("a moved source masked the hand edit; gate 1 said: %q", output)
 	}
 }
 

@@ -125,7 +125,7 @@ func TestSkillsInstallKeepsOperatorTextOutsideTheRegion(t *testing.T) {
 	}
 }
 
-func TestSkillsCheckFailsOnATamperedProjection(t *testing.T) {
+func TestSkillsCheckFailsOnAStaleProjection(t *testing.T) {
 	dir := skillsProject(t, codexProjection)
 	if code, _, errb := runSkillsIn(t, dir, "install"); code != 0 {
 		t.Fatalf("install exit = %d; stderr %s", code, errb)
@@ -147,12 +147,15 @@ func TestSkillsCheckFailsOnATamperedProjection(t *testing.T) {
 	}
 	code, out, errb := runSkillsIn(t, dir, "check")
 	if code != 1 {
-		t.Fatalf("check exit = %d on a drifted projection, want 1; stdout %s stderr %s", code, out, errb)
+		t.Fatalf("check exit = %d on a stale projection, want 1; stdout %s stderr %s", code, out, errb)
 	}
-	for _, want := range []string{"drifted", "AGENTS.md", ".agents/skills/project-work/SKILL.md", "pika skills install"} {
+	for _, want := range []string{"stale", "AGENTS.md", ".agents/skills/project-work/SKILL.md", "pika skills install"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("drift report does not name %q:\n%s", want, out)
+			t.Errorf("stale report does not name %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "tampered") {
+		t.Errorf("a moved source was reported as a hand edit:\n%s", out)
 	}
 	// Regenerating fixes it.
 	if code, _, errb := runSkillsIn(t, dir, "install"); code != 0 {
@@ -187,8 +190,18 @@ func TestSkillsCheckFailsOnAHandEditedRegion(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("check exit = %d, want 1:\n%s", code, out)
 	}
-	if !strings.Contains(out, "edited by hand inside the pika skills markers") {
-		t.Errorf("hand edit is not distinguished from a moved source:\n%s", out)
+	for _, want := range []string{"tampered", "edited by hand inside the pika skills markers", "DISCARD"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hand edit is not distinguished from a moved source (%q missing):\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "stale") {
+		t.Errorf("a hand edit was reported as a stale copy:\n%s", out)
+	}
+	// The report mode must not close with the destructive advice.
+	_, report, _ := runSkillsIn(t, dir)
+	if !strings.Contains(report, "will DISCARD those edits") {
+		t.Errorf("the report's closing remedy hides that regenerating destroys the edit:\n%s", report)
 	}
 }
 
