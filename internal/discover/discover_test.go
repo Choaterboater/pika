@@ -297,3 +297,30 @@ func TestTaskfileTaskNamedFormatIsInvokedByItsRealName(t *testing.T) {
 		t.Errorf("ExistingChecks[fmt] = %q, want %q: the task is named `format`, not `fmt`", got, "task format")
 	}
 }
+
+// A known, narrower limitation, not a defect this package fixes:
+// goreleaser/goreleaser's own Taskfile.yml indents one task's `cmds:`
+// key level with the task name instead of nested under it — tolerated
+// by go-task's own parser, rejected by goccy/go-yaml (strict) with
+// "sequence was used where mapping is expected". The whole file
+// discovers nothing, including clean tasks nowhere near the bad
+// indentation, but the result is an honest "no command discovered"
+// rather than a false failure — pinned here so a change to this
+// behavior is a decision, not a surprise.
+func TestTaskfileWithInconsistentIndentationDiscoversNothing(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/x\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	taskfile := "version: '3'\ntasks:\n  fmt:\n    cmds:\n      - gofmt -l .\n\n  fuzz:\n    desc: bad\n  cmds:\n    - echo hi\n"
+	if err := os.WriteFile(filepath.Join(root, "Taskfile.yml"), []byte(taskfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := inv.ExistingChecks["fmt"]; ok {
+		t.Errorf("ExistingChecks[fmt] = %q, want absent: the file fails to parse, so nothing is discovered", got)
+	}
+}

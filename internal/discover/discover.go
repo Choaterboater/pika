@@ -510,6 +510,21 @@ func justfileRecipes(path string) map[string]string {
 // "first in the file" (what makefileTargets and justfileRecipes give)
 // for "first alphabetically", which is not the same guarantee but is at
 // least the same answer every time.
+//
+// A Taskfile that fails to unmarshal discovers nothing at all, silently
+// — a known, narrower limit than the name defect above, not a fix
+// candidate here. goreleaser/goreleaser's own Taskfile.yml is a real
+// example: its `fuzz:` task's `cmds:` key is indented level with
+// `fuzz:` itself rather than nested under it, which go-task's own
+// parser tolerates and goccy/go-yaml (strict) rejects with "sequence
+// was used where mapping is expected" — losing every task in the
+// file, including the clean `fmt`/`lint`/`test` ones nowhere near the
+// bad indentation. Unlike the name defect, the result here is an
+// honest "no command discovered" rather than a false failure, so it
+// is recorded rather than fixed: matching go-task's own leniency would
+// mean replicating its specific YAML tolerances rather than reading
+// YAML, which is a different and larger undertaking than this reader
+// is for.
 func taskfileTasks(path string) map[string]string {
 	data, err := os.ReadFile(path)
 	if err != nil {
