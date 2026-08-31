@@ -233,6 +233,42 @@ func TestNamingKebabCaseDefaultPatternWhenUnset(t *testing.T) {
 	}
 }
 
+// TestNamingKebabCaseDefaultPatternAcceptsAHyphen pins the fallback
+// pattern's actual purpose: a real kebab-case name — the case the rule
+// exists to allow — must not violate the rule it names itself after.
+// defaultKebabCase's char class once read `[a-z0-9.-_]`: unescaped
+// between two other characters, `-` is a range operator, not a literal,
+// so `.-_` became the byte range 0x2E-0x5F (which happens to include
+// every uppercase letter and `/:;<=>?@[\]^`, but excludes `-` itself at
+// 0x2D). The existing default-pattern test above never wrote a name
+// containing a literal hyphen, so it passed throughout.
+func TestNamingKebabCaseDefaultPatternAcceptsAHyphen(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{"src/my-file.go": "x\n"})
+	rules := []profiles.NamingRule{
+		{RuleID: "naming-kebab-case", Severity: "warning", Scope: "path-segments"},
+	}
+	if vs := Naming(dir, rules, nil); len(vs) != 0 {
+		t.Fatalf("a literal kebab-case name failed the default kebab-case pattern: %+v", vs)
+	}
+}
+
+// TestNamingKebabCaseDefaultPatternRejectsCamelCase pins the other half
+// of the same bug: the broken range also swallowed every uppercase
+// letter into the class, so a segment whose first character is
+// lowercase but later characters are not (camelCase) passed the
+// fallback rule though it would fail the pack's own explicit pattern.
+func TestNamingKebabCaseDefaultPatternRejectsCamelCase(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{"src/myCamelFile.go": "x\n"})
+	rules := []profiles.NamingRule{
+		{RuleID: "naming-kebab-case", Severity: "warning", Scope: "path-segments"},
+	}
+	if vs := Naming(dir, rules, nil); len(vs) == 0 {
+		t.Fatal("camelCase passed the default kebab-case pattern")
+	}
+}
+
 func TestNamingFileSizeReview(t *testing.T) {
 	dir := t.TempDir()
 	big := strings.Repeat("line\n", 501) // 501 lines

@@ -462,7 +462,7 @@ Rules from spec §6.2, encoded as data:
 
 | RuleID | Check | Severity |
 |---|---|---|
-| naming-kebab-case | repo-relative paths match `^[a-z0-9][a-z0-9.-_]*$` unless profile override | warning |
+| naming-kebab-case | repo-relative paths match `^[a-z0-9][a-z0-9._-]*$` unless profile override | warning |
 | naming-catch-all | paths named `utils|helpers|common|misc` without exception record | error |
 | file-purpose | files >500 lines produce warning `file-size-review` | warning |
 | generated-owner | files matching profile's generated patterns declare generator header | error |
