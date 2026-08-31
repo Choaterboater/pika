@@ -19,8 +19,8 @@ const (
 	skillsCheck   = "check"
 )
 
-// runSkills implements `pika skills [install|check] [--force] [--global]
-// [--home <dir>] [--json] [--root <dir>]`: it installs and verifies the
+// runSkills implements `pika skills [install|check] [--reset-docs]
+// [--global] [--home <dir>] [--json] [--root <dir>]`: it installs and
 // agent instructions this repository ships, and — only when asked
 // explicitly — the ones that live in the operator's home directory.
 //
@@ -54,7 +54,7 @@ func runSkills(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("skills", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "emit the report as JSON on stdout")
-	force := fs.Bool("force", false, "overwrite a canonical skill the operator has edited")
+	resetDocs := fs.Bool("reset-docs", false, "restore the shipped template over a canonical skill the operator has edited")
 	global := fs.Bool("global", false, "act on the agent files in the operator's home directory instead of this repository's projections")
 	homeFlag := fs.String("home", "", "with --global, use this directory as the home directory instead of the operator's own")
 	rootFlag := fs.String("root", "", rootFlagUsage)
@@ -83,24 +83,25 @@ func runSkills(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 				fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 		}
 	}
-	// --force authorizes replacing an operator's own words, and nothing
-	// else does. Accepting it silently on a read-only mode would teach
-	// the habit of passing it, which is exactly how the flag stops
-	// meaning anything.
-	if *force && mode != skillsInstall {
+	// --reset-docs authorizes replacing an operator's own words, and
+	// nothing else does — the same flag `pika init --reset-docs` uses for
+	// README and the rest. Accepting it silently on a read-only mode
+	// would teach the habit of passing it, which is exactly how the flag
+	// stops meaning anything.
+	if *resetDocs && mode != skillsInstall {
 		return fail(*jsonOut, stdout, stderr, "skills", codeUsage,
-			"--force applies only to `pika skills install`")
+			"--reset-docs applies only to `pika skills install`")
 	}
 	// Every flag that means nothing in the mode it was passed in is
 	// refused rather than ignored. A flag silently dropped is how an
-	// operator concludes a command did something it did not: --force
+	// operator concludes a command did something it did not: --reset-docs
 	// on a global install would suggest the home files have an
 	// operator-owned half that a flag overrides, and --root would
 	// suggest a repository chose where they went.
 	if *global {
-		if *force {
+		if *resetDocs {
 			return fail(*jsonOut, stdout, stderr, "skills", codeUsage,
-				"--force does not apply to --global; the global agent files are kernel-owned between their markers and operator-owned outside them, and neither half needs overriding")
+				"--reset-docs does not apply to --global; the global agent files are kernel-owned between their markers and operator-owned outside them, and neither half needs overriding")
 		}
 		if *rootFlag != "" {
 			return fail(*jsonOut, stdout, stderr, "skills", codeUsage,
@@ -128,7 +129,7 @@ func runSkills(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 
 	var st *skills.Status
 	if mode == skillsInstall {
-		st, err = skills.Install(root, c, resolved, *force)
+		st, err = skills.Install(root, c, resolved, *resetDocs)
 	} else {
 		st, err = skills.Inspect(root, c, resolved)
 	}

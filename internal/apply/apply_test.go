@@ -185,10 +185,13 @@ func TestApplyHappyPath(t *testing.T) {
 		}
 	}
 
-	// The plan: three state files + four core files; README skipped.
-	// Plan order: the state files promote first (contract, lock,
-	// exceptions), then the core files in the core pack's required
-	// order.
+	// The plan: three state files + four core files + four canonical
+	// skills, then AGENTS.md's projection region written a second time
+	// (a distinct fact from its create — the region did not exist until
+	// the skill files did); README skipped. Plan order: the state files
+	// promote first (contract, lock, exceptions), then the core files
+	// in the core pack's required order, then skills.Install's own two
+	// steps.
 	wantApplied := []string{
 		".project/contract.yaml",
 		".project/profiles.lock",
@@ -197,6 +200,11 @@ func TestApplyHappyPath(t *testing.T) {
 		"CONTRIBUTING.md",
 		".github/workflows/ci.yml",
 		".github/pull_request_template.md",
+		".agents/skills/project-maintain/SKILL.md",
+		".agents/skills/project-research/SKILL.md",
+		".agents/skills/project-review/SKILL.md",
+		".agents/skills/project-work/SKILL.md",
+		"AGENTS.md",
 	}
 	if got := appliedPaths(rep); !slices.Equal(got, wantApplied) {
 		t.Errorf("applied = %v, want %v", got, wantApplied)
@@ -207,7 +215,10 @@ func TestApplyHappyPath(t *testing.T) {
 
 	// The four missing core files rendered exactly as init renders
 	// them. CoreFiles renders five; the fixture's README was skipped
-	// create-if-missing, so it never entered the plan.
+	// create-if-missing, so it never entered the plan. AGENTS.md
+	// carries a projection region skills.Install appends below the
+	// rendered template, so it is checked by prefix rather than the
+	// other three's full equality.
 	draft, err := contract.Load(filepath.Join(root, ".project", "contract.yaml.draft"))
 	if err != nil {
 		t.Fatal(err)
@@ -222,9 +233,16 @@ func TestApplyHappyPath(t *testing.T) {
 	for _, rel := range wantApplied {
 		want, ok := wantCore[rel]
 		if !ok {
-			continue // state files, not core renders
+			continue // state files and skills, not plain core renders
 		}
-		if got := readBytes(t, root, rel); !bytes.Equal(got, want) {
+		got := readBytes(t, root, rel)
+		if rel == "AGENTS.md" {
+			if !bytes.HasPrefix(got, want) {
+				t.Errorf("AGENTS.md does not start with the init-rendered core file")
+			}
+			continue
+		}
+		if !bytes.Equal(got, want) {
 			t.Errorf("%s differs from the init-rendered core file", rel)
 		}
 	}
@@ -328,7 +346,13 @@ func TestApplyInvalidDraft(t *testing.T) {
 }
 
 // TestApplyCreateIfMissing pins create-if-missing: a file the user
-// created between adopt and apply is preserved and reported as skipped.
+// created between adopt and apply is preserved and reported as skipped
+// — the whole-file create is skipped. Its projection region is a
+// separate, always-on write: the region never existed either way, and
+// skills.Install adds it below the operator's prose exactly as it would
+// below a freshly-created file (spec 5.2 — a projection is kernel-owned
+// and never an authored artifact, so create-if-missing does not apply
+// to it).
 func TestApplyCreateIfMissing(t *testing.T) {
 	root := adoptionFixture(t)
 	writeFile(t, root, "AGENTS.md", "# my own agents notes\n")
@@ -337,14 +361,15 @@ func TestApplyCreateIfMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if got := readBytes(t, root, "AGENTS.md"); string(got) != "# my own agents notes\n" {
-		t.Errorf("AGENTS.md = %q, want the user's content", got)
+	got := readBytes(t, root, "AGENTS.md")
+	if !bytes.HasPrefix(got, []byte("# my own agents notes\n")) {
+		t.Errorf("AGENTS.md = %q, want it to start with the user's content", got)
 	}
 	if !slices.Contains(skippedPaths(rep), "AGENTS.md") {
 		t.Errorf("skipped = %v, want AGENTS.md reported as skipped", rep.Skipped)
 	}
-	if slices.Contains(appliedPaths(rep), "AGENTS.md") {
-		t.Error("AGENTS.md reported as applied")
+	if !slices.Contains(appliedPaths(rep), "AGENTS.md") {
+		t.Error("applied does not report AGENTS.md's projection region")
 	}
 }
 
@@ -699,6 +724,11 @@ func TestApplyKernelOwnedFileAlreadyCurrentIsNotRewritten(t *testing.T) {
 // README.md, AGENTS.md, CONTRIBUTING.md and go.mod are the operator's
 // the moment they exist. go.mod in particular carries the repository's
 // dependency graph, and the kernel must never rewrite it.
+//
+// AGENTS.md alone also carries a declared projection: its whole-file
+// create-if-missing is skipped exactly like the other three, but the
+// kernel-owned region below the operator's prose is not create-if-
+// missing (spec 5.2) and is checked separately, by prefix.
 func TestApplyNeverTouchesAnOperatorOwnedFile(t *testing.T) {
 	root := adoptionFixture(t)
 	operator := map[string]string{
@@ -719,7 +749,17 @@ func TestApplyNeverTouchesAnOperatorOwnedFile(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 	for rel, want := range operator {
-		if got := string(readBytes(t, root, rel)); got != want {
+		got := string(readBytes(t, root, rel))
+		if rel == "AGENTS.md" {
+			if !strings.HasPrefix(got, want) {
+				t.Errorf("AGENTS.md prose was rewritten:\ngot  %q\nwant prefix %q", got, want)
+			}
+			if !slices.Contains(appliedPaths(rep), rel) {
+				t.Error("applied does not report AGENTS.md's projection region")
+			}
+			continue
+		}
+		if got != want {
 			t.Errorf("%s was rewritten:\ngot  %q\nwant %q", rel, got, want)
 		}
 		if slices.Contains(appliedPaths(rep), rel) {
@@ -830,6 +870,12 @@ func TestApplyRefreshRollsBackWithTheTransaction(t *testing.T) {
 // kernel-owned file added to initcmd alone would be regenerated by
 // --force and silently kept stale by apply — the ownership drift this
 // milestone already had to fix once.
+//
+// AGENTS.md is operator-owned by this same declaration, so its stale
+// prose is kept exactly like the other operator files — but it alone
+// also carries a declared projection, whose kernel-owned region is
+// appended below that stale prose regardless (spec 5.2), so it is
+// checked by prefix and is expected in applied as well as skipped.
 func TestApplyHonorsInitcmdOwnershipForEveryCoreFile(t *testing.T) {
 	root := adoptionFixture(t)
 	const stale = "# stale copy from an older kernel\n"
@@ -858,6 +904,18 @@ func TestApplyHonorsInitcmdOwnershipForEveryCoreFile(t *testing.T) {
 			}
 			if op := appliedOp(rep, rel); op != "write" {
 				t.Errorf("applied op for kernel-owned %s = %q, want %q", rel, op, "write")
+			}
+			continue
+		}
+		if rel == "AGENTS.md" {
+			if !bytes.HasPrefix(got, []byte(stale)) {
+				t.Errorf("initcmd declares %s the operator's, but apply overwrote its prose:\ngot  %q\nwant prefix %q", rel, got, stale)
+			}
+			if !slices.Contains(appliedPaths(rep), rel) {
+				t.Error("applied does not report AGENTS.md's projection region")
+			}
+			if !slices.Contains(skippedPaths(rep), rel) {
+				t.Errorf("skipped = %v, want AGENTS.md's stale prose kept and reported", rep.Skipped)
 			}
 			continue
 		}

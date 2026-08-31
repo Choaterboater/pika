@@ -45,6 +45,8 @@ import (
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/initcmd"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/repopath"
+	"github.com/Choaterboater/pika/internal/skills"
 	"github.com/Choaterboater/pika/internal/txn"
 	"github.com/Choaterboater/pika/internal/version"
 	"github.com/goccy/go-yaml"
@@ -248,6 +250,33 @@ func Run(opts RunOptions) (Report, error) {
 	if err != nil {
 		return report, fmt.Errorf("apply: applied contract failed to load: %w", err)
 	}
+
+	// The four canonical skills and their declared projections go
+	// through skills.Install exactly as `pika init` uses it: create the
+	// canonical skill only where it is missing (apply's create-if-missing
+	// path, spec 5.1 — never reset, since apply has no --reset-docs of
+	// its own), then regenerate the projection region a declared harness
+	// reads. This runs before gate 1, which verifies the same projection
+	// and would otherwise fail an apply that is supposed to produce it.
+	skillsRoot, err := repopath.At(root)
+	if err != nil {
+		return report, fmt.Errorf("apply: %w", err)
+	}
+	skillsSt, err := skills.Install(skillsRoot, applied, resolved, false)
+	if err != nil {
+		return report, fmt.Errorf("apply: install canonical skills: %w", err)
+	}
+	for _, s := range skillsSt.Skills {
+		if s.Written {
+			report.Applied = append(report.Applied, Applied{Op: string(txn.OpCreate), Path: s.Path})
+		}
+	}
+	for _, p := range skillsSt.Projections {
+		if p.Written {
+			report.Applied = append(report.Applied, Applied{Op: string(txn.OpWrite), Path: p.Path})
+		}
+	}
+
 	exit, output, warnings := checks.Gate1(root, applied, resolved)
 	report.Gate1 = Gate1{Pass: exit == 0, Output: output, Warnings: warnings}
 

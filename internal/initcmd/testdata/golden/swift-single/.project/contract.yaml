@@ -17,5 +17,9 @@ github:
   merge: squash
 evidence:
   publish: sanitized
+skills:
+  projections:
+  - harness: codex
+    path: AGENTS.md
 exceptions: []
 extensions: {}

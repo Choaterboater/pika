@@ -120,9 +120,28 @@ func TestSkillsInstallKeepsOperatorTextOutsideTheRegion(t *testing.T) {
 	if !bytes.Equal(doc, again) {
 		t.Errorf("a second install changed the file:\n%s", again)
 	}
-	if n := strings.Count(string(again), "<!-- pika:skills:begin -->"); n != 1 {
+	// A marker only counts as a whole line (region.go's markerLines),
+	// because prose may legitimately quote the marker syntax inside a
+	// sentence — project-maintain's own skill does, to explain what a
+	// region looks like. A raw substring count would mistake that quote
+	// for a second region.
+	if n := countMarkerLines(again, "<!-- pika:skills:begin -->"); n != 1 {
 		t.Errorf("region count = %d, want 1", n)
 	}
+}
+
+// countMarkerLines counts lines whose entire content is marker — the
+// same test region.go's markerLines applies. A substring search would
+// also match marker quoted inside a sentence, which project-maintain's
+// own skill does deliberately, to explain the syntax it names.
+func countMarkerLines(doc []byte, marker string) int {
+	n := 0
+	for _, line := range strings.Split(string(doc), "\n") {
+		if line == marker {
+			n++
+		}
+	}
+	return n
 }
 
 func TestSkillsCheckFailsOnAStaleProjection(t *testing.T) {
@@ -206,9 +225,9 @@ func TestSkillsCheckFailsOnAHandEditedRegion(t *testing.T) {
 }
 
 // The canonical skill is the operator's. `pika skills install` writes one
-// that is missing and keeps one that was changed; only --force replaces
-// it, and the report says so either way.
-func TestSkillsInstallNeedsForceToReplaceAnEditedSkill(t *testing.T) {
+// that is missing and keeps one that was changed; only --reset-docs
+// replaces it, and the report says so either way.
+func TestSkillsInstallNeedsResetDocsToReplaceAnEditedSkill(t *testing.T) {
 	dir := skillsProject(t, "")
 	if code, _, errb := runSkillsIn(t, dir, "install"); code != 0 {
 		t.Fatalf("install exit = %d; stderr %s", code, errb)
@@ -227,31 +246,31 @@ func TestSkillsInstallNeedsForceToReplaceAnEditedSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(got) != mine {
-		t.Fatalf("install overwrote an edited skill without --force:\n%s", got)
+		t.Fatalf("install overwrote an edited skill without --reset-docs:\n%s", got)
 	}
 	if _, out, _ := runSkillsIn(t, dir); !strings.Contains(out, "edited") {
 		t.Errorf("report does not say the skill was edited:\n%s", out)
 	}
 
-	if code, out, errb := runSkillsIn(t, dir, "install", "--force"); code != 0 {
-		t.Fatalf("forced install exit = %d; stdout %s stderr %s", code, out, errb)
+	if code, out, errb := runSkillsIn(t, dir, "install", "--reset-docs"); code != 0 {
+		t.Fatalf("reset-docs install exit = %d; stdout %s stderr %s", code, out, errb)
 	}
 	got, err = os.ReadFile(skill)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) == mine {
-		t.Fatal("--force did not replace the edited skill")
+		t.Fatal("--reset-docs did not replace the edited skill")
 	}
 }
 
-func TestSkillsForceIsRejectedOutsideInstall(t *testing.T) {
+func TestSkillsResetDocsIsRejectedOutsideInstall(t *testing.T) {
 	dir := skillsProject(t, "")
-	code, out, errb := runSkillsIn(t, dir, "check", "--force")
+	code, out, errb := runSkillsIn(t, dir, "check", "--reset-docs")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stdout %s stderr %s", code, out, errb)
 	}
-	if !strings.Contains(errb, "--force applies only to") {
+	if !strings.Contains(errb, "--reset-docs applies only to") {
 		t.Errorf("stderr does not explain the refusal: %s", errb)
 	}
 }

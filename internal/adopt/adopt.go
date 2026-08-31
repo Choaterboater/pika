@@ -320,8 +320,11 @@ func detectedProfiles(languages []string) []string {
 
 // buildDraft composes the full draft contract: schema 1, detected profiles,
 // one packages entry per discovered package, commands mapped from the
-// discovered checks where verbs match contract slots, and the M1 defaults
-// for GitHub merge and evidence policy.
+// discovered checks where verbs match contract slots, the M1 defaults
+// for GitHub merge and evidence policy, and the same default skills
+// projection `pika init` declares — codex reading AGENTS.md — since
+// `pika apply` creates AGENTS.md for an adopted repository exactly as
+// `pika init` does.
 func buildDraft(repoRoot string, inv *discover.Inventory, detected []string) *contract.Contract {
 	topology := "single"
 	if len(inv.Packages) > 1 {
@@ -335,6 +338,7 @@ func buildDraft(repoRoot string, inv *discover.Inventory, detected []string) *co
 		Commands:   map[string]string{},
 		GitHub:     contract.GitHub{Merge: "squash"},
 		Evidence:   contract.Evidence{Publish: "sanitized"},
+		Skills:     &contract.Skills{Projections: []contract.Projection{{Harness: "codex", Path: "AGENTS.md"}}},
 		Extensions: map[string]any{},
 	}
 	for _, p := range inv.Packages {

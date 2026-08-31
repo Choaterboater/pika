@@ -40,6 +40,8 @@ import (
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/discover"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/repopath"
+	"github.com/Choaterboater/pika/internal/skills"
 	"github.com/Choaterboater/pika/internal/version"
 
 	"github.com/goccy/go-yaml"
@@ -234,6 +236,37 @@ func Run(opts InitOptions) (*Manifest, error) {
 	}
 	written = append(written, genFile{path: lockRel, kernel: true})
 
+	// The four canonical skills and the projections declared for them
+	// go through skills.Install rather than the genFile loop above: a
+	// skill is operator-owned exactly like README (create-if-missing,
+	// --reset-docs restores it — resetDocs is that same flag, not a
+	// second meaning for --force), but the projection it feeds is a
+	// region spliced into a file that may already carry an operator's
+	// own prose above it, which a plain create-if-missing write cannot
+	// express. skills.Install is the one implementation of both halves.
+	root, err := repopath.At(dir)
+	if err != nil {
+		return nil, fmt.Errorf("pika init: %w", err)
+	}
+	loaded, err := contract.Load(contractPath)
+	if err != nil {
+		return nil, fmt.Errorf("pika init: reload written contract: %w", err)
+	}
+	st, err := skills.Install(root, loaded, resolved, opts.ResetDocs)
+	if err != nil {
+		return nil, fmt.Errorf("pika init: %w", err)
+	}
+	for _, s := range st.Skills {
+		if s.Written {
+			written = append(written, genFile{path: s.Path})
+		}
+	}
+	for _, p := range st.Projections {
+		if p.Written {
+			written = append(written, genFile{path: p.Path})
+		}
+	}
+
 	return &Manifest{Files: filePaths(written), Commands: commands}, nil
 }
 
@@ -422,9 +455,14 @@ func buildContract(name string, selection []string, commands map[string]string) 
 		Packages: map[string]contract.Package{
 			name: {Root: ".", Profiles: slices.Clone(selection)},
 		},
-		Commands:   commands,
-		GitHub:     contract.GitHub{Merge: "squash"},
-		Evidence:   contract.Evidence{Publish: "sanitized"},
+		Commands: commands,
+		GitHub:   contract.GitHub{Merge: "squash"},
+		Evidence: contract.Evidence{Publish: "sanitized"},
+		// codex is the one harness whose file init already scaffolds by
+		// default (AGENTS.md). A harness with no default file gets no
+		// default projection; declaring one for a file init never
+		// writes would fail gate 1 on every fresh scaffold.
+		Skills:     &contract.Skills{Projections: []contract.Projection{{Harness: "codex", Path: "AGENTS.md"}}},
 		Extensions: map[string]any{},
 	}
 	data, err := yaml.Marshal(c)
@@ -638,6 +676,14 @@ func KernelOwnsCore(rel string) bool {
 // project name and language id, keyed by repository-relative slash
 // path. A template missing from the pack is a hard error, so callers
 // fail before writing anything.
+//
+// The four canonical skills are not among them: they carry no template
+// variables and their ownership split (operator-owned skill file,
+// kernel-owned projection region spliced into an otherwise
+// operator-owned host file) does not fit a plain create-if-missing
+// genFile — skills.Install is the one implementation of that shape, and
+// both Run and `pika apply` call it once the rest of the scaffold is on
+// disk.
 func CoreFiles(lang, name string) (map[string][]byte, error) {
 	data := tmplData{Name: name, PikaRef: pikaRef(), CISteps: ciSteps(lang)}
 	out := make(map[string][]byte, len(coreTemplateTargets))
@@ -751,10 +797,18 @@ func writeFile(root, rel string, data []byte) error {
 	return nil
 }
 
-// filePaths returns the manifest paths, sorted.
+// filePaths returns the manifest paths, sorted and deduplicated: a
+// projection can regenerate the region inside a file the genFile loop
+// already wrote whole (AGENTS.md, for instance), and the manifest
+// reports that file once, not once per write that touched it.
 func filePaths(files []genFile) []string {
+	seen := make(map[string]bool, len(files))
 	paths := make([]string, 0, len(files))
 	for _, f := range files {
+		if seen[f.path] {
+			continue
+		}
+		seen[f.path] = true
 		paths = append(paths, f.path)
 	}
 	slices.Sort(paths)

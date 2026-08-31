@@ -23,10 +23,10 @@ pika init --profile go --name my-service
 | `--name` | Project name (default: directory name, kebab-cased) |
 | `--module` | Go module path (default: derived from name). Inert under a bare `--force` — see below |
 | `--force` | Regenerate the kernel-owned files in an already-initialized repository; leaves your own alone |
-| `--reset-docs` | With `--force` only: also restore the scaffolded `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.gitignore` and language scaffold over the repository's own |
+| `--reset-docs` | With `--force` only: also restore the scaffolded `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.gitignore`, the four canonical skills and language scaffold over the repository's own |
 | `--json` | Emit the created-file manifest as JSON |
 
-What you get: `.project/contract.yaml` (the project contract), `.project/profiles.lock`, `.project/exceptions.yaml`, a `docs/` spine, `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, a GitHub Actions workflow, a `.gitignore` protecting `.project/state/`, and a language-owned source scaffold.
+What you get: `.project/contract.yaml` (the project contract, declaring a codex projection to `AGENTS.md`), `.project/profiles.lock`, `.project/exceptions.yaml`, a `docs/` spine, `AGENTS.md` (carrying that projection), `README.md`, `CONTRIBUTING.md`, four canonical skills under `.agents/skills/` ([§16](#16-install-the-agent-instructions-pika-skills)), a GitHub Actions workflow, a `.gitignore` protecting `.project/state/`, and a language-owned source scaffold.
 
 The scaffolded workflow pins the kernel that judges the repository to the pika
 release that scaffolded it (`PIKA_REF`), rather than installing `@latest`. A
@@ -52,7 +52,7 @@ for.
 
 | Rewritten by `--force` (kernel-owned) | Left exactly as it is (yours) |
 |---|---|
-| `.project/contract.yaml` | `README.md`, `AGENTS.md`, `CONTRIBUTING.md` |
+| `.project/contract.yaml` | `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.agents/skills/*` |
 | `.project/profiles.lock` | `.gitignore` and the `docs/` spine placeholders |
 | `.github/pull_request_template.md` | the language scaffold — `go.mod`, `cmd/<name>/main.go`, `Package.swift`, … |
 | `.github/workflows/ci.yml` | `.project/exceptions.yaml` — never rewritten, not even by `--reset-docs` |
@@ -91,8 +91,8 @@ operation.
 
 ```sh
 pika init --force --reset-docs   # overwrites README.md, AGENTS.md, CONTRIBUTING.md,
-                                 # .gitignore, the docs spine placeholders and
-                                 # the language scaffold
+                                 # .gitignore, the four canonical skills, the docs
+                                 # spine placeholders and the language scaffold
 ```
 
 It requires `--force` (alone it exits 2, because by itself it could only be a
@@ -158,10 +158,13 @@ This promotes the drafts transactionally:
 - contract and lock become live
 - `exceptions.yaml` is written
 - missing core files (AGENTS.md, CONTRIBUTING.md, PR template, CI workflow) are created from templates
+- the four canonical skills under `.agents/skills/` are written where missing, and the declared projection (AGENTS.md, by default) is regenerated to cite them — the same install `pika skills install` performs ([§16](#16-install-the-agent-instructions-pika-skills))
 - **your own files are never overwritten** — `README.md`, `AGENTS.md`,
-  `CONTRIBUTING.md`, `go.mod` and the language scaffold are create-if-missing,
-  and a file you already have is reported as `already exists; kept the
-  existing file`
+  `CONTRIBUTING.md`, `go.mod`, the canonical skills and the language scaffold
+  are create-if-missing, and a file you already have is reported as `already
+  exists; kept the existing file`. AGENTS.md's declared projection is the one
+  exception: the region it carries is kernel-owned and is refreshed
+  regardless, even inside a file whose prose you already wrote
 - the two **kernel-owned** files — `.github/pull_request_template.md` and
   `.github/workflows/ci.yml` — are compared against the current template and
   refreshed when they differ, because a copy left behind by an older kernel is
@@ -1023,6 +1026,14 @@ file under `.project/state/locks/` by hand and re-run. This is a known gap:
 
 ## 16. Install the agent instructions (`pika skills`)
 
+`pika init` and `pika apply` already write the canonical skills and
+regenerate their declared projections as part of scaffolding — this
+section is the standalone surface for the same install, and the one
+that matters once a repository already exists: rerun it after editing a
+skill template's own source, after a pack's `agent-guidance` changes,
+or whenever gate 1 names a stale or tampered projection and tells you
+to.
+
 ```sh
 pika skills             # report: what is installed, what is projected, what is stale or tampered
 pika skills install     # write the canonical skills, regenerate every declared projection
@@ -1036,12 +1047,15 @@ pika skills check --global      # projections
 How to drive pika is written once, in the canonical, harness-neutral location:
 
 ```
-.agents/skills/project-work/SKILL.md     running, repairing and resuming work
-.agents/skills/project-review/SKILL.md   what counts as evidence, and what a reviewer must not do
+.agents/skills/project-work/SKILL.md       running, repairing and resuming work
+.agents/skills/project-research/SKILL.md   reading the contract, the lock, the exceptions record
+.agents/skills/project-review/SKILL.md     what counts as evidence, and what a reviewer must not do
+.agents/skills/project-maintain/SKILL.md   drift, digests, doctor, and the upgrade path
 ```
 
 `pika skills install` writes those files when they are missing. It never
-overwrites one you have edited without `--force`: they are yours.
+overwrites one you have edited without `--reset-docs`, the same flag
+`pika init --reset-docs` uses for README and the rest: they are yours.
 
 ### Projections, and why they carry a digest
 
@@ -1355,8 +1369,10 @@ pika check --all         # gate 1 goes green again
 ```
 
 `--force` rewrites only what the kernel owns and leaves your `README.md`,
-`AGENTS.md`, `CONTRIBUTING.md`, `.gitignore`, language scaffold and
-`.project/exceptions.yaml` exactly as they are.
+`AGENTS.md`, `CONTRIBUTING.md`, `.gitignore`, canonical skills, language
+scaffold and `.project/exceptions.yaml` exactly as they are — except for a
+declared projection's own region, which is kernel-owned regardless of
+`--force` and can move if its sources (a skill, or a pack's guidance) did.
 [§1 has the full split](#--force-regenerates-more-than-the-lock), including
 why `--module` is inert here. Until M3 this command was the destructive
 operation the older text on this page warned about; `--reset-docs` is now the

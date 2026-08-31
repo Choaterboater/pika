@@ -268,6 +268,12 @@ func readRel(t *testing.T, dir, rel string) string {
 // or entry point the operator has written is theirs, and restoring the
 // scaffold's placeholder text over it destroys work that no other copy of
 // the file can be recovered from.
+//
+// AGENTS.md is the one file in operatorOwnedEdits that also carries a
+// declared projection: the region below the operator's prose is
+// kernel-owned and --force regenerates it unconditionally (spec 5.2),
+// so AGENTS.md is checked by prefix rather than full equality; the
+// other three files carry no projection and are checked byte for byte.
 func TestForcePreservesOperatorOwnedFiles(t *testing.T) {
 	dir := scaffoldGo(t)
 	for rel, content := range operatorOwnedEdits {
@@ -277,7 +283,14 @@ func TestForcePreservesOperatorOwnedFiles(t *testing.T) {
 		t.Fatalf("force init: %v", err)
 	}
 	for rel, want := range operatorOwnedEdits {
-		if got := readRel(t, dir, rel); got != want {
+		got := readRel(t, dir, rel)
+		if rel == "AGENTS.md" {
+			if !strings.HasPrefix(got, want) {
+				t.Errorf("--force rewrote operator prose in %s:\n got: %q\nwant prefix: %q", rel, got, want)
+			}
+			continue
+		}
+		if got != want {
 			t.Errorf("--force rewrote operator-owned %s:\n got: %q\nwant: %q", rel, got, want)
 		}
 	}

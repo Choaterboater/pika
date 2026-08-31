@@ -4,8 +4,11 @@
 //
 // The two halves have different owners, and that split is the whole
 // design. A canonical skill is OPERATOR-OWNED — the kernel writes one
-// only when it is missing, and overwrites one only under --force, for
-// the same reason `pika init` stopped overwriting README and AGENTS.md.
+// only when it is missing, and overwrites one only under --reset-docs,
+// for the same reason `pika init --force` alone leaves README and
+// AGENTS.md untouched: --force regenerates the kernel-owned files, and
+// a skill is not one of them.
+//
 // A projection is KERNEL-OWNED — a generated copy of guidance that
 // already exists somewhere else, regenerated freely and never
 // hand-edited.
@@ -225,10 +228,14 @@ func Inspect(root *repopath.Root, c *contract.Contract, resolved *profiles.Resol
 // Install writes every canonical skill the repository is missing, then
 // regenerates every declared projection from the skills on disk.
 //
-// force is only ever about the canonical half: it authorizes overwriting
-// a skill the operator has edited. Projections need no such flag —
-// nothing the kernel regenerates there was ever the operator's.
-func Install(root *repopath.Root, c *contract.Contract, resolved *profiles.Resolved, force bool) (*Status, error) {
+// resetDocs is only ever about the canonical half, and it is the same
+// flag `pika init --reset-docs` uses for README, AGENTS.md and the rest:
+// skills are operator-owned once written, so a plain call preserves an
+// edit exactly as init and apply already preserve one, and resetDocs is
+// the one opt-in that restores the shipped template over it. Projections
+// need no such flag — nothing the kernel regenerates there was ever the
+// operator's.
+func Install(root *repopath.Root, c *contract.Contract, resolved *profiles.Resolved, resetDocs bool) (*Status, error) {
 	written := map[string]bool{}
 	for _, s := range Shipped() {
 		target := root.Skill(s.Name)
@@ -239,7 +246,7 @@ func Install(root *repopath.Root, c *contract.Contract, resolved *profiles.Resol
 			return nil, fmt.Errorf("skills: read %s: %w", relTo(root, target), err)
 		case string(current) == string(s.Body):
 			continue
-		case !force:
+		case !resetDocs:
 			// Reported by skillStatuses as edited-and-kept; refusing
 			// here rather than failing keeps `pika skills install`
 			// useful in a repository whose skills were customized on
@@ -351,7 +358,7 @@ func skillStatuses(root *repopath.Root, installed []canonical, written map[strin
 			st.State = StateInstalled
 		default:
 			st.State = StateEdited
-			st.Detail = "differs from the skill this pika ships; projections are generated from this file, and `pika skills install --force` would replace it"
+			st.Detail = "differs from the skill this pika ships; projections are generated from this file, and `pika skills install --reset-docs` would replace it"
 		}
 		out = append(out, st)
 	}

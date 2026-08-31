@@ -127,7 +127,11 @@ func TestForeignProseInTheGlobalCodexFileSurvivesAnInstall(t *testing.T) {
 	if !strings.HasSuffix(string(doc), below) {
 		t.Errorf("prose below the region did not survive a regeneration:\n%s", doc)
 	}
-	if n := strings.Count(string(doc), "<!-- pika:skills:begin -->"); n != 1 {
+	// Whole-line marker occurrences only (region.go's markerLines):
+	// project-maintain's own prose legitimately quotes the marker
+	// syntax inside a sentence, which a raw substring count would
+	// mistake for a second region.
+	if n := countMarkerLines([]byte(doc), "<!-- pika:skills:begin -->"); n != 1 {
 		t.Errorf("region count = %d, want 1", n)
 	}
 }
@@ -278,7 +282,7 @@ func TestSkillsGlobalRefusesFlagsThatDoNotApplyToIt(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"install", "--global", "--force", "--home", home}, "--force does not apply to --global"},
+		{[]string{"install", "--global", "--reset-docs", "--home", home}, "--reset-docs does not apply to --global"},
 		{[]string{"install", "--global", "--root", home, "--home", home}, "--root does not apply to --global"},
 		{[]string{"install", "--home", home}, "--home applies only with --global"},
 	} {

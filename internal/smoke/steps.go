@@ -100,21 +100,17 @@ func stepInit(h *harness) error {
 	return c.err()
 }
 
-// projectionBlock declares AGENTS.md as a harness projection. `pika
-// init` scaffolds no skills block — which harness files a repository
-// generates is the repository's choice — so a repository that is going
-// to have one has to say so first.
-const projectionBlock = "skills:\n  projections:\n  - harness: codex\n    path: AGENTS.md\n"
-
 const (
 	beginMarker = "<!-- pika:skills:begin -->"
 	endMarker   = "<!-- pika:skills:end -->"
 )
 
-// stepSkills covers the generated half of a repository: `pika skills
-// install` writes a kernel-owned region into the file a harness reads,
-// the ladder is green with it there, and an edit INSIDE the markers
-// fails `pika check` naming the file.
+// stepSkills covers the generated half of a repository: `pika init`
+// already scaffolds a skills block declaring AGENTS.md as a codex
+// projection and installs the four canonical skills, `pika skills
+// install` is idempotent over that state, the ladder is green with the
+// result, and an edit INSIDE the markers fails `pika check` naming the
+// file.
 //
 // The tamper case is the one worth running the product for. The region
 // asserts in its own header that it is kernel-owned; without a gate that
@@ -127,16 +123,6 @@ func stepSkills(h *harness) error {
 	c := &check{}
 	dir, _, err := h.scaffold("skills")
 	if err != nil {
-		return err
-	}
-	doc, err := readRepo(dir, ".project/contract.yaml")
-	if err != nil {
-		return err
-	}
-	if strings.Contains(doc, "\nskills:") {
-		return fmt.Errorf("`pika init` now scaffolds its own skills block; this step appends one and would create a duplicate key:\n%s", doc)
-	}
-	if err := writeRepo(dir, ".project/contract.yaml", doc+projectionBlock); err != nil {
 		return err
 	}
 

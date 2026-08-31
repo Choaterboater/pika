@@ -68,7 +68,12 @@ func TestE2EAdoptApply(t *testing.T) {
 	}
 	var sawContract bool
 	for _, a := range rep.Applied {
-		if a.Op != "create" {
+		// AGENTS.md alone appears twice: once as a plain "create" (the
+		// whole file did not exist), and once as a "write" for the
+		// declared codex projection's region, which is kernel-owned and
+		// spliced in regardless of the file's own create-if-missing
+		// state (spec 5.2).
+		if a.Op != "create" && !(a.Path == "AGENTS.md" && a.Op == "write") {
 			t.Errorf("op %q on %s, want create", a.Op, a.Path)
 		}
 		if a.Path == ".project/contract.yaml" {

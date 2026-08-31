@@ -195,7 +195,11 @@ func TestForeignProseInTheGlobalCodexFileSurvivesAnInstall(t *testing.T) {
 	if !strings.HasPrefix(string(doc), foreign) || !strings.HasSuffix(string(doc), trailing) {
 		t.Fatalf("operator prose around the region did not survive a regeneration:\n%s", doc)
 	}
-	if n := strings.Count(string(doc), beginMarker); n != 1 {
+	// markerLines is the same whole-line matcher region.go's splice
+	// uses: project-maintain's own prose legitimately quotes the marker
+	// syntax inside a sentence, which a raw substring count would
+	// mistake for a second region.
+	if n := len(markerLines(doc, beginMarker)); n != 1 {
 		t.Errorf("region count = %d, want 1: a regeneration accumulated regions", n)
 	}
 }
