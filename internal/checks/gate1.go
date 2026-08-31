@@ -67,6 +67,39 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 	return 0, "", warnings
 }
 
+// LockDisagreementCauses states what a digest disagreement between a
+// repository's lock and this binary's embedded packs does and does not
+// prove, and LockDisagreementRemedy is the one action that tells the two
+// causes apart. They are exported because `pika doctor` reports the same
+// finding and must say the same thing about it.
+//
+// The message they replace named one cause and prescribed its remedy:
+// "regenerate the lock with `pika init --force`". That remedy is correct
+// when the lock is the stale side and destructive when the binary is —
+// it rewrites a correct lock to pin whatever older packs the running
+// build happens to carry, and the repository is downgraded silently,
+// green. The digests cannot distinguish the two cases: they are two
+// numbers that differ, and nothing in either says which was written
+// later. So the gate states the disagreement, prints both numbers, names
+// both causes, and hands over the comparison that settles it. This is
+// the discipline `pika recover` already applies to a lease it cannot
+// judge and `doctor` applies to a holder it cannot verify: a check that
+// cannot tell two causes apart must not prescribe the destructive one as
+// if it were the only one.
+//
+// Both are whole sentences, capitalized: they follow the finding's own
+// sentence in the gate's message, and they are the operator's paragraph,
+// not an error prefix. LockDisagreementAction is the same instruction at
+// the length a report column can carry — doctor prints the full prose in
+// the finding's detail, so its remediation line summarizes rather than
+// repeats. Keeping all three here is what stops the short form from
+// drifting into advice the long form does not give.
+const (
+	LockDisagreementCauses = "The lock and this pika disagree about the pack bytes, and the digests alone cannot say which side is behind: either the lock is stale (the packs moved on after it was written) or this binary is stale (the lock is correct and this pika predates it)."
+	LockDisagreementRemedy = "Compare `pika version` here against the pika that wrote the lock, or read the lock's provenance in version control, to establish which side is behind; only if the lock is the stale side, regenerate it with `pika init --force` — running that on a stale binary rewrites a correct lock to pin older packs and downgrades the repository silently."
+	LockDisagreementAction = "run `pika version` here and on the pika that wrote the lock — the build whose registry digest matches the lock is the one that wrote it; regenerate with `pika init --force` only if the lock is the stale side"
+)
+
 // CheckLock verifies .project/profiles.lock against the contract's
 // profile selection (spec §16, §5.3): the lock must exist, must pin
 // every contract profile ref at the contract's version, every pinned
@@ -90,6 +123,13 @@ func CheckLock(repoRoot string, c *contract.Contract) error {
 		return fmt.Errorf("profiles.lock: %w", err)
 	}
 	var problems []string
+	// disagreement records that at least one problem is a digest this
+	// binary and the lock state differently, which is the finding whose
+	// cause the kernel cannot determine. The pack-version and
+	// missing-pin problems above it are contract-versus-lock: both sides
+	// are in the repository, so regenerating is unambiguously right
+	// there and stays prescribed.
+	disagreement := false
 	for _, ref := range ProfileRefs(c) {
 		name, wantVersion, ok := strings.Cut(ref, "@")
 		if !ok || name == "" || wantVersion == "" {
@@ -111,19 +151,26 @@ func CheckLock(repoRoot string, c *contract.Contract) error {
 			continue
 		}
 		if pinned.Digest != digest {
-			problems = append(problems, fmt.Sprintf("pack %s digest %s in profiles.lock does not match the embedded pack %s; regenerate the lock with `pika init --force`", name, pinned.Digest, ref))
+			problems = append(problems, fmt.Sprintf("pack %s is pinned in profiles.lock at digest %s, and this pika's embedded pack %s is %s", name, pinned.Digest, ref, digest))
+			disagreement = true
 		}
 	}
 	// The top-level digest covers the entire embedded registry, not just
-	// the selected packs, so it is the field that catches a lock carried
-	// in from another checkout or written by a pika built from different
-	// pack bytes. profiles.WriteLock is the only writer, so a mismatch
-	// is drift or a hand edit — never a state the kernel produced.
+	// the selected packs, so it is the field that catches a lock written
+	// by a pika built from different pack bytes — including a pika newer
+	// than the one running now. profiles.WriteLock is the only writer,
+	// so a difference means the two builds carry different packs (or the
+	// lock was hand-edited); it never means the lock is the wrong side.
 	if want := profiles.PackDigest(); lock.Digest != want {
-		problems = append(problems, fmt.Sprintf("registry digest %q in profiles.lock does not match this pika's embedded pack registry digest %s; regenerate the lock with `pika init --force`", lock.Digest, want))
+		problems = append(problems, fmt.Sprintf("profiles.lock records registry digest %s, and this pika's embedded pack registry is %s", lock.Digest, want))
+		disagreement = true
 	}
 	if len(problems) > 0 {
-		return errors.New("profiles.lock: " + strings.Join(problems, "; "))
+		msg := "profiles.lock: " + strings.Join(problems, "; ")
+		if disagreement {
+			msg += ". " + LockDisagreementCauses + " " + LockDisagreementRemedy
+		}
+		return errors.New(msg)
 	}
 	return nil
 }

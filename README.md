@@ -19,9 +19,19 @@ The repository contract (`.project/contract.yaml`) is the project-level source o
 
 ## Status
 
-> ### Upgrade note — regenerate `profiles.lock`
+> ### Upgrade note — a `profiles.lock` your pika rejects
 >
-> Milestones 1.5, 2 and 3 each rotated `profiles.PackDigest()`. **Every `.project/profiles.lock` written by an earlier pika build now fails gate 1** with a digest mismatch naming the pack — the lock is doing its job, the packs really did change. M3's rotation came from folding each pack's templates into its digest, which is what finally lets an adopted repository be told its scaffolded CI workflow is out of date. Regenerate:
+> Milestones 1.5, 2 and 3 each rotated `profiles.PackDigest()`, so a `.project/profiles.lock` written on one side of those changes fails gate 1 against a binary from the other. **Two causes produce that one symptom, and they have opposite remedies:** the lock is stale (the packs moved on), or the binary is stale (the lock is correct and the pika you are running predates it). Regenerating on a stale binary rewrites a correct lock to pin older packs and then reports green — a silent downgrade. The gate no longer guesses; neither should you.
+>
+> Establish which side is behind first. `pika version` prints the pack registry digest the lock is compared against, so the binary that agrees with the lock is the one that wrote it:
+>
+> ```sh
+> pika version --root .                  # does this binary's registry match the lock?
+> which -a pika                          # any other pika here? ask each one
+> git log -1 -- .project/profiles.lock   # who wrote the lock, and when
+> ```
+>
+> If another build agrees with the lock, the failing pika is the old one — rebuild or reinstall it (`go build ./cmd/pika`) and change nothing in the repository. Only if the lock is genuinely the stale side:
 >
 > ```sh
 > git status --porcelain   # clean: the diff below is then only the command's work

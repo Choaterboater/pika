@@ -296,7 +296,7 @@ What it inspects:
 |---|---|
 | root | The resolved repository root, and how it was found (`contract`, `draft`, `git`) |
 | contract | Schema version and selected profiles, or the parse error |
-| lock | Whether `profiles.lock` pins the contract's profiles at digests matching this binary's embedded packs |
+| lock | Whether `profiles.lock` pins the contract's profiles at digests matching this binary's embedded packs. Both green and red print the registry digest — red prints the lock's too, and names both reasons two digests can differ, because the kernel cannot tell a stale lock from a stale binary |
 | exceptions | Whether `.project/exceptions.yaml` loads and every record is complete |
 | envelope | The grants in `.project/state/envelope.yaml`, or a warning that agents will be denied |
 | recovery | Whether a transaction never finished — who holds the lock, and whether that process is still running. It points at [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) rather than acting |
@@ -311,7 +311,7 @@ $ pika doctor
 root  /home/you/pika (contract)
 
 ok    contract       schema 1, profiles [core@1 go@1]
-ok    lock           pinned digests match the embedded registry
+ok    lock           pinned digests match this pika's embedded registry f34a39847227902b0b36332796fddacdb4fdb07d03d5c8a8bcaed8c454f59e9e
 ok    exceptions     exceptions record loads
 warn  envelope       no capability envelope at /home/you/pika/.project/state/envelope.yaml
                      → run "pika authorize --scope project"; without it every MCP tool is denied, reads included
@@ -453,16 +453,63 @@ Only the **MCP surface** authorizes. `pika check` from your shell runs its gates
 
 ---
 
-## 8. Get help
+## 8. Get help, and identify the binary
 
 ```sh
 pika              # same as pika help
 pika help         # every command, one line each
 pika help check   # one command's usage line and flags
-pika --version
 ```
 
 The help text is generated from the dispatch table, so a command that exists is listed and a command that is listed exists. There is no second copy to fall out of date.
+
+### `pika version` identifies the build, not just the release
+
+```sh
+pika version              # release, pack registry, contract schema
+pika version --root .     # the same, for a repository elsewhere
+pika version --json
+```
+
+```
+$ cd /tmp && pika version
+pika 0.5.0
+pack registry:   f34a39847227902b0b36332796fddacdb4fdb07d03d5c8a8bcaed8c454f59e9e
+contract schema: 1 (highest supported)
+```
+
+The release number alone identifies nothing useful: what decides whether a
+binary accepts a repository is the **pack registry digest**, the same value
+`profiles.lock` records and gate 1 compares against. Two builds carrying
+different packs print different digests even when they claim the same release
+— which is the whole point, because for four milestones they did not, and a
+`0.1.0` that rejected a repository was indistinguishable from the `0.1.0` that
+had written it.
+
+Run inside a project — or pointed at one with `--root` — it adds the digest
+that repository's lock was written with, and whether it is this binary's:
+
+```
+$ pika version --root /path/to/project
+pika 0.5.0
+pack registry:   f34a39847227902b0b36332796fddacdb4fdb07d03d5c8a8bcaed8c454f59e9e
+contract schema: 1 (highest supported)
+/path/to/project/.project/profiles.lock: e824aaaa…aaaa2fdf (differs from this binary)
+```
+
+That line is arithmetic, not a verdict: it says the two numbers are equal or
+not, and nothing about which side is right. `pika check` and `pika doctor`
+are the commands that judge. It is what you run on each candidate binary when
+a lock is rejected — the build whose digest matches is the one that wrote the
+lock. See
+[Upgrading](#upgrading-a-profileslock-and-a-pika-that-disagree).
+
+`pika --version` and `pika -version` print exactly the same report.
+
+Which release a build claims is enforced against what it actually carries: a
+change to any embedded pack, template, or the contract schema ceiling fails
+`internal/version`'s surface test until the version moves with it. A release
+that silently means two different products is the defect that test exists for.
 
 ---
 
@@ -1073,27 +1120,51 @@ A usage or configuration error (exit `2`) replaces `result` with `error` and pri
 | projection targets (`AGENTS.md`, `CLAUDE.md`, …) | Generated regions inside operator-owned files; the region is kernel-owned and digested, the rest is not | Yes |
 | `review/adoption-review.md` | Human-readable adoption review | Yes |
 
-## Upgrading: `profiles.lock` written by an older pika
+## Upgrading: a `profiles.lock` and a pika that disagree
 
-M1.5, M2 and now M3 each rotated the embedded pack digests. Any
-`.project/profiles.lock` written by an earlier
-build fails gate 1 with a digest mismatch — the lock is doing its job; the
-packs really did change. M2's edits were to `go@1` (`gofmt -l .` with the new
+M1.5, M2 and M3 each rotated the embedded pack digests. Any
+`.project/profiles.lock` written on one side of those changes fails gate 1
+against a binary from the other — the lock is doing its job; the packs really
+did change. M2's edits were to `go@1` (`gofmt -l .` with the new
 `fail-on-output` flag) and `python@1` (`ruff format --check .`, and `pytest`
 in place of `python -m pytest`). M3 changed no pack YAML at all: it folded
 each pack's **templates** into its digest, so `core@1` rotated because its
 `ci.yml.tmpl` is now part of what the pack is.
 
-The failure names the pack, which is how you tell a template correction from a
-hand edit:
+The failure prints both numbers and refuses to guess which of them is behind:
 
 ```
-profiles.lock: pack core digest e824…2fdf in profiles.lock does not match the
-embedded pack core@1; regenerate the lock with `pika init --force`
+profiles.lock: profiles.lock records registry digest e824…2fdf, and this
+pika's embedded pack registry is f34a…9e9e. The lock and this pika disagree
+about the pack bytes, and the digests alone cannot say which side is behind:
+either the lock is stale (the packs moved on after it was written) or this
+binary is stale (the lock is correct and this pika predates it). Compare
+`pika version` here against the pika that wrote the lock, or read the lock's
+provenance in version control, to establish which side is behind; only if the
+lock is the stale side, regenerate it with `pika init --force` — running that
+on a stale binary rewrites a correct lock to pin older packs and downgrades
+the repository silently.
 ```
 
-The remedy is one command, and since M3 it needs no arguments and costs you
-nothing you wrote:
+**Establish which side is behind first.** The two causes have opposite
+remedies, and the destructive one is silent: `pika init --force` driven by an
+old binary rewrites a correct lock to pin whatever packs that build carries,
+and the gate then reports green on a downgraded repository.
+
+```sh
+pika version --root .    # does THIS binary's registry match the lock?
+which -a pika            # any other pika on this machine? ask each one
+git log -1 -- .project/profiles.lock   # who wrote the lock, and when
+```
+
+If the lock's digest matches some other pika you have, that build wrote it and
+the one that fails is the older one: upgrade or rebuild pika (`go build
+./cmd/pika`, or reinstall) and re-run `pika check --all`. Nothing in the
+repository needs to change.
+
+If the lock is the stale side — the packs really did move on, which is what a
+milestone upgrade looks like — the remedy is one command, and since M3 it
+needs no arguments and costs you nothing you wrote:
 
 ```sh
 git status --porcelain   # clean: the diff below is then only the command's work

@@ -326,6 +326,10 @@ var jsonCases = map[string]jsonCase{
 	// real exercise of the command — root, record, envelope — and the
 	// only one that reaches no agent and mutates no repository.
 	"resume": {args: []string{resumeEnvelopeRunID}, setup: seedFinishedRun},
+	// version identifies the binary, not the repository: pointed at a
+	// directory that is no project it reports the binary alone, and it
+	// still answers inside the envelope.
+	"version": {},
 }
 
 // writeUnadoptedRepo lays down the smallest repository `adopt` accepts:

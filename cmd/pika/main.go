@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"github.com/Choaterboater/pika/internal/cliout"
-	"github.com/Choaterboater/pika/internal/version"
 )
 
 // runFunc is the one signature every command implements. stdin is passed
@@ -173,6 +172,12 @@ var commands = []command{
 		usage:   "pika resume <work-id> [--agent <name>] [--json] [--root <dir>]",
 		run:     runResume,
 	},
+	{
+		name:    "version",
+		summary: "identify this binary: release, embedded pack registry, contract schema",
+		usage:   "pika version [--json] [--root <dir>]",
+		run:     runVersion,
+	},
 }
 
 // help is registered here rather than in the literal above because
@@ -200,16 +205,16 @@ func lookup(name string) (command, bool) {
 // dispatch routes one invocation. --version is honored only in the first
 // argument position: scanning every argument (the pre-M1.5 behavior) made
 // `pika check --version` print the version, and would have broken any
-// command taking a free-form string.
+// command taking a free-form string. The flag spellings route to the
+// registered command so all three print the same identity.
 func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		writeOverview(stdout)
 		return 0
 	}
 	switch args[0] {
-	case "--version", "-version", "version":
-		fmt.Fprintln(stdout, version.String())
-		return 0
+	case "--version", "-version":
+		return runVersion(args[1:], stdin, stdout, stderr)
 	}
 	c, ok := lookup(args[0])
 	if !ok {

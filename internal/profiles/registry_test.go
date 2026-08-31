@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -445,6 +446,35 @@ func TestEditingATemplateRotatesThePackDigest(t *testing.T) {
 	}
 	if got := PackDigest(); got == registryBefore {
 		t.Errorf("editing ci.yml.tmpl left the registry digest at %q: templates are outside PackDigest", got)
+	}
+}
+
+// The registry digest is what makes two pika builds distinguishable to a
+// repository, so a build carrying a different set of packs must not
+// produce the digest of one that carries fewer. Editing a pack is
+// covered above; this is the other way the set moves between
+// milestones, and it is the case a stale binary is in — it hashes the
+// registry it has, which is not the registry the lock was written from.
+func TestADifferentPackSetProducesADifferentRegistryDigest(t *testing.T) {
+	before := PackDigest()
+
+	shipped := embeddedPacks
+	t.Cleanup(func() { embeddedPacks = shipped })
+	extended := make(map[string]packEntry, len(shipped)+1)
+	maps.Copy(extended, shipped)
+	extended["fixture@1"] = packEntry{name: "fixture", version: "1", data: []byte("id: fixture@1\n")}
+	embeddedPacks = extended
+
+	after := PackDigest()
+	if after == before {
+		t.Fatalf("registering a pack left the registry digest at %s: two builds with different packs would be indistinguishable to every lock", after)
+	}
+
+	// And the digest is a function of the set, not of having been
+	// called twice: restoring the shipped registry restores the value.
+	embeddedPacks = shipped
+	if got := PackDigest(); got != before {
+		t.Fatalf("registry digest = %s after restoring the shipped packs, want %s", got, before)
 	}
 }
 

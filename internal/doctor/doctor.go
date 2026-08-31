@@ -206,13 +206,20 @@ func checkProfiles(rep *Report, root *repopath.Root, c *contract.Contract) *prof
 		return resolved
 	}
 	// checks.CheckLock is gate 1's implementation; reuse it so doctor and
-	// check can never disagree about lock health.
+	// check can never disagree about lock health. Its message carries
+	// both digests and both causes, so doctor is sufficient on its own:
+	// the remediation column repeats the action that tells the causes
+	// apart rather than the destructive half of it.
 	if err := checks.CheckLock(root.Dir(), c); err != nil {
-		rep.add("lock", SeverityError, err.Error(),
-			"regenerate the lock; the pinned digests no longer match the embedded packs")
+		rep.add("lock", SeverityError, err.Error(), checks.LockDisagreementAction)
 		return resolved
 	}
-	rep.add("lock", SeverityOK, "pinned digests match the embedded registry", "")
+	// A green row prints the digest too. An operator comparing two
+	// binaries needs the number from the one that passes as much as from
+	// the one that fails, and a row that says only "match" cannot be
+	// compared with anything.
+	rep.add("lock", SeverityOK,
+		fmt.Sprintf("pinned digests match this pika's embedded registry %s", profiles.PackDigest()), "")
 	return resolved
 }
 

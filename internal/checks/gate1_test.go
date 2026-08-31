@@ -156,6 +156,81 @@ func TestGate1TopLevelDigestMismatchFails(t *testing.T) {
 	}
 }
 
+// The hazard the message exists for. A lock written by a build carrying
+// a different pack set — which is every lock written by an older or a
+// newer pika — produces exactly the same digest disagreement as a lock
+// that has fallen behind. The old message named the second cause only
+// and prescribed `pika init --force`, which on a stale binary rewrites a
+// correct lock to pin older packs: the repository is downgraded, and the
+// gate then reports green. Nothing in the digests distinguishes the two,
+// so the message must not pick one.
+func TestGate1LockWrittenByADifferentPackSetNamesBothCauses(t *testing.T) {
+	root := lockFixture(t, []string{"core@1"})
+	const foreign = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tamperLock(t, root, func(m map[string]any) {
+		m["digest"] = foreign
+		m["packs"].(map[string]any)["core"].(map[string]any)["digest"] = foreign
+	})
+	exit, output := gate1Exit(root)
+	if exit != 1 {
+		t.Fatalf("Gate1 exit = %d, want 1", exit)
+	}
+
+	// Both numbers, so the operator can compare them with the other
+	// binary's without running anything else.
+	if !strings.Contains(output, foreign) || !strings.Contains(output, profiles.PackDigest()) {
+		t.Errorf("output %q must print both the lock's digest and this binary's", output)
+	}
+	// Both causes, neither asserted.
+	for _, cause := range []string{"the lock is stale", "this binary is stale"} {
+		if !strings.Contains(output, cause) {
+			t.Errorf("output %q does not name the cause %q", output, cause)
+		}
+	}
+	// The action that tells them apart.
+	if !strings.Contains(output, "`pika version`") {
+		t.Errorf("output %q does not hand the operator the comparison that settles which side is behind", output)
+	}
+	// And the destructive remedy only as the stale-lock case. Its one
+	// mention must come after the condition that scopes it, or an agent
+	// reading top-down runs it before reaching the caveat.
+	if strings.Count(output, "pika init --force") != 1 {
+		t.Fatalf("output %q must prescribe regeneration exactly once, under its condition", output)
+	}
+	condition := strings.Index(output, "only if the lock is the stale side")
+	if condition == -1 || condition > strings.Index(output, "pika init --force") {
+		t.Errorf("output %q prescribes `pika init --force` before conditioning it on the lock being the stale side", output)
+	}
+}
+
+// The two-cause caveat is scoped to the finding that earns it. A pack
+// the lock never pinned is a contract-versus-lock disagreement — both
+// sides are in the repository, this binary is not a party to it, and
+// regenerating is unambiguously right. Attaching the caveat there would
+// make every lock failure read like a possible false alarm, which is how
+// a real warning gets ignored.
+func TestGate1ContractVersusLockKeepsItsDirectRemedy(t *testing.T) {
+	root := t.TempDir()
+	if err := profiles.WriteLock(filepath.Join(root, filepath.FromSlash(lockRelPath)), []string{"core@1"}); err != nil {
+		t.Fatal(err)
+	}
+	c := &contract.Contract{Schema: 1, Profiles: []string{"core@1", "go@1"}}
+	resolved, err := profiles.Resolve([]string{"core@1", "go@1"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	exit, output, _ := Gate1(root, c, resolved)
+	if exit != 1 {
+		t.Fatalf("Gate1 exit = %d, want 1", exit)
+	}
+	if !strings.Contains(output, "pika init --force") {
+		t.Errorf("output %q dropped the remedy for a disagreement the kernel can judge", output)
+	}
+	if strings.Contains(output, "this binary is stale") {
+		t.Errorf("output %q carries the digest-disagreement caveat on a contract-versus-lock finding", output)
+	}
+}
+
 // projectionFixture writes a lock, installs the canonical skills, and
 // generates the declared projection, so the repository starts in the
 // state gate 1 is meant to certify.

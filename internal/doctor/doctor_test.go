@@ -149,6 +149,62 @@ func TestDriftedLockIsAnError(t *testing.T) {
 	}
 }
 
+// doctor has to be sufficient on its own. An operator whose lock is
+// rejected reaches for doctor before check, so the row carries both
+// numbers and both causes, and its remediation is the comparison that
+// settles which side is behind — not the half of it that destroys a
+// correct lock when the binary is the stale side.
+func TestDriftedLockRowNamesBothDigestsAndBothCauses(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	const foreign = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	lock := filepath.Join(dir, ".project", "profiles.lock")
+	data, err := os.ReadFile(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, []byte(strings.Replace(string(data), profiles.PackDigest(), foreign, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root, _ := repopath.At(dir)
+
+	f := findingByID(t, runDoctor(t, root), "lock")
+	if f.Severity != SeverityError {
+		t.Fatalf("lock severity = %q, want %q", f.Severity, SeverityError)
+	}
+	if !strings.Contains(f.Detail, foreign) || !strings.Contains(f.Detail, profiles.PackDigest()) {
+		t.Errorf("lock detail %q must print the lock's registry digest and this binary's", f.Detail)
+	}
+	for _, cause := range []string{"the lock is stale", "this binary is stale"} {
+		if !strings.Contains(f.Detail, cause) {
+			t.Errorf("lock detail %q does not name the cause %q", f.Detail, cause)
+		}
+	}
+	if !strings.Contains(f.Remediation, "`pika version`") {
+		t.Errorf("lock remediation %q does not send the operator to the comparison that settles it", f.Remediation)
+	}
+	if !strings.Contains(f.Remediation, "only if the lock is the stale side") {
+		t.Errorf("lock remediation %q prescribes regeneration without its condition", f.Remediation)
+	}
+}
+
+// The green row is a comparison point, not just a verdict: identifying a
+// stale binary means reading the digest off the pika that passes as well
+// as the one that fails.
+func TestHealthyLockRowPrintsTheRegistryDigest(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	root, _ := repopath.At(dir)
+
+	f := findingByID(t, runDoctor(t, root), "lock")
+	if f.Severity != SeverityOK {
+		t.Fatalf("lock severity = %q, want %q", f.Severity, SeverityOK)
+	}
+	if !strings.Contains(f.Detail, profiles.PackDigest()) {
+		t.Errorf("lock detail %q does not print the embedded registry digest", f.Detail)
+	}
+}
+
 func TestMissingEnvelopeIsAWarningNotAnError(t *testing.T) {
 	dir := t.TempDir()
 	writeHealthyProject(t, dir)
