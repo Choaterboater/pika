@@ -143,6 +143,12 @@ var commands = []command{
 		run:     runAuthorize,
 	},
 	{
+		name:    "exceptions",
+		summary: "report recorded naming exceptions, and reassign every one still owned by \"pika adopt\"",
+		usage:   "pika exceptions [reassign --owner <name>] [--json] [--root <dir>]",
+		run:     runExceptions,
+	},
+	{
 		name:    "mcp",
 		summary: "serve the kernel to agents over stdio JSON-RPC",
 		usage:   "pika mcp [--root <dir>]",

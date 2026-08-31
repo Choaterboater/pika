@@ -63,7 +63,7 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 	}
 	if unreviewed > 0 {
 		warnings = append(warnings, fmt.Sprintf(
-			"%d exception(s) in %s are still owned by %q; nothing forces a human to accept them — reassign an owner, or record why the default stands",
+			"%d exception(s) in %s are still owned by %q; nothing forces a human to accept them — `pika exceptions reassign --owner <name>` to reassign them, or record why the default stands",
 			unreviewed, ExceptionsFile, AutoRecordedOwner))
 	}
 	for _, v := range Naming(repoRoot, resolved.NamingRules, exceptions) {

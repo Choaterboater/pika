@@ -311,6 +311,11 @@ var jsonCases = map[string]jsonCase{
 	// root, reads the contract, states what is installed, and answers
 	// inside the envelope without writing anything.
 	"skills": {setup: writeMinimalProject},
+	// exceptions defaults to a read-only report, exercised the same
+	// way skills's default report is: resolves the root, reads the
+	// exceptions record (absent is a valid, empty answer), and
+	// answers inside the envelope without writing anything.
+	"exceptions": {setup: writeMinimalProject},
 	// handoff and improve run the ladder first: in a project whose gates
 	// pass there is nothing to hand off, and improve stops before any
 	// agent or Git mutation. Neither reaches a runtime.

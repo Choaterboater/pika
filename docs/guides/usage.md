@@ -1213,6 +1213,44 @@ home. It exists so a test or a sandbox never touches the real one.
 
 ---
 
+## 17. Reassign auto-recorded exception owners (`pika exceptions`)
+
+```sh
+pika exceptions                              # report: how many records, how many still unreviewed
+pika exceptions reassign --owner "@alice"    # reassign every one still owned by "pika adopt"
+```
+
+`pika adopt` records every naming deviation it inherits with owner `"pika
+adopt"` (§2's "Adoption records the names it inherits") — honest, since
+nobody has actually accepted the record yet, but nothing forces it to be
+revisited. `pika check`/gate 1 warns about this count without failing (an
+unreviewed record is not an invalid one) and names this command as the
+remedy.
+
+| Flag | Purpose |
+|---|---|
+| `--owner` | With `reassign` only: the new owner for every record still owned by `"pika adopt"` |
+| `--json` | Emit the result as JSON on stdout |
+| `--root <dir>` | Repository root (default: discovered) |
+
+The default report names the total record count and how many are still
+unreviewed; `reassign` is the separate, explicit write, requiring `--owner`.
+Reassigning to `"pika adopt"` itself is refused — that is not a
+reassignment — and an unloadable `.project/exceptions.yaml` (a record missing
+a required field, an unknown key) is refused rather than edited: an
+unverifiable record must not be rewritten any more than gate 1 lets it be
+silently accepted.
+
+The rewrite touches only the `owner:` value of each record it changes.
+`.project/exceptions.yaml` is committed evidence — a header comment, hand-
+quoted multi-line reasons, a redundant `path:` field repeating the mapping
+key — and a full re-marshal would drop or reflow all of that, turning a
+one-field ownership change into an unreviewable diff of a file nobody meant
+to touch. Every other byte, including records already owned by a human,
+survives untouched.
+
+---
+
 ## Typical loops
 
 **New project, end to end:**
