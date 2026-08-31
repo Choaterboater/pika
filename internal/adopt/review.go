@@ -3,6 +3,7 @@ package adopt
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -163,6 +164,7 @@ func renderExceptions(b *strings.Builder, exceptions []checks.Exception) {
 	}
 	fmt.Fprintf(b, "## Exceptions (%d recorded naming deviations)\n\n", len(exceptions))
 	b.WriteString("`pika adopt` wrote these records into `.project/exceptions.yaml`; each waives one naming rule for one path, and each is keyed to that exact path — a path added later is not covered and will still fail gate 1. Approving `pika apply` accepts every record below, so read the reasons first: keep the record, or rename the path to satisfy the rule and delete the record.\n\n")
+	renderExceptionSummary(b, exceptions)
 	for _, ex := range exceptions {
 		fmt.Fprintf(b, "- `%s` — rule `%s`\n", ex.Path, ex.RuleID)
 		fmt.Fprintf(b, "  - reason: %s\n", escapeDetail(ex.Reason))
@@ -170,6 +172,54 @@ func renderExceptions(b *strings.Builder, exceptions []checks.Exception) {
 		fmt.Fprintf(b, "  - review condition: %s\n", escapeDetail(ex.ReviewCondition))
 	}
 	b.WriteString("\n")
+}
+
+// renderExceptionSummary prints a count-and-grouping header above the
+// full exceptions list: how many, under which rules, and concentrated
+// in which directories. sindresorhus/got records 21 catch-all
+// exceptions; apple/swift-argument-parser records several hundred — a
+// reviewer facing either has no way to see the shape of what they are
+// approving from a bare list of that length.
+//
+// The full list is never truncated or replaced: silently eliding
+// waivers is precisely the failure c73f368 exists to remove, and a
+// summary that stood in for the list would recreate it in a new place.
+// This stands above the list, not instead of it.
+func renderExceptionSummary(b *strings.Builder, exceptions []checks.Exception) {
+	byRule := map[string]int{}
+	byDir := map[string]int{}
+	for _, ex := range exceptions {
+		byRule[ex.RuleID]++
+		dir := path.Dir(ex.Path)
+		if dir == "." {
+			dir = "(repository root)"
+		}
+		byDir[dir]++
+	}
+	b.WriteString("By rule:\n\n")
+	for _, rule := range sortedCountKeys(byRule) {
+		fmt.Fprintf(b, "- `%s`: %d\n", rule, byRule[rule])
+	}
+	b.WriteString("\nBy directory:\n\n")
+	for _, dir := range sortedCountKeys(byDir) {
+		if dir == "(repository root)" {
+			fmt.Fprintf(b, "- %s: %d\n", dir, byDir[dir])
+			continue
+		}
+		fmt.Fprintf(b, "- `%s/`: %d\n", dir, byDir[dir])
+	}
+	b.WriteString("\n")
+}
+
+// sortedCountKeys returns a map's keys sorted, so the summary renders
+// deterministically across repeated runs like every other list here.
+func sortedCountKeys(counts map[string]int) []string {
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func renderGate1(b *strings.Builder, data ReviewData) {

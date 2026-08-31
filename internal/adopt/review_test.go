@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Choaterboater/pika/internal/checks"
 )
 
 func readReview(t *testing.T, root string) string {
@@ -129,5 +131,54 @@ func TestReviewGate1FailureReported(t *testing.T) {
 	review := readReview(t, root)
 	if !strings.Contains(review, "FAIL") || !strings.Contains(review, "naming-catch-all: utils/") {
 		t.Errorf("gate-1 failure not reported honestly:\n%s", review)
+	}
+}
+
+// A reviewer facing a large adoption — real ones have recorded several
+// hundred exceptions — has no way to see the shape of what they are
+// approving from a bare list. The count-and-grouping header must say
+// how many, under which rules, and concentrated in which directories,
+// and the full list beneath it must still be there in full: eliding it
+// would recreate exactly the failure c73f368 exists to remove.
+func TestRenderExceptionsSummarizesCountAndShape(t *testing.T) {
+	exceptions := []checks.Exception{
+		{RuleID: "naming-catch-all", Path: "src/utils/helpers.ts", Reason: "r", Owner: "pika adopt", ReviewCondition: "c"},
+		{RuleID: "naming-catch-all", Path: "src/utils/common.ts", Reason: "r", Owner: "pika adopt", ReviewCondition: "c"},
+		{RuleID: "naming-catch-all", Path: "lib/manager.go", Reason: "r", Owner: "pika adopt", ReviewCondition: "c"},
+		{RuleID: "naming-kebab-case", Path: "README_OLD.md", Reason: "r", Owner: "pika adopt", ReviewCondition: "c"},
+	}
+	var b strings.Builder
+	renderExceptions(&b, exceptions)
+	out := b.String()
+	for _, want := range []string{
+		"naming-catch-all`: 3",
+		"naming-kebab-case`: 1",
+		"src/utils/`: 2",
+		"lib/`: 1",
+		"repository root",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary missing %q:\n%s", want, out)
+		}
+	}
+	for _, path := range []string{"src/utils/helpers.ts", "src/utils/common.ts", "lib/manager.go", "README_OLD.md"} {
+		if !strings.Contains(out, "`"+path+"`") {
+			t.Errorf("full per-exception list must still name %q:\n%s", path, out)
+		}
+	}
+}
+
+// A single-rule, single-directory adoption still gets the header: the
+// summary is not withheld just because there is only one row to show,
+// which would make its absence a signal an operator has to learn to
+// read.
+func TestRenderExceptionsSummarizesEvenASingleException(t *testing.T) {
+	var b strings.Builder
+	renderExceptions(&b, []checks.Exception{
+		{RuleID: "naming-catch-all", Path: "src/utils", Reason: "r", Owner: "alice", ReviewCondition: "c"},
+	})
+	out := b.String()
+	if !strings.Contains(out, "naming-catch-all`: 1") {
+		t.Errorf("summary missing rule count:\n%s", out)
 	}
 }
