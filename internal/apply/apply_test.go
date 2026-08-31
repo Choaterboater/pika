@@ -639,19 +639,23 @@ func TestApplyCommitFailureReportsRollbackFailure(t *testing.T) {
 	}
 }
 
-// The two kernel-owned core files, seeded with content the current pack
-// does not render: the state an operator lands in when their repository
-// was scaffolded by an older kernel whose template has since been
-// corrected.
+// preExistingCIAndPRTemplate seeds content at the two paths the core
+// pack also renders (the CI workflow, the GitHub PR template) that is
+// NOT what the pack would render: indistinguishable, from apply's own
+// vantage point, between "an operator's real CI predating adoption"
+// and "a stale copy this or an older kernel once wrote" — apply never
+// ran on this repository before (it refuses outright the moment a
+// contract is already committed), so it has no way to tell those
+// apart, and no template to safely judge either against.
 const (
-	staleCI = "# stale workflow from an older kernel\n"
-	stalePR = "## stale PR template from an older kernel\n"
+	preExistingCI = "# an operator's own, real workflow\n"
+	preExistingPR = "## an operator's own, real PR template\n"
 )
 
 func seedStaleKernelFiles(t *testing.T, root string) {
 	t.Helper()
-	writeFile(t, root, ".github/workflows/ci.yml", staleCI)
-	writeFile(t, root, ".github/pull_request_template.md", stalePR)
+	writeFile(t, root, ".github/workflows/ci.yml", preExistingCI)
+	writeFile(t, root, ".github/pull_request_template.md", preExistingPR)
 }
 
 // appliedOp returns the reported operation kind for rel, or "" when the
@@ -705,8 +709,10 @@ func bookkeeping(rel string) bool {
 }
 
 // renderedCore renders the core files exactly as init would for the
-// fixture's draft contract, which is what a refreshed kernel-owned file
-// must equal byte-for-byte.
+// fixture's draft contract — what a freshly CREATED core file must
+// equal byte-for-byte, since only a missing file is ever written from
+// this render; an existing one at the same path is never compared
+// against it at all.
 func renderedCore(t *testing.T, root string) map[string][]byte {
 	t.Helper()
 	draft, err := contract.Load(filepath.Join(root, ".project", "contract.yaml.draft"))
@@ -720,13 +726,22 @@ func renderedCore(t *testing.T, root string) map[string][]byte {
 	return core
 }
 
-// TestApplyRefreshesAStaleKernelOwnedFile pins the kernel's half of the
-// ownership split: the PR template and the CI workflow encode how the
-// kernel wants to be run, so a copy left behind by an older kernel is a
-// defect the kernel corrects. Without this, a repository whose
-// scaffolded CI predates a template fix is told its lock is stale and
-// given no supported remedy.
-func TestApplyRefreshesAStaleKernelOwnedFile(t *testing.T) {
+// TestApplyNeverOverwritesAnExistingCIWorkflowOrPRTemplate closes the
+// real defect this pins: a repository whose real, already-working
+// .github/workflows/ci.yml predates adoption — the ordinary case for
+// any project with existing CI, not an exotic one — had that file
+// silently replaced by the rendered template on its very first
+// `pika apply`, with review/adoption-review.md's own "Proposed
+// changes" list saying nothing about it beforehand (a directory
+// requirement is satisfied by the directory alone, not compared file
+// by file, so adopt's own convention map reported the path as already
+// matching core@1). Reproduced against a real clone
+// (aos8-migration-tool): `pika adopt` proposed no change to ci.yml,
+// then `pika apply` rewrote it, replacing "name: CI" with the
+// template's "name: check". apply must treat these two paths exactly
+// like every other required core file: create only when missing,
+// otherwise keep exactly what is there.
+func TestApplyNeverOverwritesAnExistingCIWorkflowOrPRTemplate(t *testing.T) {
 	root := adoptionFixture(t)
 	seedStaleKernelFiles(t, root)
 
@@ -734,60 +749,60 @@ func TestApplyRefreshesAStaleKernelOwnedFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	core := renderedCore(t, root)
 
-	for _, rel := range []string{".github/workflows/ci.yml", ".github/pull_request_template.md"} {
-		if got := readBytes(t, root, rel); !bytes.Equal(got, core[rel]) {
-			t.Errorf("%s was not refreshed:\ngot  %q\nwant %q", rel, got, core[rel])
+	for rel, want := range map[string]string{
+		".github/workflows/ci.yml":         preExistingCI,
+		".github/pull_request_template.md": preExistingPR,
+	} {
+		if got := string(readBytes(t, root, rel)); got != want {
+			t.Errorf("%s was overwritten:\ngot  %q\nwant %q (the pre-existing content, untouched)", rel, got, want)
 		}
-		if op := appliedOp(rep, rel); op != "write" {
-			t.Errorf("applied op for %s = %q, want %q", rel, op, "write")
+		if slices.Contains(appliedPaths(rep), rel) {
+			t.Errorf("%s reported as applied although it already existed and must have been kept", rel)
 		}
-		if slices.Contains(skippedPaths(rep), rel) {
-			t.Errorf("%s reported as skipped although it was rewritten", rel)
+		if !slices.Contains(skippedPaths(rep), rel) {
+			t.Errorf("skipped = %v, want %s reported as kept", rep.Skipped, rel)
 		}
 	}
 
-	// A refresh is a correction, not a reason to fail: the applied
-	// state still passes gate 1.
+	// Nothing about this is a failure to report: the applied state is
+	// still gate-1 green, exactly as an operator's own real CI and PR
+	// template are expected to be.
 	if !rep.Gate1.Pass {
-		t.Errorf("gate 1 failed after a refresh: %s", rep.Gate1.Output)
+		t.Errorf("gate 1 failed although nothing but pre-existing operator files were kept: %s", rep.Gate1.Output)
 	}
 }
 
-// TestApplyKernelOwnedFileAlreadyCurrentIsNotRewritten pins the other
-// half: a kernel-owned file that already matches the rendered template
-// is left alone and reported as such. A refresh the operator can see is
-// the point; a write op for identical bytes is noise.
-func TestApplyKernelOwnedFileAlreadyCurrentIsNotRewritten(t *testing.T) {
+// TestApplyCreatesAMissingCIWorkflowFromTheTemplate is the create half
+// of the same boundary: a repository with no CI at all gets the pack's
+// own rendered workflow, byte for byte, exactly like every other
+// missing required core file.
+func TestApplyCreatesAMissingCIWorkflowFromTheTemplate(t *testing.T) {
 	root := adoptionFixture(t)
-	// Seed both kernel-owned files with exactly what the pack renders.
-	core, err := initcmd.CoreFiles("go", "happy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, rel := range []string{".github/workflows/ci.yml", ".github/pull_request_template.md"} {
-		writeFile(t, root, rel, string(core[rel]))
-	}
+	rendered := renderedCore(t, root)
 
 	rep, err := Run(RunOptions{Dir: root})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	for _, rel := range []string{".github/workflows/ci.yml", ".github/pull_request_template.md"} {
-		if slices.Contains(appliedPaths(rep), rel) {
-			t.Errorf("%s reported as applied although it already matched the template", rel)
+		if got := readBytes(t, root, rel); string(got) != string(rendered[rel]) {
+			t.Errorf("%s = %q, want the rendered template %q", rel, got, rendered[rel])
 		}
-		if !slices.Contains(skippedPaths(rep), rel) {
-			t.Errorf("skipped = %v, want %s reported as already current", rep.Skipped, rel)
+		if op := appliedOp(rep, rel); op != "create" {
+			t.Errorf("applied op for %s = %q, want %q", rel, op, "create")
 		}
 	}
 }
 
-// TestApplyNeverTouchesAnOperatorOwnedFile is the guard on the refresh:
-// README.md, AGENTS.md, CONTRIBUTING.md and go.mod are the operator's
-// the moment they exist. go.mod in particular carries the repository's
-// dependency graph, and the kernel must never rewrite it.
+// TestApplyNeverTouchesAnOperatorOwnedFile is the guard on the whole
+// create-if-missing boundary: README.md, AGENTS.md, CONTRIBUTING.md
+// and go.mod are the operator's the moment they exist. go.mod in
+// particular carries the repository's dependency graph, and the
+// kernel must never rewrite it. Pre-existing files at the two paths
+// the core pack also renders (CI workflow, PR template) are seeded
+// alongside them and must be just as untouched — apply draws no
+// distinction between the two groups.
 //
 // AGENTS.md alone also carries a declared projection: its whole-file
 // create-if-missing is skipped exactly like the other three, but the
@@ -804,8 +819,8 @@ func TestApplyNeverTouchesAnOperatorOwnedFile(t *testing.T) {
 	for rel, content := range operator {
 		writeFile(t, root, rel, content)
 	}
-	// Stale kernel-owned files too: the refresh must not become a
-	// licence to rewrite the neighbours.
+	// Pre-existing files at the two paths the core pack also renders,
+	// too: kept for the identical reason as every other file here.
 	seedStaleKernelFiles(t, root)
 
 	rep, err := Run(RunOptions{Dir: root})
@@ -830,18 +845,20 @@ func TestApplyNeverTouchesAnOperatorOwnedFile(t *testing.T) {
 			t.Errorf("%s reported as applied; operator-owned files are create-if-missing", rel)
 		}
 	}
-	for _, rel := range []string{"README.md", "AGENTS.md", "CONTRIBUTING.md"} {
+	for _, rel := range []string{"README.md", "AGENTS.md", "CONTRIBUTING.md", ".github/workflows/ci.yml", ".github/pull_request_template.md"} {
 		if !slices.Contains(skippedPaths(rep), rel) {
 			t.Errorf("skipped = %v, want %s kept and reported", rep.Skipped, rel)
 		}
 	}
 }
 
-// TestApplyReportsEveryRefresh pins the visibility contract by
+// TestApplyReportsEveryChange pins the visibility contract by
 // construction rather than by enumeration: every repository file apply
-// changed, added or removed must appear in the report. A silent kernel
-// rewrite is indistinguishable from an operator's own edit.
-func TestApplyReportsEveryRefresh(t *testing.T) {
+// changed, added or removed must appear in the report, and every file
+// it left alone must not — a silent rewrite is indistinguishable from
+// an operator's own edit, and a claimed rewrite that did not happen is
+// just as dishonest.
+func TestApplyReportsEveryChange(t *testing.T) {
 	root := adoptionFixture(t)
 	seedStaleKernelFiles(t, root)
 	before := treeSnapshot(t, root)
@@ -872,77 +889,29 @@ func TestApplyReportsEveryRefresh(t *testing.T) {
 			t.Errorf("apply removed %s without reporting it: applied = %v", rel, rep.Applied)
 		}
 	}
-	// The refreshes are genuinely in there — the loops above would also
-	// pass on a run that changed nothing.
+	// The pre-existing CI workflow and PR template are genuinely
+	// unchanged — the loops above would also pass on a run that
+	// silently rewrote them and then forgot to report it, provided
+	// nothing else changed either, so confirm neither was touched.
 	for _, rel := range []string{".github/workflows/ci.yml", ".github/pull_request_template.md"} {
-		if !reported[rel] {
-			t.Errorf("report is missing the refresh of %s: applied = %v", rel, rep.Applied)
+		if before[rel] != after[rel] {
+			t.Errorf("apply changed %s although it pre-existed and must have been kept", rel)
 		}
 	}
 }
 
-// TestApplyRefreshRollsBackWithTheTransaction pins that a refresh goes
-// through the transactional path rather than around it: an injected
-// failure after the whole plan has been applied must restore the stale
-// bytes the refresh overwrote. A rewrite that cannot roll back is a
-// worse failure than a stale template.
-func TestApplyRefreshRollsBackWithTheTransaction(t *testing.T) {
-	root := adoptionFixture(t)
-	seedStaleKernelFiles(t, root)
-	before := treeDigest(t, root)
-
-	// failAfter past the end of the plan applies every operation — both
-	// kernel-owned refreshes included — and then fails, so the undo has
-	// to restore what the writes overwrote, not merely remove creates.
-	rep, err := Run(RunOptions{Dir: root, failAfter: 99})
-	if err == nil {
-		t.Fatal("injected failure: want error, got nil")
-	}
-	if !rep.Rollback {
-		t.Errorf("report.Rollback = false, want true (err = %v)", err)
-	}
-	if got := string(readBytes(t, root, ".github/workflows/ci.yml")); got != staleCI {
-		t.Errorf("ci.yml after rollback = %q, want the stale pre-state %q", got, staleCI)
-	}
-	if got := string(readBytes(t, root, ".github/pull_request_template.md")); got != stalePR {
-		t.Errorf("PR template after rollback = %q, want the stale pre-state %q", got, stalePR)
-	}
-	if after := treeDigest(t, root); after != before {
-		t.Error("rollback did not restore the byte-identical pre-state")
-	}
-
-	// The assertions above would also hold if the refresh had never
-	// entered the plan, so prove it did: with the pre-state restored,
-	// the same drafts apply cleanly and the writes happen for real.
-	rep, err = Run(RunOptions{Dir: root})
-	if err != nil {
-		t.Fatalf("apply after rollback: %v", err)
-	}
-	for _, rel := range []string{".github/workflows/ci.yml", ".github/pull_request_template.md"} {
-		if op := appliedOp(rep, rel); op != "write" {
-			t.Errorf("applied op for %s = %q, want %q — the rolled-back run had nothing to undo", rel, op, "write")
-		}
-	}
-}
-
-// TestApplyHonorsInitcmdOwnershipForEveryCoreFile walks the ownership
-// boundary itself rather than the two files that happen to sit on the
-// kernel side of it today. `pika init --force` and `pika apply` read the
-// same declaration in initcmd; a file whose ownership changes there must
-// change apply's behaviour with it, in the same commit, with no second
-// table to remember. Were apply keeping its own copy of the split, a
-// kernel-owned file added to initcmd alone would be regenerated by
-// --force and silently kept stale by apply — the ownership drift this
-// milestone already had to fix once.
+// TestApplyHonorsInitcmdOwnershipForEveryCoreFile walks every required
+// core file generically rather than the two paths that happen to
+// render through the kernel-owned template today: whichever it is,
+// pre-existing content at any of them is kept, exactly like every
+// operator file — apply draws no ownership distinction of its own.
 //
-// AGENTS.md is operator-owned by this same declaration, so its stale
-// prose is kept exactly like the other operator files — but it alone
-// also carries a declared projection, whose kernel-owned region is
-// appended below that stale prose regardless (spec 5.2), so it is
-// checked by prefix and is expected in applied as well as skipped.
+// AGENTS.md alone also carries a declared projection, whose kernel-
+// owned region is appended below the operator's stale prose regardless
+// (spec 5.2), so it is checked separately, by prefix.
 func TestApplyHonorsInitcmdOwnershipForEveryCoreFile(t *testing.T) {
 	root := adoptionFixture(t)
-	const stale = "# stale copy from an older kernel\n"
+	const preExisting = "# an operator's own, real copy\n"
 	core, err := initcmd.CoreFiles("go", "happy")
 	if err != nil {
 		t.Fatal(err)
@@ -951,43 +920,33 @@ func TestApplyHonorsInitcmdOwnershipForEveryCoreFile(t *testing.T) {
 		t.Fatal("the core pack rendered no files; this guard would prove nothing")
 	}
 	for rel := range core {
-		writeFile(t, root, rel, stale)
+		writeFile(t, root, rel, preExisting)
 	}
 
 	rep, err := Run(RunOptions{Dir: root})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	rendered := renderedCore(t, root)
 
 	for rel := range core {
 		got := readBytes(t, root, rel)
-		if initcmd.KernelOwnsCore(rel) {
-			if !bytes.Equal(got, rendered[rel]) {
-				t.Errorf("initcmd declares %s kernel-owned, but apply kept the stale copy:\ngot  %q\nwant %q", rel, got, rendered[rel])
-			}
-			if op := appliedOp(rep, rel); op != "write" {
-				t.Errorf("applied op for kernel-owned %s = %q, want %q", rel, op, "write")
-			}
-			continue
-		}
 		if rel == "AGENTS.md" {
-			if !bytes.HasPrefix(got, []byte(stale)) {
-				t.Errorf("initcmd declares %s the operator's, but apply overwrote its prose:\ngot  %q\nwant prefix %q", rel, got, stale)
+			if !bytes.HasPrefix(got, []byte(preExisting)) {
+				t.Errorf("apply overwrote AGENTS.md's pre-existing prose:\ngot  %q\nwant prefix %q", got, preExisting)
 			}
 			if !slices.Contains(appliedPaths(rep), rel) {
 				t.Error("applied does not report AGENTS.md's projection region")
 			}
 			if !slices.Contains(skippedPaths(rep), rel) {
-				t.Errorf("skipped = %v, want AGENTS.md's stale prose kept and reported", rep.Skipped)
+				t.Errorf("skipped = %v, want AGENTS.md's pre-existing prose kept and reported", rep.Skipped)
 			}
 			continue
 		}
-		if string(got) != stale {
-			t.Errorf("initcmd declares %s the operator's, but apply overwrote it:\ngot  %q\nwant %q", rel, got, stale)
+		if string(got) != preExisting {
+			t.Errorf("apply overwrote pre-existing %s:\ngot  %q\nwant %q", rel, got, preExisting)
 		}
 		if !slices.Contains(skippedPaths(rep), rel) {
-			t.Errorf("skipped = %v, want operator-owned %s kept and reported", rep.Skipped, rel)
+			t.Errorf("skipped = %v, want pre-existing %s kept and reported", rep.Skipped, rel)
 		}
 	}
 }

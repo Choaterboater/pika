@@ -403,12 +403,23 @@ func staleAdoptionFixture(t *testing.T) string {
 	return dir
 }
 
-// TestE2EApplyRefreshesAStaleKernelFileAndReportsIt pins the other half
-// of the ownership split, through adoption rather than regeneration:
-// apply rewrites the two kernel-owned files when they are stale, reports
-// each rewrite as a `write` rather than doing it silently, and still
-// never touches an operator-owned file that already exists.
-func TestE2EApplyRefreshesAStaleKernelFileAndReportsIt(t *testing.T) {
+// TestE2EApplyKeepsAPreExistingWorkflowOnFirstAdoption pins the fix for
+// a real, destructive defect: apply used to compare an existing
+// .github/workflows/ci.yml and .github/pull_request_template.md
+// against its own rendered template and silently rewrite either that
+// differed, on the theory that a kernel-owned path could only ever
+// hold a stale copy from an older kernel. It cannot: `pika apply`
+// refuses outright the moment a contract is already committed, so it
+// runs exactly once, on a repository it has never touched before —
+// which means an existing file at either path was never its own prior
+// output. It is indistinguishable from an operator's real, working CI,
+// and for most real repositories that is exactly what it is (confirmed
+// against real clones — aos8-migration-tool, HPENetworkTools — whose
+// own CI was silently replaced the first time either was adopted, with
+// review/adoption-review.md's own "Proposed changes" list saying
+// nothing about it beforehand). Both paths are now create-if-missing,
+// exactly like every other required core file.
+func TestE2EApplyKeepsAPreExistingWorkflowOnFirstAdoption(t *testing.T) {
 	dir := staleAdoptionFixture(t)
 	runCLI(t, dir, 0, "adopt")
 
@@ -425,24 +436,23 @@ func TestE2EApplyRefreshesAStaleKernelFileAndReportsIt(t *testing.T) {
 		t.Fatal("apply reported a rollback on the happy path")
 	}
 
-	var refreshed bool
 	for _, a := range rep.Applied {
 		if a.Path == ".github/workflows/ci.yml" {
-			if a.Op != "write" {
-				t.Errorf("stale workflow applied as %q, want write", a.Op)
-			}
-			refreshed = true
+			t.Errorf("apply %s the pre-existing workflow; it is create-if-missing", a.Op)
 		}
 		if a.Path == "README.md" {
 			t.Errorf("apply %s the operator's README; it is create-if-missing", a.Op)
 		}
 	}
-	if !refreshed {
-		t.Fatalf("apply did not refresh the stale workflow: %v", rep.Applied)
-	}
 
-	var keptREADME bool
+	var keptWorkflow, keptREADME bool
 	for _, s := range rep.Skipped {
+		if s.Path == ".github/workflows/ci.yml" {
+			keptWorkflow = true
+			if !strings.Contains(s.Reason, "kept the existing file") {
+				t.Errorf("workflow skip reason = %q", s.Reason)
+			}
+		}
 		if s.Path == "README.md" {
 			keptREADME = true
 			if !strings.Contains(s.Reason, "kept the existing file") {
@@ -450,27 +460,25 @@ func TestE2EApplyRefreshesAStaleKernelFileAndReportsIt(t *testing.T) {
 			}
 		}
 	}
+	if !keptWorkflow {
+		t.Errorf("apply did not report keeping the pre-existing workflow: %v", rep.Skipped)
+	}
 	if !keptREADME {
 		t.Errorf("apply did not report keeping the operator's README: %v", rep.Skipped)
 	}
 
-	// On disk: the current template, and the operator's prose intact.
-	workflow := readRepoFile(t, dir, ".github/workflows/ci.yml")
-	if strings.Contains(workflow, "pika@latest") {
-		t.Errorf("the workflow still installs the kernel with @latest:\n%s", workflow)
-	}
-	if !strings.Contains(workflow, "PIKA_REF") {
-		t.Errorf("the refreshed workflow does not pin PIKA_REF:\n%s", workflow)
-	}
+	// On disk: the pre-existing workflow and the operator's prose both
+	// untouched, byte for byte.
+	wantFileContent(t, repoFile(dir, ".github/workflows/ci.yml"), staleWorkflow)
 	wantFileContent(t, repoFile(dir, "README.md"), operatorREADME)
 
 	// A second apply on the same tree would refuse (it is adopted now),
 	// so the human summary is asserted on its own fixture. An operator
-	// who cannot see the rewrite in the output cannot tell a kernel
-	// refresh from an edit they made themselves.
+	// who cannot see a file kept in the output cannot tell a kept file
+	// from one apply silently rewrote.
 	human := runCLI(t, staleAdoptionFixtureAdopted(t), 0, "apply")
 	for _, want := range []string{
-		"write .github/workflows/ci.yml",
+		".github/workflows/ci.yml: already exists; kept the existing file",
 		"README.md: already exists; kept the existing file",
 	} {
 		if !strings.Contains(human, want) {

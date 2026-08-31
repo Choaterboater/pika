@@ -3,21 +3,24 @@
 // adoption loop opened by `pika adopt`: the drafts under .project/ are
 // durable state, and apply derives everything it does from them — never
 // from session memory — promotes them, writes the exceptions record and
-// the core files the repository is still missing, and rewrites the
-// visible review bundle as APPLIED.
+// the core files the repository is still missing (create-if-missing:
+// every required core file the repository already has — README.md,
+// AGENTS.md, CONTRIBUTING.md, the language scaffold, the GitHub PR
+// template, the CI workflow — is kept exactly as found, never
+// overwritten), and rewrites the visible review bundle as APPLIED.
 //
-// Core files are split by ownership, the same split `pika init --force`
-// honours. Operator-owned files (README.md, AGENTS.md, CONTRIBUTING.md
-// and the language scaffold) are create-if-missing: a file the user
-// already has is kept, always. The two kernel-owned files — the GitHub
-// PR template and the CI workflow — encode how the kernel wants to be
-// run, so apply compares them against the rendered template and
-// refreshes a stale one. That refresh is the supported remedy for a
-// repository scaffolded by an older kernel whose template has since
-// been corrected; without it, a rotated pack digest fails gate 1 with
-// no way to fix itself. Every refresh is reported as a `write`,
-// because a silent kernel rewrite is indistinguishable from an
-// operator's own edit.
+// Every required core file is create-if-missing, with no exception for
+// the two the kernel renders (the PR template, the CI workflow): apply
+// runs exactly once, on a repository it has never touched before (it
+// refuses outright the moment a contract is already committed), so an
+// existing file at one of those paths was never written by this or any
+// prior pika — it is the operator's own, whatever its provenance, and
+// treating it as a stale kernel copy to correct silently destroyed a
+// repository's real CI workflow the first time a real one was adopted.
+// `pika init --force` is the one command that regenerates a kernel-
+// owned file the kernel itself previously wrote (a genuine upgrade,
+// against a repository it scaffolded), and is unaffected: it is a
+// wholly separate write path.
 //
 // Every mutation runs inside a txn transaction: a failure at any point
 // after Begin rolls the repository back to its exact pre-state — and
@@ -32,7 +35,6 @@
 package apply
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -378,21 +380,17 @@ func fillMissingCommands(c *contract.Contract, hints map[string]string) bool {
 }
 
 // buildPlan assembles the ordered operation plan: promote the drafts,
-// write the exceptions record, then reconcile every required core file.
-// A missing file is created. An existing operator-owned file — the user
-// may have written it themselves, or kept it since an earlier scaffold
-// — is skipped with a note, never overwritten. An existing kernel-owned
-// file is compared against the rendered template and rewritten when it
-// differs, as a journalled write so the refresh rolls back with the
-// rest of the transaction; when it already matches, it is skipped.
-//
-// Which core files the kernel owns is initcmd's declaration to make, and
-// apply reads it there through initcmd.KernelOwnsCore rather than
-// restating it. A second table here would let `pika apply` keep a file
-// stale that `pika init --force` regenerates, with nothing to say the
-// two had drifted apart. The state files ask the same question and get
-// false, which costs nothing: apply refuses outright on an
-// already-adopted repository.
+// write the exceptions record, then create every required core file
+// the repository is still missing. An existing file at any of those
+// paths — the GitHub PR template and the CI workflow included — is
+// skipped with a note, never overwritten: apply runs exactly once, on
+// a repository it refuses to touch again the moment a contract is
+// already committed, so a file already there was never apply's own
+// prior output, and there is no template it could safely be judged
+// against. `pika init --force` is the command that regenerates a
+// kernel-owned file the kernel itself wrote — a real prior scaffold,
+// not a first contact with foreign state — through its own separate
+// write path.
 func buildPlan(root string, resolved *profiles.Resolved, core map[string][]byte, contractYAML, lockYAML, exceptionsYAMLBytes []byte) (txn.Plan, []Skipped, error) {
 	var plan txn.Plan
 	var skipped []Skipped
@@ -403,33 +401,13 @@ func buildPlan(root string, resolved *profiles.Resolved, core map[string][]byte,
 		}
 		seen[rel] = true
 		full := filepath.Join(root, filepath.FromSlash(rel))
-		info, err := os.Lstat(full)
-		switch {
-		case errors.Is(err, os.ErrNotExist):
-			plan = append(plan, txn.Op{Kind: txn.OpCreate, Path: rel, Content: content})
-			return nil
-		case err != nil:
-			return fmt.Errorf("apply: stat %s: %w", rel, err)
-		case !initcmd.KernelOwnsCore(rel):
+		if _, err := os.Lstat(full); err == nil {
 			skipped = append(skipped, Skipped{Path: rel, Reason: "already exists; kept the existing file"})
 			return nil
-		case !info.Mode().IsRegular():
-			// A symlink or a directory at a kernel-owned path is not
-			// something a content comparison can speak to, and
-			// replacing it would destroy whatever it points at. Keep
-			// it and say so.
-			skipped = append(skipped, Skipped{Path: rel, Reason: "already exists and is not a regular file; kept it"})
-			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("apply: stat %s: %w", rel, err)
 		}
-		current, err := os.ReadFile(full)
-		if err != nil {
-			return fmt.Errorf("apply: read %s: %w", rel, err)
-		}
-		if bytes.Equal(current, content) {
-			skipped = append(skipped, Skipped{Path: rel, Reason: "kernel-owned and already matches the rendered template"})
-			return nil
-		}
-		plan = append(plan, txn.Op{Kind: txn.OpWrite, Path: rel, Content: content})
+		plan = append(plan, txn.Op{Kind: txn.OpCreate, Path: rel, Content: content})
 		return nil
 	}
 	for _, item := range []struct {
