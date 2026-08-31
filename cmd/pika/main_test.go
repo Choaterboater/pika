@@ -194,6 +194,22 @@ func ownedByThisModule(dir string) bool {
 	return err != nil
 }
 
+// unregisteredMentions returns every command name text sends a reader
+// to as `pika <command>` that the registry does not have, plus the
+// total number of mentions found. Splitting it out of the walk below is
+// what lets the same rule police prose the Go parser never sees — the
+// skill and projection text in cmd/pika/skills_test.go — and lets a
+// test plant a bad mention and prove the rule fires on it.
+func unregisteredMentions(text string) (missing []string, total int) {
+	for _, m := range commandMention.FindAllStringSubmatch(text, -1) {
+		total++
+		if _, ok := lookup(m[1]); !ok {
+			missing = append(missing, m[1])
+		}
+	}
+	return missing, total
+}
+
 // A message that tells an operator to run a command pika does not have is
 // worse than no advice: it is a dead end reached at exactly the moment
 // the operator is stuck, and it is reached long before anyone reads the
@@ -238,12 +254,11 @@ func TestEveryCommandNamedInAMessageIsRegistered(t *testing.T) {
 			if err != nil {
 				return true
 			}
-			for _, m := range commandMention.FindAllStringSubmatch(text, -1) {
-				mentions++
-				if _, ok := lookup(m[1]); !ok {
-					t.Errorf("%s names `pika %s`, which is not a registered command:\n  %s",
-						fset.Position(lit.Pos()), m[1], text)
-				}
+			missing, count := unregisteredMentions(text)
+			mentions += count
+			for _, name := range missing {
+				t.Errorf("%s names `pika %s`, which is not a registered command:\n  %s",
+					fset.Position(lit.Pos()), name, text)
 			}
 			return true
 		})
@@ -291,6 +306,11 @@ var jsonCases = map[string]jsonCase{
 	"doctor":    {setup: writeMinimalProject},
 	"explain":   {args: []string{"typecheck"}},
 	"authorize": {args: []string{"--scope", "read"}},
+	// skills defaults to a read-only report, which is the whole command
+	// on a repository that declares no projection: it resolves the
+	// root, reads the contract, states what is installed, and answers
+	// inside the envelope without writing anything.
+	"skills": {setup: writeMinimalProject},
 	// handoff and improve run the ladder first: in a project whose gates
 	// pass there is nothing to hand off, and improve stops before any
 	// agent or Git mutation. Neither reaches a runtime.

@@ -101,3 +101,59 @@ func TestLoadNormalizesBackslashRoot(t *testing.T) {
 		t.Fatalf("root = %q, want %q", c.Packages["frontend"].Root, "web/app")
 	}
 }
+
+// A projection path is a repository path like any other, so it is
+// normalized and escape-checked on the same terms as packages.<name>.root:
+// a projection is a file the kernel writes, and one that could name a
+// path outside the repository would be a write primitive the contract
+// never meant to grant.
+func TestLoadNormalizesProjectionPaths(t *testing.T) {
+	c, err := Load("testdata/valid-skills-projections.yaml")
+	if err != nil {
+		t.Fatalf("expected valid contract, got %v", err)
+	}
+	if c.Skills == nil || len(c.Skills.Projections) != 2 {
+		t.Fatalf("projections = %+v, want two", c.Skills)
+	}
+	if got := c.Skills.Projections[1].Path; got != "docs/CLAUDE.md" {
+		t.Fatalf("path = %q, want %q", got, "docs/CLAUDE.md")
+	}
+}
+
+func TestLoadRejectsProjectionPathEscape(t *testing.T) {
+	_, err := Load("testdata/invalid-skills-escape.yaml")
+	if err == nil {
+		t.Fatal("expected escape error, got nil")
+	}
+	if !strings.Contains(err.Error(), "skills.projections[0].path") {
+		t.Fatalf("error should name the offending field, got: %v", err)
+	}
+}
+
+// A harness the kernel does not know is a schema violation, not a
+// projection that is quietly skipped. A file nothing reads is
+// indistinguishable from a file something reads, so a typo that produced
+// one would never be discovered — which is exactly how a stale parallel
+// copy comes to exist.
+func TestLoadRejectsUnknownHarness(t *testing.T) {
+	_, err := Load("testdata/invalid-skills-harness.yaml")
+	if err == nil {
+		t.Fatal("expected a schema error for an unknown harness, got nil")
+	}
+	if !strings.Contains(err.Error(), "schema validation failed") {
+		t.Fatalf("error should come from schema validation, got: %v", err)
+	}
+}
+
+// A contract that declares no skills block stays nil rather than
+// becoming an empty one, so the generated YAML of every project that
+// never asked for a projection is unchanged.
+func TestLoadLeavesSkillsUndeclared(t *testing.T) {
+	c, err := Load("testdata/valid-minimum.yaml")
+	if err != nil {
+		t.Fatalf("expected valid contract, got %v", err)
+	}
+	if c.Skills != nil {
+		t.Fatalf("skills = %+v, want nil on a contract that declares none", c.Skills)
+	}
+}

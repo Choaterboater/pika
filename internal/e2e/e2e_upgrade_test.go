@@ -9,6 +9,7 @@ import (
 
 	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/profiles"
 )
 
 // The upgrade path, end to end through the real binary.
@@ -66,13 +67,25 @@ jobs:
 `
 
 // preTemplateDigestLock is a real `.project/profiles.lock` written by a
-// pika built before pack templates joined the pack digest — taken
-// verbatim from this repository's own lock at the commit preceding that
-// change. core@1 rotated (its templates are now hashed); go@1 did not
-// (it ships none), which is what makes this a faithful fixture rather
-// than a scrambled one: exactly the pack whose templates changed is the
-// pack that fails.
-const preTemplateDigestLock = `{
+// pika built before pack templates joined the pack digest — the core@1
+// pin and the registry digest are this repository's own, taken verbatim
+// from the commit preceding that change. core@1 rotated (its templates
+// are now hashed); go@1 did not, because it shipped none, and that
+// asymmetry is the whole point of the fixture: exactly the pack whose
+// templates changed is the pack that fails.
+//
+// go@1's pin is therefore read from the live registry rather than
+// frozen with the rest. Freezing it made the fixture correct exactly
+// until go@1's own bytes moved for an unrelated reason — which they did,
+// the day the pack gained agent guidance — and then the fixture blamed a
+// second pack and the claim under test could no longer be stated at all.
+func preTemplateDigestLock(t *testing.T) string {
+	t.Helper()
+	goDigest, ok := profiles.PackDigestFor(profiles.GoRef)
+	if !ok {
+		t.Fatalf("%s is not a registered pack", profiles.GoRef)
+	}
+	return `{
   "digest": "e892fb2a12938e299c7ce695af2c298879aa8ea100b83d0472db68cd0f8d0bc6",
   "packs": {
     "core": {
@@ -83,11 +96,12 @@ const preTemplateDigestLock = `{
     "go": {
       "version": "1",
       "source": "embedded",
-      "digest": "967f340ac5587468ca26df78655357d6edeee94a0c404f6d26a0ef96d2ffcc3e"
+      "digest": "` + goDigest + `"
     }
   }
 }
 `
+}
 
 // repoFile resolves a repository-relative slash path under dir.
 func repoFile(dir, rel string) string {
@@ -316,7 +330,7 @@ func TestE2EStaleScaffoldIsDetectableAndForceIsTheRemedy(t *testing.T) {
 	// A repository scaffolded by the older kernel: its lock and its
 	// workflow are both that kernel's.
 	writeFileAt(t, repoFile(dir, "README.md"), operatorREADME)
-	writeFileAt(t, repoFile(dir, ".project/profiles.lock"), preTemplateDigestLock)
+	writeFileAt(t, repoFile(dir, ".project/profiles.lock"), preTemplateDigestLock(t))
 	writeFileAt(t, repoFile(dir, ".github/workflows/ci.yml"), staleWorkflow)
 
 	// Detected: gate 1 fails and says which pack, which is the only way

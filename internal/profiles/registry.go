@@ -245,6 +245,22 @@ type Resolved struct {
 	Checks      CheckSet
 	NamingRules []NamingRule
 	DocTriggers []DocTrigger
+	// AgentGuidance is every layer's agent-guidance, in composition
+	// order (core first, then the language pack). It is stack advice an
+	// agent needs and the kernel cannot infer, and it is what lets one
+	// skill serve every stack: the skill states the rules, the pack
+	// states what they mean here. Consumed by internal/skills when it
+	// renders a harness projection.
+	AgentGuidance []GuidanceSet
+}
+
+// GuidanceSet is one pack's agent-guidance, kept with the ref that
+// contributed it. A projection names the ref in its provenance header,
+// so an agent — or a reviewer reading a drift failure — can tell which
+// pack's advice moved rather than being told only that something did.
+type GuidanceSet struct {
+	Ref   string
+	Lines []string
 }
 
 // Resolve composes the selected profile packs, in spec §5.4 order, into a
@@ -261,7 +277,7 @@ func Resolve(selected []string) (*Resolved, error) {
 	for i, ref := range selected {
 		entry, ok := embeddedPacks[ref]
 		if !ok {
-			return nil, fmt.Errorf("profiles: pack %s not registered (supported packs: %s)", ref, strings.Join(supportedRefs(), ", "))
+			return nil, fmt.Errorf("profiles: pack %s not registered (supported packs: %s)", ref, strings.Join(SupportedRefs(), ", "))
 		}
 
 		var pack Pack
@@ -281,6 +297,9 @@ func Resolve(selected []string) (*Resolved, error) {
 			resolved.NamingRules = append(resolved.NamingRules, namingRules(pack.Naming.Rules)...)
 		}
 		resolved.DocTriggers = append(resolved.DocTriggers, pack.DocTriggers...)
+		if len(pack.AgentGuidance) > 0 {
+			resolved.AgentGuidance = append(resolved.AgentGuidance, GuidanceSet{Ref: ref, Lines: pack.AgentGuidance})
+		}
 		resolved.Layers = append(resolved.Layers, Layer{
 			Name:    entry.name,
 			Version: entry.version,
@@ -295,7 +314,7 @@ func Resolve(selected []string) (*Resolved, error) {
 // pack in first position, then at most one language pack.
 func validateSelection(selected []string) error {
 	if len(selected) == 0 || selected[0] != CoreRef {
-		return fmt.Errorf("profiles: unsupported selection %v; supported packs: %s", selected, strings.Join(supportedRefs(), ", "))
+		return fmt.Errorf("profiles: unsupported selection %v; supported packs: %s", selected, strings.Join(SupportedRefs(), ", "))
 	}
 	if len(selected) > 2 {
 		return fmt.Errorf("profiles: selection %v composes at most [%s, <language>@1]", selected, CoreRef)
@@ -306,7 +325,7 @@ func validateSelection(selected []string) error {
 			return fmt.Errorf("profiles: %s may appear exactly once", CoreRef)
 		}
 		if _, ok := embeddedPacks[ref]; !ok {
-			return fmt.Errorf("profiles: unsupported selection %v; supported packs: %s", selected, strings.Join(supportedRefs(), ", "))
+			return fmt.Errorf("profiles: unsupported selection %v; supported packs: %s", selected, strings.Join(SupportedRefs(), ", "))
 		}
 		if !languagePacks[ref] {
 			return fmt.Errorf("profiles: pack %s is not a language pack; M1 composes only core and language layers", ref)
@@ -529,7 +548,7 @@ func WriteLock(path string, selected []string) error {
 	for _, ref := range selected {
 		entry, ok := embeddedPacks[ref]
 		if !ok {
-			return fmt.Errorf("profiles: pack %s not registered (supported packs: %s)", ref, strings.Join(supportedRefs(), ", "))
+			return fmt.Errorf("profiles: pack %s not registered (supported packs: %s)", ref, strings.Join(SupportedRefs(), ", "))
 		}
 		var pack Pack
 		if err := yamlx.UnmarshalStrict(entry.data, &pack); err != nil {

@@ -11,14 +11,16 @@ import (
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/repopath"
+	"github.com/Choaterboater/pika/internal/skills"
 	"github.com/Choaterboater/pika/internal/version"
 )
 
 // Gate1 runs verification-ladder rung 1 (spec §12.6): the contract
-// schema-version ceiling, the exceptions record load, and the
-// naming/ownership projection checks. It is the single implementation
-// shared by the `pika check` command and the MCP run_checks tool so
-// agents and humans always agree on gate 1.
+// schema-version ceiling, the exceptions record load, the profile-lock
+// and skills-projection digest checks, and the naming/ownership
+// projection checks. It is the single implementation shared by the
+// `pika check` command and the MCP run_checks tool so agents and humans
+// always agree on gate 1.
 //
 // An error-severity violation — or an exceptions file that fails to load
 // (unverifiable records must not silently widen the rules) — fails the
@@ -38,6 +40,16 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 	// the profile versions in profiles.lock. An unpinned, stale, or
 	// drifted lock is a gate failure, never a silent pass.
 	if err := CheckLock(repoRoot, c); err != nil {
+		return 1, err.Error(), nil
+	}
+	// Spec §9.2: a harness-native projection identifies its source and
+	// digest, and CI rejects drift rather than maintaining parallel
+	// handwritten copies. This is that rejection. It is beside the lock
+	// check because it is the same kind of statement — a generated
+	// artifact certifying bytes that have since moved — and because a
+	// projection that lies to an agent is worse than one that lies to a
+	// human: the agent cannot notice.
+	if err := skills.Verify(repoRoot, c, resolved); err != nil {
 		return 1, err.Error(), nil
 	}
 	var findings []string

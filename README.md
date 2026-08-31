@@ -146,6 +146,9 @@ pika work "add a /healthz endpoint that returns 200"
 
 # Expose the kernel to your AI agent over MCP
 pika mcp
+
+# Install the agent instructions, and project them where each harness reads
+pika skills install
 ```
 
 ## Commands
@@ -161,6 +164,7 @@ pika mcp
 | `pika doctor` | Diagnose contract, lock, exceptions, envelope, per-gate command, toolchain, and git — without executing a single gate |
 | `pika explain` | Explain a naming rule, a verification gate, or an MCP error code: rationale, remediation, and a copy-pasteable exception record |
 | `pika authorize` | Generate the capability envelope agents need, at `.project/state/envelope.yaml` (mode 0600, local-only, never committed) |
+| `pika skills` | Report, install and verify the agent instructions this repository ships: the canonical skills under `.agents/skills/`, and the harness-native projections generated from them |
 | `pika handoff` | Give actionable failed checks to the configured Codex builder and save a private handoff bundle |
 | `pika improve` | Run checks, let Codex repair failed gates, recheck, and make one verified local commit |
 | `pika work` | Run a stated goal through the same verified lifecycle: branch, builder agent, recheck, one verified local commit |
@@ -171,6 +175,23 @@ pika mcp
 Running `pika` with no arguments prints the same help.
 
 All commands support `--json` for automation, and every payload is the same envelope — `{"schema":1,"command":…,"ok":…,"result":{…}}` — so a consumer can tell which command answered, and whether it succeeded, before knowing the report's shape. See [docs/guides/usage.md](docs/guides/usage.md#json-output).
+
+### Skills, and why a projection carries a digest
+
+How to drive pika is written once, under `.agents/skills/<name>/SKILL.md` — the canonical, harness-neutral location. Harnesses that cannot read it get a **projection**: the same guidance rendered into a file they do read, declared in the contract:
+
+```yaml
+skills:
+  projections:
+  - harness: codex
+    path: AGENTS.md
+  - harness: claude
+    path: CLAUDE.md
+```
+
+`pika skills install` writes any canonical skill the repository is missing and regenerates every declared projection. A projection is a marked-off region inside the file, not the whole file, so operator prose above and below it survives; the region names each source and its sha256 digest, and gate 1 recomputes them. A stale copy therefore fails `pika check` with the projection, the source that moved, and the remedy — rather than sitting there looking current, which is how parallel handwritten copies come to exist in the first place.
+
+The split is ownership. A canonical skill is the operator's: it is written when missing and replaced only under `--force`. A projection region is the kernel's: regenerated freely, never hand-edited. Which harnesses receive one is contract-declared, not compiled in — an unknown harness is a schema error, and a new harness whose requirement is "a file at this path" needs a contract line and no kernel change.
 
 ### `--root`, and the one command that does not discover
 

@@ -40,8 +40,14 @@ naming:
       pattern: '^[a-z0-9][a-z0-9._-]*$'
       # Ecosystem-conventional stems that cannot be lowercased (README,
       # Makefile, Cargo.toml, Package.swift, Apple's Sources/Tests/ dirs,
-      # Python's __init__) are exempt from the rule.
-      exempt-stems: [README, AGENTS, CONTRIBUTING, Makefile, LICENSE, Dockerfile, Cargo, Package, Sources, Tests, __init__]
+      # Python's __init__) are exempt from the rule. CLAUDE is here for
+      # the same reason AGENTS is: it is the file name a harness looks
+      # for, so a repository that projects its skills there has no
+      # choice about the name. This is the remediation the rule itself
+      # prescribes for that case — an exempt stem, not a per-repository
+      # exception record, because the constraint is the ecosystem's and
+      # not this repository's.
+      exempt-stems: [README, AGENTS, CLAUDE, CONTRIBUTING, Makefile, LICENSE, Dockerfile, Cargo, Package, Sources, Tests, __init__]
       rationale: >-
         Mixed-case path segments are the classic cross-platform trap: macOS
         and Windows checkouts are case-insensitive, Linux and CI are not, so

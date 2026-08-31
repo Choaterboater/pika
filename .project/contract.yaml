@@ -25,6 +25,12 @@ github:
   merge: squash
 evidence:
   publish: sanitized
+skills:
+  projections:
+  - harness: codex
+    path: AGENTS.md
+  - harness: claude
+    path: CLAUDE.md
 exceptions:
 - owner: '@Choaterboater (pika kernel maintainer)'
   path: internal/discover/testdata/swift-xcode/MyApp.xcodeproj/project.pbxproj

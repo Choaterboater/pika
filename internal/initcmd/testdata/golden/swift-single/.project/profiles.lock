@@ -1,10 +1,10 @@
 {
-  "digest": "ecbac0b313ab42ebbaaf656ac687119785efa5cce6da99c348500527eeb8b8d5",
+  "digest": "f34a39847227902b0b36332796fddacdb4fdb07d03d5c8a8bcaed8c454f59e9e",
   "packs": {
     "core": {
       "version": "1",
       "source": "embedded",
-      "digest": "482f15e7a5c9ffbb6049342127ac85b5125d717d47dc61f0ce949d94d8e2e3f0"
+      "digest": "1510713184569f1748191c0a9b930ac200404bd29a96c9fe8609b4bfb9a23d35"
     },
     "swift": {
       "version": "1",

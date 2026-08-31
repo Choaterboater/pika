@@ -1,0 +1,16 @@
+schema: 1
+project:
+  name: fixture
+  topology: single
+profiles:
+  - core@1
+evidence:
+  publish: sanitized
+github:
+  merge: squash
+skills:
+  projections:
+    - harness: codex
+      path: AGENTS.md
+    - harness: claude
+      path: docs\CLAUDE.md

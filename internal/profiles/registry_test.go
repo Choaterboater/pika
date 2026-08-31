@@ -492,3 +492,62 @@ func TestTemplateHashingIsOrderStable(t *testing.T) {
 		t.Error("template hashing produced the same digest for a different template set")
 	}
 }
+
+// agent-guidance was parsed on every pack and surfaced on none, so no
+// consumer could ever read it. It is composed onto Resolved in layer
+// order, kept with the ref that supplied it, because a projection has to
+// name the pack whose advice it carries.
+func TestResolveSurfacesAgentGuidancePerPack(t *testing.T) {
+	core, err := Resolve([]string{CoreRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(core.AgentGuidance) != 0 {
+		t.Errorf("core@1 contributes guidance it does not declare: %+v", core.AgentGuidance)
+	}
+
+	withGo, err := Resolve([]string{CoreRef, GoRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withGo.AgentGuidance) != 1 {
+		t.Fatalf("AgentGuidance = %+v, want exactly go@1's", withGo.AgentGuidance)
+	}
+	set := withGo.AgentGuidance[0]
+	if set.Ref != GoRef {
+		t.Errorf("guidance ref = %q, want %q", set.Ref, GoRef)
+	}
+	if len(set.Lines) == 0 {
+		t.Fatal("go@1 declares no agent guidance; the worked example is empty")
+	}
+	// The advice must be about the gates this pack actually declares,
+	// or it is decoration rather than guidance.
+	joined := strings.Join(set.Lines, "\n")
+	for _, want := range []string{"gofmt -l .", "-o /dev/null", "go test ./..."} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("go@1 guidance never mentions %q:\n%s", want, joined)
+		}
+	}
+}
+
+// A pack that declares no guidance must contribute no entry at all, not
+// an empty one: a projection cites every guidance source it composed, and
+// citing a pack that said nothing would report drift the day that pack
+// changed for an unrelated reason.
+func TestPacksWithoutGuidanceContributeNoEntry(t *testing.T) {
+	for _, ref := range SupportedRefs() {
+		selected := []string{CoreRef}
+		if ref != CoreRef {
+			selected = append(selected, ref)
+		}
+		resolved, err := Resolve(selected)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", ref, err)
+		}
+		for _, set := range resolved.AgentGuidance {
+			if len(set.Lines) == 0 {
+				t.Errorf("%s contributed an empty guidance entry", set.Ref)
+			}
+		}
+	}
+}

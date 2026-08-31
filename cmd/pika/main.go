@@ -132,6 +132,12 @@ var commands = []command{
 		run:     runExplain,
 	},
 	{
+		name:    "skills",
+		summary: "install and verify the agent instructions this repository ships",
+		usage:   "pika skills [install|check] [--force] [--json] [--root <dir>]",
+		run:     runSkills,
+	},
+	{
 		name:    "authorize",
 		summary: "generate the capability envelope agents need",
 		usage:   "pika authorize [--scope read|project|repo] [--exec \"<argv>\"]... [--network <host>]... [--credential <name>]... [--github <scope>]... [--force] [--json] [--root <dir>]",

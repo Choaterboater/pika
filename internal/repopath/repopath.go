@@ -103,3 +103,13 @@ func (r *Root) Envelope() string      { return r.Join(".project", "state", "enve
 func (r *Root) Board() string         { return r.Join(".project", "state", "board.jsonl") }
 func (r *Root) EvidenceDir() string   { return r.Join(".project", "evidence") }
 func (r *Root) Review() string        { return r.Join("review", "adoption-review.md") }
+
+// SkillsDir is the canonical, harness-neutral location agent skills live
+// in: one directory per skill, each holding a SKILL.md. It is dot-
+// prefixed for the same reason .project is — the naming walk skips
+// dot segments, so guidance files named by an external convention
+// (SKILL.md) do not each need a recorded naming exception.
+func (r *Root) SkillsDir() string { return r.Join(".agents", "skills") }
+
+// Skill is the canonical source path of one named skill.
+func (r *Root) Skill(name string) string { return r.Join(".agents", "skills", name, "SKILL.md") }

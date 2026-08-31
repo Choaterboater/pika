@@ -62,7 +62,37 @@ verification:
 
 doc-triggers: []
 
-agent-guidance: []
+# Stack advice the kernel cannot infer and the harness-neutral skills
+# must not hardcode, composed into every generated harness projection
+# (spec §9.2). Each line is a consequence of how this pack's gates are
+# declared above, so an agent reading the projection learns why a gate
+# behaves the way it does instead of discovering it by failing.
+agent-guidance:
+  - >-
+    The typecheck gate builds with `-o /dev/null` on purpose. `go build
+    ./...` links every main package into an executable in the working
+    directory, so dropping the flag leaves an untracked binary at the
+    repository root that the next `pika check` walks and reports.
+  - >-
+    The format gate is judged on output, not exit status: `gofmt -l .`
+    lists every misformatted file and still exits 0. Never make it pass
+    by adding `-w`; a verification gate that rewrites the tree it
+    verifies can no longer fail.
+  - >-
+    `go test ./...` compiles every package, including packages that
+    contain no test files. A package that does not build fails the test
+    gate without a single assertion failing, so read the gate output
+    before concluding a test is wrong.
+  - >-
+    A test that resolves a repository root by walking up from its
+    working directory resolves the checkout the suite is running in.
+    Pin the root in any test that runs a governed command —
+    `t.Chdir(t.TempDir())` in process, an explicit `--root <fixture>`
+    for a spawned binary — or the run operates on itself.
+  - >-
+    Layout is `cmd/` for binaries and `internal/` for private packages.
+    `pkg/` is only for an API outside consumers are meant to import;
+    putting a private package there publishes it by accident.
 
 migration:
   steps: []

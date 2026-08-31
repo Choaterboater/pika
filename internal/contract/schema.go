@@ -51,6 +51,7 @@ type Contract struct {
 	Agents     map[string]AgentConfig `yaml:"agents"     json:"agents,omitempty"`
 	GitHub     GitHub                 `yaml:"github"     json:"github"`
 	Evidence   Evidence               `yaml:"evidence"   json:"evidence"`
+	Skills     *Skills                `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Exceptions []any                  `yaml:"exceptions" json:"exceptions,omitempty"`
 	Extensions map[string]any         `yaml:"extensions" json:"extensions,omitempty"`
 }
@@ -85,11 +86,35 @@ type Evidence struct {
 	Publish string `yaml:"publish" json:"publish"`
 }
 
+// Skills declares where the canonical agent skills — the harness-neutral
+// source under .agents/skills — are additionally projected for harnesses
+// that cannot read that location (spec §9.2). It is a pointer so a
+// contract that declares nothing writes nothing: an empty `skills: {}`
+// block in every generated contract would be noise claiming a decision
+// nobody made.
+type Skills struct {
+	Projections []Projection `yaml:"projections" json:"projections,omitempty"`
+}
+
+// Projection is one harness-native copy of that guidance: which harness
+// reads it, and the repository-relative file it reads.
+//
+// Harness is drawn from the same enumeration as agents.<name>.runtime,
+// which is the point: the harness you configured as the builder is the
+// harness you project to, and a typo is a schema violation rather than a
+// file nothing will ever read. Path is the whole of the target: a
+// harness whose requirement is "a file at this path" needs no kernel
+// change, only a contract line.
+type Projection struct {
+	Harness string `yaml:"harness" json:"harness"`
+	Path    string `yaml:"path"    json:"path"`
+}
+
 // Load reads, strictly parses, and JSON-Schema-validates the contract file
-// at path. Every declared repository-relative path (currently
-// packages.<name>.root) is normalized to forward slashes and checked
-// against path escapes; keys outside the schema are rejected unless nested
-// under extensions.
+// at path. Every declared repository-relative path (packages.<name>.root
+// and skills.projections[].path) is normalized to forward slashes and
+// checked against path escapes; keys outside the schema are rejected
+// unless nested under extensions.
 func Load(path string) (*Contract, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -112,6 +137,15 @@ func Load(path string) (*Contract, error) {
 		}
 		pkg.Root = root
 		c.Packages[name] = pkg
+	}
+	if c.Skills != nil {
+		for i, p := range c.Skills.Projections {
+			path, err := NormalizeRepoPath(p.Path)
+			if err != nil {
+				return nil, fmt.Errorf("contract: skills.projections[%d].path: %w", i, err)
+			}
+			c.Skills.Projections[i].Path = path
+		}
 	}
 	return &c, nil
 }

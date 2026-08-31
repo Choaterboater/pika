@@ -9,6 +9,8 @@ import (
 
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/repopath"
+	"github.com/Choaterboater/pika/internal/skills"
 )
 
 // lockRelPath is the location gate 1 must look for the lock under the
@@ -151,5 +153,83 @@ func TestGate1TopLevelDigestMismatchFails(t *testing.T) {
 	}
 	if !strings.Contains(output, profiles.PackDigest()) {
 		t.Errorf("output %q must name the embedded registry digest", output)
+	}
+}
+
+// projectionFixture writes a lock, installs the canonical skills, and
+// generates the declared projection, so the repository starts in the
+// state gate 1 is meant to certify.
+func projectionFixture(t *testing.T) (string, *contract.Contract, *profiles.Resolved) {
+	t.Helper()
+	root := lockFixture(t, []string{"core@1"})
+	c := &contract.Contract{
+		Schema:   1,
+		Profiles: []string{"core@1"},
+		Skills:   &contract.Skills{Projections: []contract.Projection{{Harness: "codex", Path: "AGENTS.md"}}},
+	}
+	resolved, err := profiles.Resolve([]string{"core@1"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	bound, err := repopath.At(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skills.Install(bound, c, resolved, false); err != nil {
+		t.Fatalf("skills.Install: %v", err)
+	}
+	return root, c, resolved
+}
+
+// Spec §9.2: a projection identifies its source and digest, and CI
+// rejects drift rather than maintaining parallel handwritten copies.
+// Gate 1 is where that rejection happens, so a projection generated from
+// a source that has since moved must fail it — naming the projection,
+// the source, and the command that regenerates it.
+func TestGate1DriftedProjectionFails(t *testing.T) {
+	root, c, resolved := projectionFixture(t)
+	if exit, output, _ := Gate1(root, c, resolved); exit != 0 {
+		t.Fatalf("Gate1 exit = %d on a freshly generated projection, want 0 (output %q)", exit, output)
+	}
+
+	skill := filepath.Join(root, ".agents", "skills", "project-work", "SKILL.md")
+	body, err := os.ReadFile(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, append(body, []byte("\nA rule added after the projection was written.\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exit, output, _ := Gate1(root, c, resolved)
+	if exit != 1 {
+		t.Fatalf("Gate1 exit = %d on a drifted projection, want 1", exit)
+	}
+	for _, want := range []string{"AGENTS.md", ".agents/skills/project-work/SKILL.md", "pika skills install"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output %q must name %q", output, want)
+		}
+	}
+
+	// Regenerating is the whole remedy: nothing else has to be touched.
+	bound, err := repopath.At(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skills.Install(bound, c, resolved, false); err != nil {
+		t.Fatalf("skills.Install: %v", err)
+	}
+	if exit, output, _ := Gate1(root, c, resolved); exit != 0 {
+		t.Fatalf("Gate1 exit = %d after regenerating, want 0 (output %q)", exit, output)
+	}
+}
+
+// A contract that declares no projection has no drift to have, and gate
+// 1 must not invent one: the canonical location alone is the state spec
+// §9.2 prefers.
+func TestGate1IgnoresRepositoriesWithNoDeclaredProjection(t *testing.T) {
+	root := lockFixture(t, []string{"core@1"})
+	if exit, output := gate1Exit(root); exit != 0 {
+		t.Fatalf("Gate1 exit = %d, want 0 (output %q)", exit, output)
 	}
 }

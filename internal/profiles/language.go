@@ -66,7 +66,11 @@ func LanguagePack(language string) (string, bool) {
 	return "", false
 }
 
-// supportedRefs lists every selectable pack reference, core first.
-func supportedRefs() []string {
+// SupportedRefs lists every selectable pack reference, core first. It
+// is exported so a caller that has to reason about the whole registry —
+// the guard that reads every pack's agent guidance, for one — walks the
+// registry itself instead of carrying a second list of pack names that
+// would go stale the day a pack is added.
+func SupportedRefs() []string {
 	return append([]string{CoreRef}, languageRefs...)
 }

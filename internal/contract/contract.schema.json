@@ -49,6 +49,13 @@
       },
       "additionalProperties": false
     },
+    "skills": {
+      "type": "object",
+      "properties": {
+        "projections": {"type": "array", "items": {"$ref": "#/definitions/projection"}}
+      },
+      "additionalProperties": false
+    },
     "exceptions": {"type": "array"},
     "extensions": {"type": "object"}
   },
@@ -66,12 +73,25 @@
       "type": "object",
       "required": ["runtime"],
       "properties": {
-        "runtime": {"type": "string", "enum": ["omp", "codex", "claude", "gemini", "opencode", "acp", "custom"]},
+        "runtime": {"$ref": "#/definitions/harness"},
         "provider": {"type": "string"},
         "model": {"type": "string"},
         "effort": {"enum": ["low", "medium", "high"]}
       },
       "additionalProperties": false
+    },
+    "projection": {
+      "type": "object",
+      "required": ["harness", "path"],
+      "properties": {
+        "harness": {"$ref": "#/definitions/harness"},
+        "path": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "harness": {
+      "type": "string",
+      "enum": ["omp", "codex", "claude", "gemini", "opencode", "acp", "custom"]
     }
   }
 }
