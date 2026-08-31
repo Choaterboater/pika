@@ -138,6 +138,55 @@ func TestSinglePackageManifestInASubdirectoryGetsItsOwnRoot(t *testing.T) {
 	}
 }
 
+// A repository can mix an npm workspace with a completely different
+// language at the root — a real Go module alongside a web frontend
+// workspace, an ordinary shape for a monorepo with a Go backend and a
+// TypeScript UI. classify() used to return workspacePackages'
+// output exclusively the moment any workspace split was found,
+// dropping every other language entirely: the Go module belonged to
+// no package in the contract at all, so it was never verified by
+// any gate.
+func TestMixedNpmWorkspaceAndGoModuleKeepsBothLanguages(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"name": "root", "workspaces": ["web"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "web", "package.json"), []byte(`{"name": "web"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/mixed\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(inv.DetectedLanguages, "go") {
+		t.Fatalf("the root Go module is missing entirely: DetectedLanguages = %v, Packages = %+v", inv.DetectedLanguages, inv.Packages)
+	}
+	if !slices.Contains(inv.DetectedLanguages, "typescript") {
+		t.Fatalf("expected typescript in %v", inv.DetectedLanguages)
+	}
+	if len(inv.Packages) != 2 {
+		t.Fatalf("expected 2 packages (the web workspace member plus the root Go module), got %+v", inv.Packages)
+	}
+	var sawGo bool
+	for _, p := range inv.Packages {
+		if p.Language == "go" {
+			sawGo = true
+			if p.Root != "." || p.Name != "example.com/mixed" {
+				t.Errorf("go package = %+v, want Root=. Name=example.com/mixed", p)
+			}
+		}
+	}
+	if !sawGo {
+		t.Fatalf("Packages = %+v, want a go package", inv.Packages)
+	}
+}
+
 func TestMonorepoPnpmWorkspaceSplit(t *testing.T) {
 	inv := inventoryFromFixture(t, "monorepo-pnpm")
 	if !slices.Contains(inv.DetectedLanguages, "typescript") {

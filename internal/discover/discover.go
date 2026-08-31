@@ -274,13 +274,31 @@ func walk(root string) (*walkHits, error) {
 	return hits, nil
 }
 
-// classify decides between a workspace split and a single project, and emits
-// one Package per project (or per member).
+// classify decides between a workspace split and a single project, and
+// emits one Package per project (or per member).
+//
+// The two are unioned, not exclusive: a workspace split only ever
+// recognizes npm/pnpm/cargo members, so a repository that mixes an
+// npm workspace (or a Cargo workspace) with a completely different
+// language at the root — a real Go module alongside an npm workspace,
+// say — had that language dropped from the contract entirely once any
+// workspace was found, with no package, no gate, and no warning that
+// it was ever there. singlePackages' own output is filtered to the
+// languages the workspace split did not already produce, so a
+// language a workspace member split already covers (typescript for an
+// npm/pnpm workspace, rust for a Cargo one) is never counted twice.
 func classify(root string, hits *walkHits) []Package {
-	if pkgs := workspacePackages(root, hits); len(pkgs) > 0 {
-		return pkgs
+	pkgs := workspacePackages(root, hits)
+	covered := make(map[string]bool, len(pkgs))
+	for _, p := range pkgs {
+		covered[p.Language] = true
 	}
-	return singlePackages(root, hits)
+	for _, p := range singlePackages(root, hits) {
+		if !covered[p.Language] {
+			pkgs = append(pkgs, p)
+		}
+	}
+	return pkgs
 }
 
 // workspacePackages emits one Package per declared workspace member. It
