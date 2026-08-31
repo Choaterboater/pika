@@ -23,6 +23,13 @@ branch checkout moves the tree the first one is verifying, and each one's
 receipt attests a commit containing the other's work. Neither run knew the
 other was there, and nothing in the product would have told either of them.
 
+There are three ways into that hazard, not one. The second terminal may run
+`pika work`; it may run `pika resume` or `pika handoff`, which drive the
+lifecycle without going through `improve.Run`; or it may run `pika mcp`,
+serving an agent harness that writes files directly and coordinates through
+`acquire_scope`. All three end up in the same working tree, so all three are
+held by the same exclusion — see [§5](#the-run-lease-is-the-scope-lease-on-).
+
 ---
 
 ## 1. One holder lock, and it is the one that already worked
@@ -120,14 +127,14 @@ Three rules hold on the `--apply` path:
 - `StateUnverifiable` is refused, exit 2, and is never described as stale.
 
 `cmd/pika` does not spell `.project/state/run.lock` or `.project/state/locks`.
-`improve.RunLease` and `mcp.ScopeLocksDir` are exported for exactly this, and
-the reason is that a second spelling drifts *silently*: a recover looking in
-the wrong place reports a repository that is already clean.
+`internal/repolease` owns both, and the reason is that a second spelling drifts
+*silently*: a recover looking in the wrong place reports a repository that is
+already clean.
 
 Clearing a lease does not discard the run. The record is untouched,
 `pika status` still lists it, and `pika resume <work-id>` finishes it.
 
-## 5. Scope leases became real
+## 5. Scope leases became real, and they are the same exclusion as the run
 
 `acquire_scope`'s description has always promised exclusivity. Until M4 it
 recorded a row on the board and returned success, so two MCP sessions could
@@ -138,6 +145,65 @@ both be granted the same path. It is now backed by the same lease, under
 Exclusive over a path means exclusive over its whole subtree: a lease on `src`
 conflicts with one on `src/pkg` in both directions. An exclusion an agent could
 sidestep by naming a subdirectory would not be one.
+
+### The run lease is the scope lease on `.`
+
+The first version of this shipped two exclusions that never looked at each
+other. `improve.TakeRunLease` did not read `.project/state/locks/`;
+`acquire_scope` did not read `.project/state/run.lock`. So:
+
+```sh
+# terminal 1
+pika work "add a /healthz endpoint"
+
+# terminal 2 — an agent harness that writes files directly
+pika mcp        # → acquire_scope src  →  granted:true
+```
+
+Both proceeded. Two writers, one working tree — the hazard this milestone
+exists to close, reached through a third door.
+
+`internal/repolease` closes it, and it does so with **one rule rather than a
+special case**. A run lease is a claim over the whole repository; a scope lease
+is a claim over a subtree. They are the same kind of claim at different radii,
+so the run lease's scope is spelled `.` — the repository root — and the overlap
+rule that already made `src` conflict with `src/pkg` decides every pair. `.`
+contains everything, therefore:
+
+| Held | Asked for | Answer |
+|---|---|---|
+| run lease | any `acquire_scope` | `scope_conflict`, naming the run, its pid, its host and its start time |
+| any scope lease | a run (`work`, `improve`, `resume`, `handoff`) | refused, naming the scope and the session holding it |
+| `src` | `src`, `src/pkg`, `.` | `scope_conflict`, as before |
+| `src` | `docs` | granted: they cannot collide |
+
+The two keep separate files because a refusal has to name the holder in the
+operator's own terms — "the run holding this repository" and "the scope lease
+on `docs/guides`" are different sentences with different next moves, and
+`pika recover` reports them as different things.
+
+**Why not subsumption.** The tempting alternative is to let a run lease subsume
+scopes: the run already holds the tree, so let its agent take scopes inside it
+freely. The mechanism cannot honestly implement that. Nothing links the process
+asking for a scope to the process holding the run — they are different
+commands, usually different processes, and a lease records a pid and a host,
+not a lineage. "The run holder may have this scope" would in practice read
+"anybody may have this scope while a run is in the tree", which is the hazard
+with a permission slip stapled to it. There is no re-entrancy anywhere in this
+design: `acquire_scope` already refuses the holding session a lease it is
+already holding.
+
+**Nothing waits and nothing is stolen**, on this path either. Every acquisition
+claims its own file with `O_EXCL` first and only then looks for conflicts, so
+two acquisitions racing for overlapping ground both see the other's file, both
+refuse, and both give their claim back. There is no retry loop in any caller,
+so no deadlock is structurally possible. A refusal that could have been a grant
+is fixed by asking again; two writers in one tree is fixed by nothing.
+
+A run refused by a scope lease wraps `improve.ErrScopeLeaseHeld`, not
+`ErrRunInProgress`. "Another run holds this repository" would send an operator
+to `pika status`, where they would find no run and conclude the message was
+lying — what is actually in the tree is an agent harness driving `pika mcp`.
 
 ---
 
@@ -226,6 +292,16 @@ one run, one agent, one lock file.
   command after a crash, and it is the cost of never stealing a lease.
 - **`acquire_scope` can now be refused** with `scope_conflict` where it
   previously always succeeded. That refusal was always in its description.
+- **`acquire_scope` is refused for every path while a run is in progress**, and
+  a run is refused while any scope lease is held. An agent harness driving
+  `pika mcp` beside a `pika work` used to be granted both; it now gets a
+  `scope_conflict` naming the run. Automation that interleaved the two in one
+  checkout has to serialize them — which is the point: they were sharing a
+  working tree.
+- **`pika doctor` reports the leases.** A repository locked out by a crashed
+  run or a crashed MCP session used to read clean; it now carries a
+  `lease.run` or `lease.scope.<path>` finding. A stale lease is an error and
+  fails `doctor`; a live holder is a warning and does not.
 - **No pack digest rotated.** M4 changed no pack YAML and no pack template, so
   no `.project/profiles.lock` needs regenerating for this milestone.
 - **No new dependency.** `go.mod` still declares the same two direct
@@ -247,14 +323,10 @@ one run, one agent, one lock file.
   together, with `pika work`, `pika improve` and `pika resume` mapping them
   alongside the three refusals `resume` already maps. The refusal message is
   unaffected either way.
-- **`pika doctor` does not inspect the leases.** Its `recovery` finding covers
-  the transaction lock only, so a repository locked out by a crashed run looks
-  clean to `doctor`. The operator is not left guessing — the refusal from
-  `pika work` or `pika resume` names `pika recover` at the point of failure —
-  but `doctor` is where somebody looks when they do not yet know what is
-  wrong. A `leases` finding beside `recovery`, built from
-  `improve.RunLease` and `mcp.ScopeLocksDir` so it cannot drift, is the shape
-  of the fix.
+- **`pika doctor` never says which run is which.** The `lease.run` finding
+  names the work id, pid, host and start time of the holder, but not what that
+  run is doing — for that the operator runs `pika status`. Teaching `doctor` to
+  read run records would make it a second, partial `status`.
 - **Pid reuse is not defended against.** A stale lease whose pid has been
   recycled by an unrelated process reads as held, so recovery refuses it and
   the operator waits or removes it by hand. The failure is a false refusal,

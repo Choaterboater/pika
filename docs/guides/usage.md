@@ -299,7 +299,8 @@ What it inspects:
 | lock | Whether `profiles.lock` pins the contract's profiles at digests matching this binary's embedded packs |
 | exceptions | Whether `.project/exceptions.yaml` loads and every record is complete |
 | envelope | The grants in `.project/state/envelope.yaml`, or a warning that agents will be denied |
-| recovery | Whether a transaction never finished — who holds the lock, and whether that process is still running. It points at [`pika recover`](#15-unwedge-a-crashed-transaction-pika-recover) rather than acting |
+| recovery | Whether a transaction never finished — who holds the lock, and whether that process is still running. It points at [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) rather than acting |
+| leases / `lease.*` | Whether a run lease or a scope lease is held, and what can be proved about each holder. A **stale** lease (holder gone, same host) is an error and names `pika recover`: no run can start until it is released. A **held** lease is a warning — somebody's second terminal is legitimately mid-run — and names no recovery, because `pika recover` refuses a live holder. A holder on **another host** is a warning reported as exactly that, never as stale, and sends you to the machine that can answer |
 | `gate.*` | Per gate: the command that will run, or the pack's suggested hint when no command is configured — plus a warning when an envelope exists and does not authorize that gate's whole argv line, which is otherwise not discovered until an agent hits `envelope_denied` mid-task |
 | git | Whether git is available |
 
@@ -315,6 +316,7 @@ ok    exceptions     exceptions record loads
 warn  envelope       no capability envelope at /home/you/pika/.project/state/envelope.yaml
                      → run "pika authorize --scope project"; without it every MCP tool is denied, reads included
 ok    recovery       no interrupted transaction
+ok    leases         no run or scope lease is held
 ok    gate.format    gofmt -l .
 ok    gate.lint      go vet ./...
 ok    gate.typecheck go build -o /dev/null ./...
@@ -491,12 +493,22 @@ The envelope says which paths an agent *may* write; a **scope lease** is what ma
 | Situation | Why |
 |---|---|
 | the path, or one inside or containing it, is already leased | exclusive over a path means exclusive over its whole subtree — a lease on `src` conflicts with one on `src/pkg` in both directions, because an exclusion an agent could sidestep by naming a subdirectory would not be one |
+| a pika run is in progress | a run takes a lease on the **whole repository** and commits through the working tree every scope sits in, so while one is running every path is refused. The run lease is the scope lease on `.`, and `.` contains everything |
 | the holding session asks for a lease it already holds | a lease it holds is not a second lease it may take |
 | `release_scope` names a path this session does not hold | an agent told it released somebody else's lease would go on to write under it |
 
-Leases never expire and are never stolen: the holding session releases it, or the session ends and the server gives back everything it still holds. `pika explain scope_conflict` prints the rationale and the remedy.
+The exclusion runs both ways. While any scope lease is held, `pika work`, `pika improve`, `pika resume` and `pika handoff` refuse to start, and the refusal names the scope and the session holding it rather than claiming another run is in progress:
 
-A killed MCP session cannot give anything back, so its leases stay on disk and every later `acquire_scope` on those paths is refused. [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) clears the ones whose holder is provably gone.
+```
+pika work: improve: a scope lease holds part of this repository: the scope lease on src,
+held by scope:src#1756598894000000000 (pid 41234 on laptop-01, started
+2026-08-30T23:08:14Z), and a run commits through the whole working tree, including the
+path that lease covers; wait for that session to release it or end
+```
+
+Leases never expire and are never stolen: the holding session releases it, or the session ends and the server gives back everything it still holds. Nothing ever waits — every acquisition claims its own file first and then looks, so two racing acquisitions both refuse instead of deadlocking. `pika explain scope_conflict` prints the rationale and the remedy.
+
+A killed MCP session cannot give anything back, so its leases stay on disk; every later `acquire_scope` on those paths is refused, and so is every run in the repository. [`pika doctor`](#5-diagnose-a-repository-without-running-anything) reports them and [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) clears the ones whose holder is provably gone.
 
 ---
 
@@ -724,11 +736,13 @@ leases
 nothing has been changed. Re-run with --apply to roll this back and clear what no process is behind.
 ```
 
-### Leases are whole-repository, and scope leases cover subtrees
+### Leases are one exclusion at two radii
 
 The run lease excludes the **entire repository**, not a directory or a branch. That is not caution, it is the shape of the hazard: two runs share one working tree and one HEAD, so the second one's agent edits land in the first one's commit, and the second one's branch checkout moves the tree the first one is verifying. Neither would know the other was there. Path-scoped run leases would serve parallel writers, and pika does not have any — one repository runs one run at a time.
 
 A scope lease is narrower but works the same way in its subtree: a lease on `src` conflicts with one on `src/pkg` in both directions, because an exclusion an agent could sidestep by naming a subdirectory would not be one.
+
+The two are not separate systems. The run lease *is* the scope lease on `.`, so the subtree rule decides every pair between them: `.` contains every path, therefore a run refuses every `acquire_scope` and any held scope refuses every run. `pika recover` reports them separately because their remedies read differently to a person — "the run holding this repository" and "the scope lease on `docs/guides`" are different sentences — but nothing in the product judges them by different rules.
 
 ### Then act
 
@@ -775,7 +789,7 @@ gone, delete `.project/state/recovery/lock`, `.project/state/run.lock` or the
 file under `.project/state/locks/` by hand and re-run. This is a known gap:
 [../reference/m2-delta.md](../reference/m2-delta.md#gap-2--pika-recover---apply-cannot-prove-a-holder-dead-on-windows).
 
-`pika doctor` reports an interrupted **transaction** as a `recovery` finding and points here, so that situation is discoverable without already knowing this command exists. It does not inspect the run and scope leases; after a killed run, the refusal you get from `pika work` or `pika resume` names `pika recover` directly.
+`pika doctor` reports an interrupted **transaction** as a `recovery` finding and every held or stale **lease** as a `lease.*` finding, and points here, so neither situation needs you to already know this command exists. The refusal you get from `pika work` or `pika resume` names `pika recover` directly as well.
 
 ---
 
@@ -827,7 +841,7 @@ git log -1 chore/pika-improve     # the verified commit, still local and unpubli
 **Something is off:**
 
 ```sh
-pika doctor                       # root, contract, lock, exceptions, envelope, recovery, gates, git
+pika doctor                       # root, contract, lock, exceptions, envelope, recovery, leases, gates, git
 pika explain <rule-or-gate-or-code>
 pika recover                      # a transaction or a run that never finished; --apply to act
 ```
