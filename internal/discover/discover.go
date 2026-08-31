@@ -57,10 +57,23 @@ const maxDepth = 3
 // node_modules or DerivedData is not the repository's own naming to
 // judge, and it must be exactly the set discover already skips when
 // classifying the repository, not a second list that could drift.
+//
+// This is the fallback list, consulted only when checks.walkFiles
+// cannot ask git directly (not a git work tree, or git unavailable):
+// git's own answer already excludes anything a .gitignore covers,
+// which is the common case for a Python virtualenv — python -m venv
+// writes a `*`-only .gitignore inside the directory it creates. venv,
+// env and virtualenv are named here anyway for the case that
+// .gitignore, since a virtualenv copied, rsynced, or created by an
+// older tool has no such guard, and every path inside becomes
+// thousands of naming findings owned by nobody at the repository.
 var SkipDirs = map[string]bool{
 	".git":         true,
 	"node_modules": true,
 	".venv":        true,
+	"venv":         true,
+	"env":          true,
+	"virtualenv":   true,
 	"target":       true,
 	".build":       true,
 	"DerivedData":  true,

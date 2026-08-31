@@ -422,6 +422,12 @@ func TestNamingSkipsVendoredDependencyDirs(t *testing.T) {
 		"node_modules/utils/thing.js":            "// vendored catch-all\n",
 		"target/debug/BadName.rs":                "// build output\n",
 		"DerivedData/Build/Products/BadName.txt": "// xcode build output\n",
+		// A copied or rsynced virtualenv — one with no .gitignore of
+		// its own, unlike the venv `python -m venv` actually creates —
+		// under every real name that tool or an older one has used.
+		"venv/lib/python3.13/BadName.py":       "# vendored\n",
+		"env/lib/python3.13/BadName.py":        "# vendored\n",
+		"virtualenv/lib/python3.13/BadName.py": "# vendored\n",
 	})
 	if vs := Naming(dir, coreRules(), nil); len(vs) != 0 {
 		t.Fatalf("vendored/build-output directories must be skipped, got %+v", vs)
