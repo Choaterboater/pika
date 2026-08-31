@@ -17,7 +17,10 @@ commands:
   typecheck: go build -o /dev/null ./...
   test: go test ./... -count=1
   smoke: go run ./cmd/pika version
-agents: {}
+agents:
+  builder:
+    runtime: codex
+    effort: medium
 github:
   merge: squash
 evidence:

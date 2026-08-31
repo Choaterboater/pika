@@ -5,6 +5,19 @@ This repository is managed by pika. The contract at
 commands, and the repository conventions; `.project/profiles.lock` pins
 the exact profile packs in use.
 
+## Skills
+
+How to drive pika lives in `.agents/skills/`, the canonical source any
+harness should read:
+
+- `.agents/skills/project-work/SKILL.md` — running, repairing and
+  resuming work: which command to use, and what each refusal means.
+- `.agents/skills/project-review/SKILL.md` — what counts as evidence,
+  how to read a receipt, and what a reviewer must never do.
+
+Read the relevant skill before acting. Those rules are not style
+preferences; each exists because its absence produced a defect.
+
 ## Working in this repository
 
 - Keep the contract, the lock, and the documentation spine in sync with
