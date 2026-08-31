@@ -310,13 +310,35 @@ var Corpus = []Repo{
 			{ID: "format", Status: StatusSkip, Reason: "no command discovered for format"},
 			{ID: "lint", Status: StatusSkip, Reason: "no command discovered for lint"},
 			{ID: "typecheck", Status: StatusSkip, Reason: "no command discovered for typecheck"},
-			// `npm run test`, not typescript@1's `npm test` hint: this is
-			// got's own package.json script, which discovery found and
-			// wrote into the slot. The two spellings look alike and are
-			// not the same command, which is exactly why the manifest
-			// records the string rather than trusting the rung's colour.
 			{ID: "test", Status: StatusFail, Exit: 127, Cmd: "npm run test"},
 			{ID: "smoke", Status: StatusSkip, Reason: "skipped: gate test failed"},
+		},
+	},
+	{
+		Name: "microsoft-typescript-babel-starter",
+		URL:  "https://github.com/Microsoft/TypeScript-Babel-Starter",
+		SHA:  "dd37b20ba24b6ee3b844dd179e04d7ed4dea5891",
+		Ref:  "master (archived; no release tags)",
+		Why: "The only row where typescript@1's typecheck slot actually spawns. " +
+			"Its package.json declares `type-check` and nothing named `lint` or " +
+			"`format`, so both of those stay honest discovery skips instead of " +
+			"failures that would short-circuit the ladder before typecheck's " +
+			"turn — the same shape got's own row proved for test.",
+		Drift: "npm's propagation of a shell's 127 for `tsc`, which a shallow " +
+			"clone never installs.",
+		Needs: []string{"git", "npm"},
+		// The typecheck rung is expected to fail at `tsc: command not
+		// found`. A machine with a global tsc would get a different,
+		// slower and entirely unrelated verdict.
+		Absent:   []string{"tsc"},
+		Profiles: []string{"core@1", "typescript@1"},
+		Gates: []GateWant{
+			{ID: "contract", Status: StatusPass},
+			{ID: "format", Status: StatusSkip, Reason: "no command discovered for format"},
+			{ID: "lint", Status: StatusSkip, Reason: "no command discovered for lint"},
+			{ID: "typecheck", Status: StatusFail, Exit: 127, Cmd: "npm run type-check"},
+			{ID: "test", Status: StatusSkip, Reason: "skipped: gate typecheck failed"},
+			{ID: "smoke", Status: StatusSkip, Reason: "skipped: gate typecheck failed"},
 		},
 	},
 	{

@@ -238,22 +238,6 @@ var Unexercised = []Gap{
 			"got's package.json runs its linter from inside the test script.",
 	},
 	{
-		Pack: "typescript@1", Slot: "typecheck", Cmd: "npx tsc --noEmit",
-		Why: "Unreachable by the documented flow, not merely uncovered. It is not " +
-			"autofillable (npx fetches a decoy `tsc` package from the registry " +
-			"and never typechecks), and repository discovery only ever produces " +
-			"`npm run <script>`, never an npx invocation. No corpus row can run " +
-			"this until the pack itself changes.",
-	},
-	{
-		Pack: "typescript@1", Slot: "test", Cmd: "npm test",
-		Why: "Unreachable by the documented flow. Discovery spells a package.json " +
-			"test script `npm run test`; `npm test` is the pack's own shorthand " +
-			"and only apply could write it, which autofill forbids. got runs " +
-			"`npm run test` — one word apart and a different command, which is " +
-			"why the manifest records the string.",
-	},
-	{
 		Pack: "swift@1", Slot: "format", Cmd: "swift format lint --recursive Sources Tests",
 		Why: "Not autofillable: swift-format ships inside the toolchain only from " +
 			"Swift 6.0 on, while the pack targets swift-tools-version 5.10, so a " +

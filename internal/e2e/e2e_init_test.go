@@ -87,9 +87,9 @@ func toolchainAbsent(lang string) string {
 	switch lang {
 	case "typescript":
 		// No typescript@1 hint is autofillable: every one delegates to a
-		// package.json script or an npx download the scaffold does not
-		// provide, so the contract names no command and all five slots
-		// skip. Nothing to install, and nothing that can fail.
+		// package.json script the scaffold does not provide, so the
+		// contract names no command and all five slots skip. Nothing to
+		// install, and nothing that can fail.
 		return ""
 	case "go":
 		if _, err := exec.LookPath("go"); err != nil {

@@ -63,12 +63,12 @@ var langCases = map[string]langCase{
 		hints: map[string][]string{
 			"format":    {"npm", "run", "format"},
 			"lint":      {"npm", "run", "lint"},
-			"typecheck": {"npx", "tsc", "--noEmit"},
-			"test":      {"npm", "test"},
+			"typecheck": {"npm", "run", "type-check"},
+			"test":      {"npm", "run", "test"},
 		},
-		// npm and npx resolve on any node machine and then delegate to a
-		// package.json script or a registry download a fresh scaffold
-		// does not provide, so none of these may be adopted.
+		// Every hint resolves through npm and then delegates to a
+		// package.json script a fresh scaffold does not provide, so
+		// none of these may be adopted.
 		autofill:   nil,
 		layoutTerm: "src/",
 	},

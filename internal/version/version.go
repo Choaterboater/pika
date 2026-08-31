@@ -27,7 +27,7 @@ import (
 // stamp is also absent under `go install`, `go run` and `go build`,
 // which is how pika is actually built, so the mechanism would have been
 // wrong exactly where it mattered. Changing this line is the release.
-const Version = "0.5.0"
+const Version = "0.5.1"
 
 // MaxContractSchema is the highest contract schema version this binary
 // supports. Bump it when the embedded contract schema gains support for a

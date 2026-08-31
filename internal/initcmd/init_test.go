@@ -586,11 +586,11 @@ func TestCommandsPopulatedFromAutofillableHints(t *testing.T) {
 	}
 }
 
-// Every typescript@1 hint runs through npm or npx, which resolve on any
-// machine with node installed and then delegate to a package.json script
-// or a registry download the scaffold does not provide. The PATH probe
-// says yes to all four; autofill says no to all four, and the slots stay
-// honest discovery skips.
+// Every typescript@1 hint runs through npm, which resolves on any
+// machine with node installed and then delegates to a package.json
+// script the scaffold does not provide. The PATH probe says yes to all
+// four; autofill says no to all four, and the slots stay honest
+// discovery skips.
 func TestDelegatingHintsAreNotAdoptedEvenWhenTheirToolIsPresent(t *testing.T) {
 	resolved, err := profiles.Resolve([]string{profiles.CoreRef, "typescript@1"})
 	if err != nil {

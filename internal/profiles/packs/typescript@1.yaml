@@ -29,21 +29,27 @@ verification:
   # script is absent.
   #
   # Not one hint is autofillable, and that is the whole point of the
-  # flag. `npm` and `npx` are on nearly every developer machine, so a
-  # PATH probe says yes to all four — but every one of them delegates
-  # somewhere the scaffold does not reach. Measured on a fresh `pika init
-  # --profile typescript` (npm 11, node 24, no node_modules):
-  #   npm run format  -> exit 1, Missing script: "format"
-  #   npm run lint    -> exit 1, Missing script: "lint"
-  #   npm test        -> exit 1, no test script
-  #   npx tsc --noEmit-> exit 1, fetches the decoy `tsc` package from the
-  #                     registry ("This is not the tsc command you are
-  #                     looking for"); it needs the network and never
-  #                     typechecks, pass or fail.
+  # flag. `npm` is on nearly every developer machine, so a PATH probe
+  # says yes to all four — but every one of them delegates to a
+  # package.json script the scaffold does not define. Measured on a
+  # fresh `pika init --profile typescript` (npm 11, node 24, no
+  # node_modules): all four exit 1 with `Missing script: "<name>"`.
   # Adopting any of them would ship a repository that fails its own
   # checks the moment it is created. They stay hints: doctor renders them
   # as remediation once the user installs a toolchain and writes the
   # scripts.
+  #
+  # typecheck and test are spelled as the script names discovery can
+  # actually find and record verbatim (`npm run <script>`), not as a
+  # standalone binary invocation. `npx tsc --noEmit` was tried first and
+  # discarded: discovery only ever produces `npm run <script>`, never an
+  # npx invocation, so no repository's own package.json could ever make
+  # that hint match what ran — and un-autofilled, npx fetches a decoy
+  # `tsc` package from the registry rather than typechecking anything.
+  # `type-check` and `test` are the conventional script names a
+  # TypeScript repository's own package.json is likeliest to declare,
+  # so a repository that follows either convention is both discovered
+  # and exercised by the identical string this pack recommends.
   checks:
     - id: format
       discovery: true
@@ -53,10 +59,10 @@ verification:
       hint: [npm, run, lint]
     - id: typecheck
       discovery: true
-      hint: [npx, tsc, --noEmit]
+      hint: [npm, run, type-check]
     - id: test
       discovery: true
-      hint: [npm, test]
+      hint: [npm, run, test]
     - id: smoke
       discovery: true
 

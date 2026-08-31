@@ -302,11 +302,11 @@ result is printed by every run:
 ```
   go@1 format             fill  gofmt -l .                                   ran in golang-x-sync
   ...
-  typescript@1 test       hint  npm test                                     NOT RUN ON FOREIGN CODE
-  14 of 19 declared pack commands have executed against a repository pika did not write
+  typescript@1 typecheck  hint  npm run type-check                           ran in microsoft-typescript-babel-starter
+  16 of 19 declared pack commands have executed against a repository pika did not write
 ```
 
-The five that have not are listed in `Unexercised` with the reason, and that
+The three that have not are listed in `Unexercised` with the reason, and that
 list is graded in both directions: a declared command missing from both the
 corpus and the list fails by name, and an entry for a command some row has
 started running fails too and has to be deleted.
@@ -635,8 +635,8 @@ pika version --json
 
 ```
 $ cd /tmp && pika version
-pika 0.5.0
-pack registry:   f34a39847227902b0b36332796fddacdb4fdb07d03d5c8a8bcaed8c454f59e9e
+pika 0.5.1
+pack registry:   e0e7576ccd5d013c242f04d317363b8e7d78dbe0265b4381b3b9ca2675643ca0
 contract schema: 1 (highest supported)
 ```
 
@@ -653,8 +653,8 @@ that repository's lock was written with, and whether it is this binary's:
 
 ```
 $ pika version --root /path/to/project
-pika 0.5.0
-pack registry:   f34a39847227902b0b36332796fddacdb4fdb07d03d5c8a8bcaed8c454f59e9e
+pika 0.5.1
+pack registry:   e0e7576ccd5d013c242f04d317363b8e7d78dbe0265b4381b3b9ca2675643ca0
 contract schema: 1 (highest supported)
 /path/to/project/.project/profiles.lock: e824aaaa…aaaa2fdf (differs from this binary)
 ```

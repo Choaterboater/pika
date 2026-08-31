@@ -15,8 +15,8 @@ import (
 // literals rather than a computation because a pin that recomputes what
 // it guards proves nothing.
 const (
-	pinnedVersion           = "0.5.0"
-	pinnedRegistryDigest    = "f34a39847227902b0b36332796fddacdb4fdb07d03d5c8a8bcaed8c454f59e9e"
+	pinnedVersion           = "0.5.1"
+	pinnedRegistryDigest    = "e0e7576ccd5d013c242f04d317363b8e7d78dbe0265b4381b3b9ca2675643ca0"
 	pinnedMaxContractSchema = 1
 )
 
