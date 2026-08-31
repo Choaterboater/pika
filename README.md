@@ -264,6 +264,19 @@ Rung 5 of the ladder is the real-surface smoke test, and pika's own was `go run 
 go run ./internal/smoke
 ```
 
+### The corpus runs pika on code pika did not write
+
+The smoke gate proves the product runs; it does not prove the product is right about a repository pika did not scaffold, because it only ever meets ones it did. pika governed itself for four milestones and its own gates found nothing. Ten minutes after it was pointed at three real repositories, two defects appeared that self-governance structurally could not surface: a format gate reporting `FAIL format exit=0` for cobra's `make fmt`, which had just succeeded; and an adoption that recorded kebab-case deviations but dropped catch-all ones, so any project containing a file named `utils` adopted "successfully" and then failed gate 1 — which skips every later gate. Neither was findable by a golden fixture, because a fixture encodes what its author already imagined.
+
+[`internal/conformance`](internal/conformance) pins five foreign repositories to exact commits — [spf13/cobra](https://github.com/spf13/cobra) (go@1, Makefile-driven), [psf/requests](https://github.com/psf/requests) (python@1), [sindresorhus/got](https://github.com/sindresorhus/got) (typescript@1), [dtolnay/anyhow](https://github.com/dtolnay/anyhow) (rust@1) and [apple/swift-argument-parser](https://github.com/apple/swift-argument-parser) (swift@1) — runs each through `adopt` → `apply` → `check --all`, and grades the ladder against expectations recorded in the manifest as data. An **unexpected pass fails the run** exactly as an unexpected failure does; a machine that cannot exercise a row skips it by name; and a fetch that could not reach the network is a named skip, never a conformance failure.
+
+```sh
+go test ./internal/conformance/ -count=1          # skips, and says how to enable it
+PIKA_CONFORMANCE=1 go test ./internal/conformance/ -count=1 -v -timeout 30m
+```
+
+It is off unless `PIKA_CONFORMANCE=1` — an environment variable rather than a build tag, so the files stay in `go build ./...` and `go vet` and cannot rot uncompiled — and CI runs it as the scheduled `conformance` workflow, separate from `pika check --ci` so a network hiccup cannot redden the merge gate. See [docs/guides/usage.md](docs/guides/usage.md#the-corpus-runs-pika-on-code-pika-did-not-write).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

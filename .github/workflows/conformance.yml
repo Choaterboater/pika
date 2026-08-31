@@ -1,0 +1,82 @@
+name: conformance
+
+# The conformance corpus runs pika against real foreign repositories:
+# five pinned checkouts, cloned over the network, driven through
+# `adopt` -> `apply` -> `check` with their own toolchains spawned for
+# real.
+#
+# It is a separate workflow from `check` on purpose. `pika check --ci` is
+# the gate every pull request must pass, and it is hermetic — no network,
+# no model, no third-party toolchain. Folding the corpus into it would
+# put github.com's availability, npm's, crates.io's and clippy's release
+# cadence on the critical path of every merge, and a gate that goes red
+# for reasons the author cannot fix is a gate people learn to re-run
+# until it is green.
+#
+# So it runs on a schedule and on demand, and when it is red it is red
+# about pika: the harness skips by name when a toolchain is absent or the
+# network is unreachable, and never reports either as a conformance
+# failure.
+on:
+  schedule:
+    # Mondays, 06:17 UTC. Off-hour and off-minute so it is not queued
+    # behind every other repository's top-of-the-hour cron.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    name: corpus (${{ matrix.os }})
+    strategy:
+      # Never fail-fast: the two runners cover different packs — swift@1
+      # is only reachable on macOS — so cancelling one because the other
+      # went red would throw away the half of the corpus still running.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      # python@1's format gate is `ruff format --check .`, and psf/requests
+      # is expected to fail it. Without ruff on PATH that gate would skip
+      # as a missing toolchain and the row would not be exercised at all,
+      # so the corpus refuses to pretend: it skips the whole row by name.
+      # Installing ruff is what turns that skip into coverage.
+      #
+      # `ruff --version` is part of the step: an install that landed
+      # somewhere off PATH would otherwise become a quiet
+      # missing-toolchain skip, and a corpus that loses a row without
+      # anyone noticing is the failure mode this whole package is about.
+      - name: Install ruff
+        run: |
+          pipx install ruff
+          ruff --version
+
+      # go, make, node/npm and cargo are already on both runner images;
+      # swift is on macOS only, so the swift row skips by name on Linux.
+      # golangci-lint is on neither, which is what spf13/cobra's expected
+      # lint failure depends on — the harness checks that too, and skips
+      # the row rather than lying if a future image ships one.
+      - name: Toolchains present
+        run: |
+          for t in git make go npm cargo swift ruff golangci-lint xo; do
+            printf '%-16s %s\n' "$t" "$(command -v "$t" || echo 'not installed')"
+          done
+
+      # -v so the log carries one line per repository, and the skip
+      # reasons, rather than a bare ok/FAIL. -timeout 30m because `cargo
+      # test` and `swift build` are real builds.
+      - name: Conformance corpus
+        env:
+          PIKA_CONFORMANCE: "1"
+          PIKA_CONFORMANCE_CACHE: ${{ runner.temp }}/pika-conformance-cache
+        run: go test ./internal/conformance/ -count=1 -v -timeout 30m

@@ -237,6 +237,75 @@ inside temp repositories it removes when it ends. The agent boundary is a fake
 `codex` binary on `PATH`, so there is no model call and no network, and `pika
 check --ci` stays provably LLM-free with the gate in it.
 
+### The corpus runs pika on code pika did not write
+
+A smoke gate proves the product runs. It does not prove the product is right
+about *your* repository, because it only ever meets repositories pika
+scaffolded — and a fixture only ever encodes what its author already imagined.
+pika governed itself for four milestones and its own gates found nothing. Ten
+minutes after it was pointed at three repositories it did not write, two
+defects appeared that self-governance structurally could not surface:
+
+- `adopt` inferred `format: make fmt` from cobra's Makefile and then reported
+  `FAIL format exit=0` — failing a command that had just succeeded, because
+  the go@1 pack's `fail-on-output` convention rode onto whatever command
+  filled the format slot.
+- `adopt` recorded `naming-kebab-case` deviations and dropped
+  `naming-catch-all` ones, so psf/requests and sindresorhus/got adopted
+  "successfully" and then failed gate 1 on a file called `utils` — and a
+  failed gate 1 skips every later gate. Any project with a file named `utils`
+  was unadoptable.
+
+[`internal/conformance`](../../internal/conformance) is the corpus that
+catches the next one. It pins five real repositories to exact commits, runs
+each through `adopt` → `apply` → `check --all`, and grades the result against
+expectations recorded in the manifest as data:
+
+| Repository | Pack | What it buys |
+|---|---|---|
+| spf13/cobra `v1.9.1` | go@1 | Makefile-driven commands; `make fmt` prints and exits 0, and the format rung must pass |
+| psf/requests `v2.32.5` | python@1 | two files named `utils`; gate 1 must pass anyway |
+| sindresorhus/got `v14.4.7` | typescript@1 | a whole `utils/` directory, and three rungs that legitimately find no command |
+| dtolnay/anyhow `1.0.99` | rust@1 | the only row that goes green end to end, with real `cargo` gates |
+| apple/swift-argument-parser `1.8.2` | swift@1 | several hundred inherited naming exceptions, and real `swift build`/`swift test` |
+
+Three properties are worth naming, because a corpus without them rots:
+
+**An unexpected pass fails the run.** cobra's `lint` rung is expected to fail
+on a `golangci-lint` that is not installed. The day it starts passing,
+something changed — the Makefile, the runner image, or pika's reading of an
+exit status — and a corpus that only noticed regressions in one direction
+would have nothing left to say about either.
+
+**A machine that cannot exercise a row skips it by name.** Each row declares
+the tools that must be on `PATH` and, where its outcome depends on one, the
+tool that must *not* be. Linux has no `swift`, so that row says so and skips;
+a machine with `golangci-lint` installed cannot reproduce cobra's recorded
+lint failure, so that row says so and skips too. Neither is reported as a
+conformance failure, and neither is silent.
+
+**"Could not reach the network" is never "pika is wrong."** The fetch happens
+before pika is invoked at all, so a fetch that fails is not evidence about
+pika and is reported as a skip naming the host. Conflating the two makes a
+corpus useless in exactly the situation it is most tempting to ignore.
+
+It is off unless asked. Cloning is slow and needs the network, so it must
+never run inside `go test ./...` or `pika check`:
+
+```sh
+go test ./internal/conformance/ -count=1          # skips, and says how to enable it
+PIKA_CONFORMANCE=1 go test ./internal/conformance/ -count=1 -v -timeout 30m
+```
+
+The switch is an environment variable rather than a build tag on purpose: a
+build tag would take these files out of `go build ./...`, out of `go vet` and
+out of the ordinary test compile, so the corpus would rot uncompiled while
+continuing to look maintained — which is the failure mode it exists to
+prevent. Checkouts are cached per commit under the system temp directory
+(`PIKA_CONFORMANCE_CACHE` moves it), never under `$HOME` and never inside the
+checkout. CI runs it as the scheduled `conformance` workflow, separate from
+`pika check --ci` so a network hiccup cannot redden the merge gate.
+
 ### The gates report; they do not fix
 
 A verification gate never edits the tree it is verifying. The format gate in
