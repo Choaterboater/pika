@@ -1,0 +1,53 @@
+name: codex-compat
+
+# CodexRunner constructs a fixed argv for `codex exec` (internal/improve/
+# handoff.go). codex 0.151.0 once rejected `--sandbox` alongside
+# `--approve-for-me` and every handoff died on argument parsing before an
+# agent read a byte of the prompt — four milestones of plumbing that had
+# never once executed against the real binary, because the fake codex at
+# internal/e2e/testdata/fakecodex accepts any argv by design.
+#
+# This job runs the real, currently-published codex CLI and diffs the
+# flags CodexRunner sends against what its own `exec --help` declares.
+# It calls no model and spends no tokens: --help is a static usage dump,
+# and codex needs no authentication to print it.
+#
+# It is a separate workflow for the same reason conformance is: a
+# renamed flag in somebody else's release is not a reason to redden
+# every pull request's merge gate, so this runs on a schedule and on
+# demand instead.
+on:
+  schedule:
+    # Wednesdays, 06:31 UTC. Off-hour, off-minute, and a different day
+    # from conformance's Monday run, so the two scheduled jobs do not
+    # queue behind one another.
+    - cron: "31 6 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install codex
+        run: |
+          npm install -g @openai/codex
+          codex --version
+
+      - name: Diff CodexRunner's argv against codex exec --help
+        env:
+          PIKA_CODEX_COMPAT: "1"
+        run: go test ./internal/improve/ -count=1 -v -run TestRealCodexCompatibility
