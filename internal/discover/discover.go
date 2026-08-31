@@ -34,6 +34,16 @@ type Inventory struct {
 	ExistingChecks    map[string]string
 	HasGit            bool
 	GitHubWorkflows   []string
+	// UnclassifiedMarkers names the repository-relative paths of a
+	// real ecosystem config file discover recognized but has no
+	// language pack for (Maven's pom.xml, Gradle's build.gradle[.kts],
+	// CMake's CMakeLists.txt) — sorted. A repository with one of these
+	// and nothing else yields zero Packages the same as a repository
+	// discover saw nothing distinctive in at all; this is what lets a
+	// caller tell those two very different situations apart and say
+	// so, rather than reporting both as an equally deliberate
+	// core-only adoption.
+	UnclassifiedMarkers []string
 }
 
 // maxDepth is the maximum marker-search depth below the repo root: a marker
@@ -57,6 +67,12 @@ var SkipDirs = map[string]bool{
 }
 
 // markers maps a file or directory name to a marker category.
+//
+// maven/gradle/cmake are real ecosystem markers with no language pack
+// behind them (see unclassifiedCategories below): recognizing the
+// file is what lets Discover report that it saw a real project it
+// cannot classify, rather than looking identical to a repository with
+// nothing distinctive in it at all.
 var markers = map[string]string{
 	"package.json":        "packagejson",
 	"pyproject.toml":      "pyproject",
@@ -74,6 +90,24 @@ var markers = map[string]string{
 	"package-lock.json":   "lock.npm",
 	"bun.lockb":           "lock.bun",
 	"yarn.lock":           "lock.yarn",
+	"pom.xml":             "maven",
+	"build.gradle":        "gradle",
+	"build.gradle.kts":    "gradle",
+	"CMakeLists.txt":      "cmake",
+}
+
+// unclassifiedCategories are marker categories with no consumer at
+// all: no singlePackages/workspacePackages branch turns them into a
+// Package, and no existingChecks branch turns them into a discovered
+// command, unlike makefile/justfile/taskfile which at least feed
+// ExistingChecks. Populating Inventory.UnclassifiedMarkers from
+// exactly this set is deliberate and closed — adding a marker to the
+// map above without also deciding whether it belongs here would leave
+// it silently inert either way.
+var unclassifiedCategories = map[string]bool{
+	"maven":  true,
+	"gradle": true,
+	"cmake":  true,
 }
 
 // walkHits records marker paths found during the bounded walk, plus flags for
@@ -111,6 +145,10 @@ func Discover(repoRoot string) (*Inventory, error) {
 	inv.HasGit = dirOrFileExists(filepath.Join(root, ".git"))
 	inv.GitHubWorkflows = listWorkflows(filepath.Join(root, filepath.FromSlash(".github/workflows")))
 	inv.ExistingChecks = existingChecks(root, hits)
+	for cat := range unclassifiedCategories {
+		inv.UnclassifiedMarkers = append(inv.UnclassifiedMarkers, hits.markerPaths[cat]...)
+	}
+	sort.Strings(inv.UnclassifiedMarkers)
 
 	inv.Packages = classify(root, hits)
 	langs := map[string]bool{}

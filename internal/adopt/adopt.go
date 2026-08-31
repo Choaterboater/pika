@@ -181,6 +181,14 @@ type Report struct {
 	Conflicts        []Conflict         `json:"conflicts"`
 	Exceptions       []checks.Exception `json:"exceptions"`
 	Preview          []Diff             `json:"preview"`
+	// Warnings names anything about classification itself worth an
+	// operator's attention before they trust the draft — today, only
+	// whether discover found nothing to classify. It is deliberately
+	// separate from Conflicts (a naming decision inherited from code)
+	// and from apply's own Gate1.Warnings (a post-apply verification
+	// signal): this fires before a draft is even written, about
+	// whether classification itself succeeded.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // previewConfig holds Preview's optional policy hooks. The zero value is
@@ -296,6 +304,7 @@ func Preview(repoRoot string, opts ...Option) (*Report, error) {
 			{Path: contractDraftPath, After: string(contractYAML)},
 			{Path: lockDraftPath, After: string(lockJSON)},
 		},
+		Warnings: classificationWarnings(inv),
 	}
 	// The review bundle is the visible, plain-language copy of this
 	// report: .project/ is a dot-folder, and the drafts are YAML.
@@ -316,6 +325,27 @@ func detectedProfiles(languages []string) []string {
 		}
 	}
 	return out
+}
+
+// classificationWarnings reports whether discover found nothing to
+// classify — a repository with zero packages otherwise looks
+// identical, in the review bundle and the printed report, to a
+// deliberate core-only adoption, differing by one integer nobody
+// reads as a warning. inv.UnclassifiedMarkers distinguishes the two
+// real reasons this happens: a real ecosystem discover recognizes but
+// has no language pack for (named, so the operator learns why rather
+// than guessing), versus discover genuinely finding nothing
+// distinctive at all.
+func classificationWarnings(inv *discover.Inventory) []string {
+	if len(inv.Packages) > 0 {
+		return nil
+	}
+	if len(inv.UnclassifiedMarkers) > 0 {
+		return []string{fmt.Sprintf(
+			"found %s, but this pika has no profile pack for that ecosystem, so this draft declares no language and no verification commands; `pika check` on it will pass having verified nothing",
+			strings.Join(inv.UnclassifiedMarkers, ", "))}
+	}
+	return []string{"could not classify this repository: no recognized language, build, or package marker was found, so this draft declares no language and no verification commands"}
 }
 
 // buildDraft composes the full draft contract: schema 1, detected profiles,

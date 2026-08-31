@@ -397,6 +397,76 @@ func TestPreviewBaselineTimeout(t *testing.T) {
 	}
 }
 
+// A repository whose only marker is a real ecosystem with no profile
+// pack (Maven's pom.xml) must warn rather than silently look like a
+// deliberate core-only adoption: zero packages either way, but the
+// two situations are not the same and only one of them is worth an
+// operator's attention before they trust the draft.
+func TestPreviewWarnsOnAnUnclassifiedEcosystemMarker(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "pom.xml", "<project></project>\n")
+
+	rep, err := Preview(root)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if len(rep.Inventory.Packages) != 0 {
+		t.Fatalf("expected 0 packages, got %+v", rep.Inventory.Packages)
+	}
+	if len(rep.Warnings) != 1 {
+		t.Fatalf("Warnings = %v, want exactly one", rep.Warnings)
+	}
+	if !strings.Contains(rep.Warnings[0], "pom.xml") {
+		t.Errorf("warning does not name the unclassified marker: %q", rep.Warnings[0])
+	}
+	bundle, err := os.ReadFile(filepath.Join(root, ReviewPath))
+	if err != nil {
+		t.Fatalf("read review bundle: %v", err)
+	}
+	if !strings.Contains(string(bundle), "pom.xml") {
+		t.Errorf("review bundle does not mention the unclassified marker:\n%s", bundle)
+	}
+}
+
+// A repository with nothing distinctive at all gets a different,
+// generic warning — not silence, and not a false claim to have seen a
+// specific ecosystem it did not.
+func TestPreviewWarnsWhenNothingIsClassifiable(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "README.md", "# nothing here\n")
+
+	rep, err := Preview(root)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if len(rep.Warnings) != 1 {
+		t.Fatalf("Warnings = %v, want exactly one", rep.Warnings)
+	}
+	if !strings.Contains(rep.Warnings[0], "could not classify") {
+		t.Errorf("warning does not say classification failed outright: %q", rep.Warnings[0])
+	}
+}
+
+// A repository adopt DOES classify gets no classification warning at
+// all — the signal must track "found nothing", not merely exist on
+// every adoption.
+func TestPreviewNoWarningWhenClassified(t *testing.T) {
+	root := messyFixture(t)
+	rep, err := Preview(root)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if len(rep.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want none: this fixture is a real go module", rep.Warnings)
+	}
+}
+
 func TestPreviewCommittedContractRejected(t *testing.T) {
 	root := messyFixture(t)
 	writeFile(t, root, ".project/contract.yaml",

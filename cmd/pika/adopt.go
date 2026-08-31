@@ -59,6 +59,9 @@ func printAdoptReport(rep *adopt.Report, stdout io.Writer) {
 	fmt.Fprintln(stdout, "adoption preview (read-only; drafts only, nothing applied)")
 	fmt.Fprintf(stdout, "detected profiles: %s\n", orNone(strings.Join(rep.DetectedProfiles, ", ")))
 	fmt.Fprintf(stdout, "packages: %d\n", len(rep.Inventory.Packages))
+	for _, w := range rep.Warnings {
+		fmt.Fprintf(stdout, "warning: %s\n", w)
+	}
 	fmt.Fprintln(stdout, "conventions:")
 	for _, c := range rep.ConventionMap {
 		fmt.Fprintf(stdout, "  %-9s %s: %s\n", c.Status, c.Name, c.Detail)

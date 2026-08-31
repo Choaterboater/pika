@@ -97,8 +97,10 @@ func renderProposed(b *strings.Builder, data ReviewData) {
 	fmt.Fprintf(b, "## What was found\n\n")
 	fmt.Fprintf(b, "- Detected profiles: %s\n", orList(joinProfiles(rep)))
 	fmt.Fprintf(b, "- Packages: %d\n", len(rep.Inventory.Packages))
+	for _, w := range rep.Warnings {
+		fmt.Fprintf(b, "- **Warning:** %s\n", w)
+	}
 	fmt.Fprintf(b, "- The machine-readable proposals live in `.project/contract.yaml.draft` and `.project/profiles.lock.draft` (dot-folders are hidden by default in Finder and Explorer — this file is the plain-language copy).\n\n")
-
 	fmt.Fprintf(b, "## Conventions (%d checked against the core profile)\n\n", len(rep.ConventionMap))
 	fmt.Fprintf(b, "| Convention | Status | Detail |\n|---|---|---|\n")
 	for _, c := range rep.ConventionMap {

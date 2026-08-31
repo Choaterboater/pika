@@ -332,6 +332,53 @@ func TestTaskfileTaskNamedFormatIsInvokedByItsRealName(t *testing.T) {
 	}
 }
 
+// A repository whose only marker is a real ecosystem pika has no
+// language pack for (Maven's pom.xml, here) must not just silently
+// yield zero packages: the marker was seen and named, so an operator
+// reading the adoption report learns why the draft declares no
+// language gates instead of mistaking it for a deliberate core-only
+// choice.
+func TestUnclassifiedEcosystemMarkerIsNamed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "pom.xml"), []byte("<project></project>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Packages) != 0 {
+		t.Fatalf("expected 0 packages for a pom.xml-only tree, got %+v", inv.Packages)
+	}
+	if !slices.Contains(inv.UnclassifiedMarkers, "pom.xml") {
+		t.Errorf("UnclassifiedMarkers = %v, want it to include pom.xml", inv.UnclassifiedMarkers)
+	}
+}
+
+// The same for Gradle and CMake: recognized as real ecosystem markers,
+// named as unclassified, never mistaken for a package.
+func TestUnclassifiedEcosystemMarkersGradleAndCMake(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "build.gradle.kts"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "CMakeLists.txt"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Packages) != 0 {
+		t.Fatalf("expected 0 packages, got %+v", inv.Packages)
+	}
+	for _, want := range []string{"CMakeLists.txt", "build.gradle.kts"} {
+		if !slices.Contains(inv.UnclassifiedMarkers, want) {
+			t.Errorf("UnclassifiedMarkers = %v, want it to include %s", inv.UnclassifiedMarkers, want)
+		}
+	}
+}
+
 // A known, narrower limitation, not a defect this package fixes:
 // goreleaser/goreleaser's own Taskfile.yml indents one task's `cmds:`
 // key level with the task name instead of nested under it — tolerated
