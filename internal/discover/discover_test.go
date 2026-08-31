@@ -160,6 +160,53 @@ func TestMonorepoCargoWorkspaceSplit(t *testing.T) {
 	}
 }
 
+// The standard Cargo layout where the workspace root is ALSO a real
+// package — a root Cargo.toml declaring both [package] and [workspace]
+// members, exactly ripgrep's own shape (the `rg` binary crate plus a
+// crates/* workspace). Before this fix the root crate belonged to no
+// contract package at all: not a workspace member (expandMembers only
+// walks the declared members) and not picked up by the plain single-
+// package fallback either, since finding any workspace members is
+// what stops classify from reaching it.
+func TestCargoWorkspaceRootThatIsAlsoAPackage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Cargo.toml"), []byte(
+		"[package]\nname = \"rg\"\n\n[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range []string{"crates/core", "crates/cli"} {
+		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(member)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(member), "Cargo.toml"),
+			[]byte("[package]\nname = \""+filepath.Base(member)+"\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Packages) != 3 {
+		t.Fatalf("expected 3 packages (root rg + 2 members), got %d: %+v", len(inv.Packages), inv.Packages)
+	}
+	var sawRoot bool
+	for _, p := range inv.Packages {
+		if p.Root == "." {
+			sawRoot = true
+			if p.Name != "rg" {
+				t.Errorf("root package name = %q, want rg", p.Name)
+			}
+			if p.Language != "rust" {
+				t.Errorf("root package language = %q, want rust", p.Language)
+			}
+		}
+	}
+	if !sawRoot {
+		t.Fatalf("the root crate is missing from Packages entirely: %+v", inv.Packages)
+	}
+}
+
 func TestSingleProjectEmitsExactlyOnePackage(t *testing.T) {
 	for _, name := range []string{"ts-single", "py-single", "swift-xcode", "rust-cargo", "go-mod"} {
 		inv := inventoryFromFixture(t, name)

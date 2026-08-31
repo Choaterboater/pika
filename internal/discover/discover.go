@@ -287,6 +287,19 @@ func workspacePackages(root string, hits *walkHits) []Package {
 			}
 			pkgs = append(pkgs, Package{Root: m, Name: name, Language: "rust", Kind: "workspace"})
 		}
+		// The standard Cargo "root package + workspace" layout: the
+		// same Cargo.toml that declares [workspace] members can also
+		// declare its own [package] (ripgrep's root crate is exactly
+		// this shape — the rg binary, alongside a crates/* workspace).
+		// Without this, that root crate and every file under it belong
+		// to no contract package at all: not a member (expandMembers
+		// only walks the declared members), and not "." either, since
+		// finding any workspace members at all is what stops this
+		// function from falling through to singlePackages' plain
+		// Cargo.toml-at-root case.
+		if cargo.Package.Name != "" {
+			pkgs = append(pkgs, Package{Root: ".", Name: cargo.Package.Name, Language: "rust", Kind: "workspace"})
+		}
 		break
 	}
 	if len(pkgs) > 0 {
