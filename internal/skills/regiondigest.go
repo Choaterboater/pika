@@ -56,9 +56,11 @@ func withRegionDigest(core []byte, digest string) []byte {
 // It is the exact inverse of withRegionDigest: removing the one digest
 // line, and the newline that ends it, reproduces the core the digest
 // was taken over. Anything other than exactly one digest line is an
-// error rather than a tolerated shape — a region with none was never
-// signed by this mechanism, and a region with two cannot say which
-// claim is being made.
+// error rather than a tolerated shape — a region with none records no
+// claim about its own bytes at all, and a region with two does not say
+// which claim it is making. The digest is an integrity check, not a
+// signature: it detects change, and does not pretend to identify who
+// made it.
 func splitRegionDigest(region []byte) (core []byte, digest string, err error) {
 	lines := bytes.Split(region, []byte("\n"))
 	kept := make([][]byte, 0, len(lines))
