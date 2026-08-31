@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -398,10 +399,22 @@ func expandMembers(root string, globs []string, manifest string) []string {
 
 // singlePackages emits one Package per language detected at the root. Order
 // follows the detection table so the primary stack comes first.
+//
+// A category's chosen marker path can be nested (first falls back to
+// hits.markerPaths[cat][0] when no root-level file exists — Tauri's
+// own layout is exactly this: package.json at the repository root,
+// Cargo.toml only under src-tauri/, no root Cargo.toml at all), so
+// Root is derived from that path's own directory rather than assumed
+// to be the repository root. Recording Root: "." for a package whose
+// only manifest is a directory over — as every branch below used to,
+// unconditionally — puts a package in the contract whose declared
+// root contains no manifest at all, and names it after whichever
+// nested crate/module happened to sort first rather than the
+// repository's own top-level declaration.
 func singlePackages(root string, hits *walkHits) []Package {
 	var pkgs []Package
-	add := func(language, kind, name string) {
-		pkgs = append(pkgs, Package{Root: ".", Name: name, Language: language, Kind: kind})
+	add := func(rel, language, kind, name string) {
+		pkgs = append(pkgs, Package{Root: path.Dir(filepath.ToSlash(rel)), Name: name, Language: language, Kind: kind})
 	}
 
 	first := func(cat, prefer string) string {
@@ -418,37 +431,37 @@ func singlePackages(root string, hits *walkHits) []Package {
 		if mod, err := readGoMod(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
 			name = mod.Module
 		}
-		add("go", "single", name)
+		add(rel, "go", "single", name)
 	}
 	if rel := first("cargo", "Cargo.toml"); rel != "" {
 		name := ""
 		if cargo, err := readCargoTOML(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
 			name = cargo.Package.Name
 		}
-		add("rust", "single", name)
+		add(rel, "rust", "single", name)
 	}
-	if len(hits.markerPaths["packageswift"]) > 0 {
-		add("swift", "spm", "")
+	if rel := first("packageswift", "Package.swift"); rel != "" {
+		add(rel, "swift", "spm", "")
 	}
-	if len(hits.markerPaths["xcodeproj"]) > 0 {
-		name := strings.TrimSuffix(filepath.Base(hits.markerPaths["xcodeproj"][0]), ".xcodeproj")
-		add("swift", "xcode", name)
+	if rel := first("xcodeproj", ""); rel != "" {
+		name := strings.TrimSuffix(filepath.Base(rel), ".xcodeproj")
+		add(rel, "swift", "xcode", name)
 	}
 	if rel := first("pyproject", "pyproject.toml"); rel != "" {
 		name := ""
 		if pp, err := readPyproject(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
 			name = pp.Project.Name
 		}
-		add("python", "single", name)
-	} else if len(hits.markerPaths["pyreq"]) > 0 {
-		add("python", "single", "")
+		add(rel, "python", "single", name)
+	} else if rel := first("pyreq", ""); rel != "" {
+		add(rel, "python", "single", "")
 	}
 	if rel := first("packagejson", "package.json"); rel != "" {
 		name := ""
 		if pj, err := readPackageJSON(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
 			name = pj.Name
 		}
-		add("typescript", "single", name)
+		add(rel, "typescript", "single", name)
 	}
 	return pkgs
 }

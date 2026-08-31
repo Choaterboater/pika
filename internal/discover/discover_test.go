@@ -101,6 +101,43 @@ func TestDetectRustCargo(t *testing.T) {
 	}
 }
 
+// A manifest can be the ONLY one for its language yet sit in a
+// subdirectory — Tauri's own layout: package.json at the repository
+// root, Cargo.toml only under src-tauri/, no root Cargo.toml at all.
+// Before this fix every singlePackages branch recorded Root: "."
+// unconditionally, so the rust package's declared root contained no
+// Cargo.toml at all and its name came from whichever nested crate
+// happened to be found rather than a package actually rooted there.
+func TestSinglePackageManifestInASubdirectoryGetsItsOwnRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"name": "greencli"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "src-tauri"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src-tauri", "Cargo.toml"), []byte("[package]\nname = \"green-cli\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Packages) != 2 {
+		t.Fatalf("expected 2 packages, got %+v", inv.Packages)
+	}
+	byLang := map[string]Package{}
+	for _, p := range inv.Packages {
+		byLang[p.Language] = p
+	}
+	if got := byLang["typescript"]; got.Root != "." || got.Name != "greencli" {
+		t.Errorf("typescript package = %+v, want Root=. Name=greencli", got)
+	}
+	if got := byLang["rust"]; got.Root != "src-tauri" || got.Name != "green-cli" {
+		t.Errorf("rust package = %+v, want Root=src-tauri Name=green-cli (the only Cargo.toml is there, not at the repository root)", got)
+	}
+}
+
 func TestMonorepoPnpmWorkspaceSplit(t *testing.T) {
 	inv := inventoryFromFixture(t, "monorepo-pnpm")
 	if !slices.Contains(inv.DetectedLanguages, "typescript") {
