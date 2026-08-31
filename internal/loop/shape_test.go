@@ -226,6 +226,42 @@ func TestAnthropicRequestShape(t *testing.T) {
 			t.Errorf("max_tokens = %v, want %d", got, anthropicMaxTokens)
 		}
 	})
+
+	t.Run("error tool result", func(t *testing.T) {
+		// The complement of the non-error case above: a failed tool
+		// puts is_error on the wire, true, so the provider sees the
+		// failure rather than an ordinary result.
+		p := newScriptedProvider(t, scriptedResponse{status: http.StatusOK, body: reply})
+		cl := anthropicClient{name: "anthropic", key: "test-key", baseURL: p.srv.URL}
+		_, err := cl.complete(context.Background(), request{
+			system: "SYS",
+			messages: []message{
+				{role: "user", parts: []part{{result: &toolResult{id: "c1", output: "no such file", isError: true}}}},
+			},
+			tools: toolSet(),
+			model: "claude-test",
+		})
+		if err != nil {
+			t.Fatalf("complete: %v", err)
+		}
+		got := p.received()
+		if len(got) != 1 {
+			t.Fatalf("the provider saw %d requests, want 1", len(got))
+		}
+		msgs := wireMessages(t, got[0].body)
+		m0 := wireMessage(t, msgs, 0)
+		c0, _ := m0["content"].([]any)
+		if len(c0) != 1 {
+			t.Fatalf("message 0 content = %v, want one tool_result block", c0)
+		}
+		result := c0[0].(map[string]any)
+		if result["type"] != "tool_result" || result["tool_use_id"] != "c1" || result["content"] != "no such file" {
+			t.Errorf("error tool_result block = %v", result)
+		}
+		if result["is_error"] != true {
+			t.Errorf("an error tool_result carries is_error = %v, want true", result["is_error"])
+		}
+	})
 }
 
 func TestOpenAIRequestShape(t *testing.T) {

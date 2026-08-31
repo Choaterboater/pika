@@ -816,7 +816,14 @@ agents:
 
 The key comes from pika's own environment, never from the contract — a credential in a contract is a credential in every clone. A missing provider, an unknown one, or an unset key variable is refused before any request is made. The base-URL override repoints the whole provider at another endpoint; it is also the only testing seam, which is how the suite (and `pika check --ci`) stays provably LLM-free.
 
-The loop works the repository with three tools: `read_file` (the first 32 KiB, head-truncated with a marker), `write_file` (the full new content), and `run_command` (any shell command, tail-truncated to the last 8 KiB, 10-minute timeout). `run_command` is deliberately unrestricted — the same posture as the most permissive harness adapter — and the run's own checks are what hold the tools to the role: the Git-state equality check, the read-only rule for explorer and reviewer, and the recheck ladder. Paths must stay inside the repository, and `.project/state/` is refused outright. Two runaway guards are constants, not policy: 40 turns and 400,000 tokens per run. Each provider call has a 5-minute timeout, and a 429 or 5xx retries with backoff while any other 4xx surfaces verbatim.
+The loop works the repository with three tools: `read_file` (the first 32 KiB, head-truncated with a
+marker), `write_file` (the full new content), and `run_command` (any shell command, tail-truncated to the
+last 8 KiB, 10-minute timeout). `run_command` is deliberately unrestricted — the same posture as the most
+permissive harness adapter — and the run's own checks are what hold the tools to the role: the Git-state
+equality check, the read-only rule for explorer and reviewer, and the recheck ladder. Paths must stay
+inside the repository, and `.project/state/` is refused outright. Two runaway guards are constants, not
+policy: 40 turns and 400,000 tokens per run. Each provider call has a 5-minute timeout, and a 429 or 5xx
+retries with backoff while any other 4xx surfaces verbatim.
 
 A loop run writes two things the other runtimes cannot: `pika-transcript.json` (mode 0600) in the handoff bundle — the whole conversation, redacted at the point of writing — and three usage counters (`calls`, `tokens_in`, `tokens_out`) on the agent's entry in the run's `record.json`. The counters are omitted for runtimes that cannot know them, and the committed evidence receipt is unchanged.
 

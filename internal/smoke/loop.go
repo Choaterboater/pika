@@ -125,7 +125,7 @@ func stepLoop(h *harness) error {
 	}
 	wantEqual(c, "`pika work` exit code on a loop-builder run", r.exit, 0)
 
-	var workID string
+	var workID, commit string
 	{
 		env, ok := decodeEnvelope(c, r, "work")
 		if !ok {
@@ -139,19 +139,28 @@ func stepLoop(h *harness) error {
 			return c.err()
 		}
 		c.truef(res.Commit != "", "`pika work` delivered no commit with the loop as its builder\n%s", r)
-		workID = res.WorkID
+		workID, commit = res.WorkID, res.Commit
 	}
 	if workID == "" {
 		c.failf("`pika work` reported no work id, so there is no record to read\n%s", r)
 		return c.err()
 	}
 
-	// The edit is in the delivered commit — the loop's write_file ran
-	// inside the pika process and the ladder verified the result.
-	if out, err := git(dir, "show", "chore/pika-improve:"+loopPath); err != nil {
-		c.failf("the delivered commit holds no %s: %v", loopPath, err)
-	} else {
-		wantEqual(c, "the committed "+loopPath, out, strings.TrimSpace(loopContent))
+	// The edit is in the commit pika says it made — not merely at the
+	// branch's tip: the loop's write_file ran inside the pika process
+	// and the ladder verified the result.
+	if commit != "" {
+		head, err := git(dir, "rev-parse", improveBranch)
+		if err != nil {
+			return err
+		}
+		wantEqual(c, "the head of "+improveBranch+" against the commit `pika work` reported", head, commit)
+		got, err := git(dir, "show", commit+":"+loopPath)
+		if err != nil {
+			return err
+		}
+		wantEqual(c, "the content of "+loopPath+" in the delivered commit",
+			strings.TrimRight(got, "\n"), strings.TrimRight(loopContent, "\n"))
 	}
 
 	// The record names the loop: the builder ran on runtime pika, and it
