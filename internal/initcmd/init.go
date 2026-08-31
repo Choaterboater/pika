@@ -168,7 +168,14 @@ func Run(opts InitOptions) (*Manifest, error) {
 	requested, wantName, module := opts.Profiles, opts.Name, opts.Module
 	if existing != nil {
 		if len(requested) == 0 {
-			requested = checks.ProfileRefs(existing)
+			// existing.Profiles, not checks.ProfileRefs(existing): the
+			// latter unions in every package's own Profiles, which can
+			// name more packs than profiles.Resolve ever composes for
+			// a repository whose packages span more than one
+			// language. existing.Profiles is the contract's own
+			// repository-level selection — the same field `pika
+			// apply` itself now resolves for this exact purpose.
+			requested = existing.Profiles
 		}
 		if wantName == "" {
 			wantName = existing.Project.Name

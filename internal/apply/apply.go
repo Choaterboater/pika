@@ -177,8 +177,26 @@ func Run(opts RunOptions) (Report, error) {
 	if _, err := profiles.ReadLock(lockDraftAbs); err != nil {
 		return Report{}, fmt.Errorf("apply: %s is invalid: %w", lockDraftRel, err)
 	}
-	refs := checks.ProfileRefs(c)
-	resolved, err := profiles.Resolve(refs)
+	// checks.ProfileRefs(c) is deliberately NOT used here: it unions
+	// every package's own Profiles into the repository-level
+	// selection, and a repository whose packages span more than one
+	// language (an ordinary shape — a Go module and a TypeScript
+	// package sharing the repository root) would union to more packs
+	// than profiles.Resolve composes, failing every such apply with
+	// no remedy. c.Profiles is the contract's own repository-level
+	// selection — core@1 alone when adopt could not name one
+	// principled language for that slot, exactly the fallback Preview
+	// already used to baseline this same repository's commands — and
+	// resolving that is what determines the repository-level Commands
+	// autofill and the rendered core files below. It is never asked to
+	// answer the per-package composition question, because nothing
+	// downstream of it does either: skills.Install and Gate1 read
+	// resolved.NamingRules/AgentGuidance at the repository level only,
+	// the same level c.Profiles already describes. The lock check
+	// (gate1.CheckLock) verifies every pack any package references,
+	// independently, via its own ProfileRefs(c) call — unaffected by
+	// this.
+	resolved, err := profiles.Resolve(c.Profiles)
 	if err != nil {
 		return Report{}, fmt.Errorf("apply: resolve draft profiles: %w", err)
 	}
@@ -197,7 +215,7 @@ func Run(opts RunOptions) (Report, error) {
 	// The core files render exactly the way init renders them: one
 	// implementation, so an applied file is byte-identical to a
 	// scaffolded one.
-	core, err := initcmd.CoreFiles(initcmd.LanguageName(refs), c.Project.Name)
+	core, err := initcmd.CoreFiles(initcmd.LanguageName(c.Profiles), c.Project.Name)
 	if err != nil {
 		return Report{}, fmt.Errorf("apply: %w", err)
 	}

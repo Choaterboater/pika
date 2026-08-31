@@ -578,6 +578,19 @@ func TestPreviewKeepsBothPackagesWhenTwoLanguagesShareTheRoot(t *testing.T) {
 	if !slices.Contains(rep.DetectedProfiles, "go@1") || !slices.Contains(rep.DetectedProfiles, "typescript@1") {
 		t.Errorf("DetectedProfiles = %v, want both go@1 and typescript@1", rep.DetectedProfiles)
 	}
+	// The repository-level selection `pika apply` will resolve is a
+	// separate field from DetectedProfiles: it must stay one that
+	// profiles.Resolve actually composes (at most one language pack).
+	// Two detected languages have no single principled winner at the
+	// repository level, so it falls back to core@1 alone — writing
+	// the full detected union here is exactly what made `pika apply`
+	// reject every such draft outright.
+	if !slices.Equal(rep.DraftContract.Profiles, []string{"core@1"}) {
+		t.Errorf("DraftContract.Profiles = %v, want [core@1] (a resolvable repository-level selection)", rep.DraftContract.Profiles)
+	}
+	if _, err := profiles.Resolve(rep.DraftContract.Profiles); err != nil {
+		t.Errorf("draft contract's repository-level profiles do not resolve, so `pika apply` would reject it: %v", err)
+	}
 }
 
 func TestPreviewCommittedContractRejected(t *testing.T) {

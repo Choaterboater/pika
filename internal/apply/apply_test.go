@@ -17,6 +17,7 @@ import (
 	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/initcmd"
+	"github.com/Choaterboater/pika/internal/profiles"
 )
 
 // writeFile creates rel (slash-separated) under root with the given content.
@@ -319,6 +320,66 @@ func TestApplyMissingDrafts(t *testing.T) {
 	for _, draft := range []string{".project/contract.yaml", ".project/profiles.lock", ".project/exceptions.yaml"} {
 		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(draft))); statErr == nil {
 			t.Errorf("refused run wrote %s", draft)
+		}
+	}
+}
+
+// TestApplyPromotesARepositoryWhoseTwoPackagesAreDifferentLanguages
+// closes the blocker a real Tauri repository (a package.json and a
+// Cargo.toml both declared at the repository root — an ordinary
+// shape, not an exotic one) reproduced: `pika adopt` wrote a draft
+// contract whose repository-level `profiles:` listed every detected
+// language (`core@1 rust@1 typescript@1`), and `pika apply` rejected
+// that selection outright — profiles.Resolve composes at most one
+// language pack, so no such repository could ever be applied, with no
+// flag or documented escape. adopt now writes the repository-level
+// selection its own Preview already falls back to (core@1 alone) for
+// exactly this shape, so the draft it hands apply is one apply can
+// resolve.
+func TestApplyPromotesARepositoryWhoseTwoPackagesAreDifferentLanguages(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "go.mod", "module example.com/multilang\n\ngo 1.26\n")
+	writeFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
+	writeFile(t, root, "package.json", `{"name": "multilang", "version": "1.0.0"}`+"\n")
+	if _, err := adopt.Preview(root); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+
+	rep, err := Run(RunOptions{Dir: root})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if rep.Rollback {
+		t.Error("report.Rollback = true, want false")
+	}
+	if !rep.Gate1.Pass {
+		t.Errorf("gate1 = %+v, want pass", rep.Gate1)
+	}
+
+	applied, err := contract.Load(filepath.Join(root, ".project", "contract.yaml"))
+	if err != nil {
+		t.Fatalf("applied contract is invalid: %v", err)
+	}
+	if !slices.Equal(applied.Profiles, []string{"core@1"}) {
+		t.Errorf("applied.Profiles = %v, want [core@1] (no single language applies at the repository level)", applied.Profiles)
+	}
+	if len(applied.Packages) != 2 {
+		t.Fatalf("expected 2 packages, got %+v", applied.Packages)
+	}
+
+	// The lock must still pin every pack any package references, not
+	// just the repository-level selection — gate 1's own lock check
+	// verifies exactly that union.
+	lock, err := profiles.ReadLock(filepath.Join(root, ".project", "profiles.lock"))
+	if err != nil {
+		t.Fatalf("committed lock is invalid: %v", err)
+	}
+	for _, pack := range []string{"core", "go", "typescript"} {
+		if _, ok := lock.Packs[pack]; !ok {
+			t.Errorf("committed lock is missing pack %q: %+v", pack, lock.Packs)
 		}
 	}
 }

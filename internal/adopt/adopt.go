@@ -272,7 +272,7 @@ func Preview(repoRoot string, opts ...Option) (*Report, error) {
 	if err != nil {
 		return nil, fmt.Errorf("adopt: %w", err)
 	}
-	draft := buildDraft(repoRoot, inv, detected)
+	draft := buildDraft(repoRoot, inv, resolveSelection)
 
 	// Every spawn this preview performs is decided here, before the
 	// first one starts and before a draft exists: a denial must cost the
@@ -379,14 +379,25 @@ func classificationWarnings(inv *discover.Inventory) []string {
 	return []string{"could not classify this repository: no recognized language, build, or package marker was found, so this draft declares no language and no verification commands"}
 }
 
-// buildDraft composes the full draft contract: schema 1, detected profiles,
-// one packages entry per discovered package, commands mapped from the
-// discovered checks where verbs match contract slots, the M1 defaults
-// for GitHub merge and evidence policy, and the same default skills
-// projection `pika init` declares — codex reading AGENTS.md — since
-// `pika apply` creates AGENTS.md for an adopted repository exactly as
-// `pika init` does.
-func buildDraft(repoRoot string, inv *discover.Inventory, detected []string) *contract.Contract {
+// buildDraft composes the full draft contract: schema 1, the repository-
+// level profile selection, one packages entry per discovered package,
+// commands mapped from the discovered checks where verbs match contract
+// slots, the M1 defaults for GitHub merge and evidence policy, and the
+// same default skills projection `pika init` declares — codex reading
+// AGENTS.md — since `pika apply` creates AGENTS.md for an adopted
+// repository exactly as `pika init` does.
+//
+// contractProfiles is the caller's already-resolved repository-level
+// selection (Preview's resolveSelection), never the raw union of every
+// detected language: profiles.Resolve composes at most one language
+// pack, the same rule a single package's own Profiles list must
+// satisfy, and a repository whose packages span two languages has no
+// single principled choice between them at the repository level
+// either — Preview already answers that by falling back to core@1
+// alone, and the contract this writes must agree with the baseline it
+// already computed, not with the full detected set (which is still
+// reported separately as Report.DetectedProfiles).
+func buildDraft(repoRoot string, inv *discover.Inventory, contractProfiles []string) *contract.Contract {
 	topology := "single"
 	if len(inv.Packages) > 1 {
 		topology = "workspace"
@@ -394,7 +405,7 @@ func buildDraft(repoRoot string, inv *discover.Inventory, detected []string) *co
 	c := &contract.Contract{
 		Schema:     1,
 		Project:    contract.Project{Name: projectName(repoRoot, inv), Topology: topology},
-		Profiles:   detected,
+		Profiles:   contractProfiles,
 		Packages:   map[string]contract.Package{},
 		Commands:   map[string]string{},
 		GitHub:     contract.GitHub{Merge: "squash"},
@@ -743,7 +754,14 @@ func writeDrafts(repoRoot string, draft *contract.Contract) ([]byte, error) {
 	if _, err := contract.Load(contractDraft); err != nil {
 		return nil, fmt.Errorf("adopt: generated draft contract is invalid: %w", err)
 	}
-	if err := profiles.WriteLock(filepath.Join(projDir, "profiles.lock.draft"), draft.Profiles); err != nil {
+	// Every pack referenced anywhere in the draft must be pinned, not
+	// just the repository-level selection: a package's own Profiles
+	// can name a language pack the repository level deliberately
+	// leaves out (buildDraft falls back to core@1 at the repository
+	// level when packages span more than one language), and gate 1's
+	// lock check verifies every ProfileRefs entry, project and
+	// per-package alike.
+	if err := profiles.WriteLock(filepath.Join(projDir, "profiles.lock.draft"), checks.ProfileRefs(draft)); err != nil {
 		return nil, fmt.Errorf("adopt: write %s: %w", lockDraftPath, err)
 	}
 	return contractYAML, nil
