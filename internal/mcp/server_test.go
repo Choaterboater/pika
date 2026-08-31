@@ -18,7 +18,10 @@ import (
 	"github.com/Choaterboater/pika/internal/authorize"
 	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/improve"
+	"github.com/Choaterboater/pika/internal/lease"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/repolease"
 	"github.com/Choaterboater/pika/internal/repopath"
 )
 
@@ -1209,4 +1212,93 @@ func mustJSON(v any) string {
 		panic(err)
 	}
 	return string(bs)
+}
+
+// TestAcquireScopeIsRefusedWhileARunHoldsTheRepository closes the third
+// door into M4's hazard.
+//
+// The run lease and the scope lease were two exclusions that never
+// looked at each other. `pika work` in terminal one and `pika mcp` in
+// terminal two — serving an agent harness that writes files directly and
+// coordinates through acquire_scope — both proceeded in the same
+// repository, each unaware of the other. That is structurally the same
+// two-writers-one-tree hazard the run lease exists to exclude, and M4
+// closed two doors and left this one.
+//
+// Nothing here is hand-placed. The run lease is taken through
+// improve.TakeRunLease, the one entry point every mutating command uses,
+// and the acquire_scope is a real tools/call on a real stdio session
+// over real pipes. A lock file written by a test would only prove that
+// the scan reads files.
+func TestAcquireScopeIsRefusedWhileARunHoldsTheRepository(t *testing.T) {
+	const workID = "20260830-feature-c0ffee01"
+	root := fixtureRepo(t, "", envelopeYAML(".project", "src"))
+	r, err := repopath.At(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := improve.TakeRunLease(r, workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := startServer(t, root)
+	s.initialize()
+	errObj := wantToolError(t, s.callTool(1, "acquire_scope", map[string]any{"path": "src"}), "scope_conflict")
+	msg, _ := errObj["message"].(string)
+	// The refusal has to name the holder, exactly as every other
+	// refusal here does: an agent told only "conflict" can do nothing
+	// but retry blindly, and the run it is waiting on may last minutes.
+	for _, want := range []string{"src", workID, "run"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal = %q, want it to name %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "stale") {
+		t.Errorf("refusal = %q, want a live run never described as stale", msg)
+	}
+
+	// A refusing acquire must leave nothing behind: a lease file for a
+	// scope nobody was granted would wedge the path forever.
+	if _, err := os.Stat(filepath.Join(root, ".project", "state", "locks", "src.lock")); !os.IsNotExist(err) {
+		t.Fatalf("the refused acquire left a lease behind (stat err %v)", err)
+	}
+	// And it must leave the run's own lease exactly where it was.
+	dir, name := repolease.RunLock(r)
+	if info, state, err := lease.Inspect(dir, name); err != nil || state != lease.StateHeld || info == nil || info.ID != workID {
+		t.Fatalf("run lease = %+v state = %v err = %v, want the run still holding it", info, state, err)
+	}
+
+	// Once the run gives the repository back, the same call is granted.
+	// The exclusion is a refusal while the ground is taken, not a
+	// permanent denial.
+	if err := run.Release(); err != nil {
+		t.Fatal(err)
+	}
+	wantResult(t, s.callTool(2, "acquire_scope", map[string]any{"path": "src"}))
+	wantResult(t, s.callTool(3, "release_scope", map[string]any{"path": "src"}))
+}
+
+// The run lease covers the whole repository, so it covers a scope at any
+// depth. An exclusion an agent could sidestep by naming a subdirectory
+// would not be one — and the run lease is the scope lease on ".", which
+// is what makes this fall out of the same rule that already made a lease
+// on src conflict with one on src/pkg.
+func TestARunExcludesEveryScopeInsideIt(t *testing.T) {
+	root := fixtureRepo(t, "", envelopeYAML(".project", "src"))
+	r, err := repopath.At(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := improve.TakeRunLease(r, "20260830-feature-deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Release() })
+
+	s := startServer(t, root)
+	s.initialize()
+	for i, path := range []string{"src", "src/pkg", "src/pkg/deep", ".project"} {
+		wantToolError(t, s.callTool(i+1, "acquire_scope", map[string]any{"path": path}), "scope_conflict")
+	}
 }

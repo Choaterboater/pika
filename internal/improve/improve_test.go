@@ -1,9 +1,12 @@
 package improve
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +17,8 @@ import (
 
 	"github.com/Choaterboater/pika/internal/evidence"
 	"github.com/Choaterboater/pika/internal/lease"
+	"github.com/Choaterboater/pika/internal/mcp"
+	"github.com/Choaterboater/pika/internal/repolease"
 	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/verify"
 	"github.com/Choaterboater/pika/internal/workrec"
@@ -907,7 +912,7 @@ func TestRefusalNamesTheHolder(t *testing.T) {
 	first := startBlockedRun(t, root, "chore/pika-improve")
 	holder := soleRunID(t, root)
 
-	dir, name := RunLease(repoRoot(t, root))
+	dir, name := repolease.RunLock(repoRoot(t, root))
 	info, state, err := lease.Inspect(dir, name)
 	if err != nil {
 		t.Fatal(err)
@@ -982,7 +987,7 @@ func TestTheFirstRunIsUnaffectedByTheRefusal(t *testing.T) {
 	// The repository is usable again. A lease held past its run is the
 	// wedge `pika recover` exists to clear, and a run that reached a
 	// terminal outcome must never need it.
-	dir, name := RunLease(repoRoot(t, root))
+	dir, name := repolease.RunLock(repoRoot(t, root))
 	if info, state, err := lease.Inspect(dir, name); err != nil || state != lease.StateFree {
 		t.Fatalf("lease = %+v state = %v err = %v, want free once the run settled", info, state, err)
 	}
@@ -1950,5 +1955,179 @@ func TestLeadingDashCommitIsNotReadAsAnOption(t *testing.T) {
 	}
 	if _, err := os.Stat(written); !os.IsNotExist(err) {
 		t.Fatalf("git wrote %s: the commit argument was executed as an option", written)
+	}
+}
+
+// mcpSession is a genuine `pika mcp` stdio session, driven over real OS
+// pipes exactly as an MCP client drives it. Nothing here is a stand-in:
+// the leases it takes are taken by the server's own acquire_scope, and
+// it gives them back at EOF the way a disconnecting agent's session
+// does.
+type mcpSession struct {
+	t    *testing.T
+	inW  *os.File
+	outR *os.File
+	r    *bufio.Reader
+	done chan error
+}
+
+func startMCPSession(t *testing.T, root string) *mcpSession {
+	t.Helper()
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	s := &mcpSession{t: t, inW: inW, outR: outR, r: bufio.NewReader(outR), done: make(chan error, 1)}
+	go func() { s.done <- mcp.Serve(root, inR, outW, io.Discard) }()
+	t.Cleanup(func() {
+		s.end()
+		outR.Close()
+	})
+	return s
+}
+
+// call sends one tools/call and returns the decoded response.
+func (s *mcpSession) call(id int, name string, args map[string]any) map[string]any {
+	s.t.Helper()
+	req, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": "tools/call",
+		"params": map[string]any{"name": name, "arguments": args},
+	})
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	if _, err := s.inW.Write(append(req, '\n')); err != nil {
+		s.t.Fatalf("write request: %v", err)
+	}
+	line, err := s.r.ReadString('\n')
+	if err != nil {
+		s.t.Fatalf("read response: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		s.t.Fatalf("response is not JSON: %q: %v", line, err)
+	}
+	return resp
+}
+
+// acquire takes a scope lease and fails the test unless it is granted.
+func (s *mcpSession) acquire(id int, path string) {
+	s.t.Helper()
+	resp := s.call(id, "acquire_scope", map[string]any{"path": path})
+	res, ok := resp["result"].(map[string]any)
+	if !ok || res["ok"] != true {
+		s.t.Fatalf("acquire_scope %s = %v, want a granted lease", path, resp)
+	}
+}
+
+// end closes stdin, which is the clean shutdown an MCP client performs
+// and the point at which the server gives every lease back.
+func (s *mcpSession) end() {
+	s.t.Helper()
+	if s.inW == nil {
+		return
+	}
+	s.inW.Close()
+	s.inW = nil
+	select {
+	case err := <-s.done:
+		if err != nil {
+			s.t.Errorf("mcp server exit: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		s.t.Error("mcp server did not exit after stdin EOF")
+	}
+}
+
+// TestARunIsRefusedWhileAnMCPSessionHoldsAScope is the other half of the
+// third door M4 left open.
+//
+// A run lease and a scope lease were two exclusions that never looked at
+// each other, so `pika mcp` serving an agent harness in one terminal and
+// `pika work` in another both held the same working tree. The run is the
+// more dangerous of the two to let through: it switches branches under
+// the session's edits and sweeps whatever the session has written so far
+// into its own `git add`.
+//
+// The scope lease here is held by a real server session that really
+// granted it, and the run is a real improve.Run reaching the real lease
+// it always takes. The ladder and the agent are refusing stubs, which is
+// how "the refusal landed before anything was touched" is proved.
+func TestARunIsRefusedWhileAnMCPSessionHoldsAScope(t *testing.T) {
+	root := fixtureRepository(t)
+	writeMCPEnvelope(t, root, ".project", "src")
+	session := startMCPSession(t, root)
+	session.acquire(1, "src")
+
+	_, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check:  refusingCheck(t, "a run must not reach the ladder while a scope lease is held"),
+		Runner: refusingRunner{t: t, why: "a run must not spawn an agent while a scope lease is held"},
+	})
+	if !errors.Is(err, ErrScopeLeaseHeld) {
+		t.Fatalf("error = %v, want ErrScopeLeaseHeld", err)
+	}
+	// The refusal must name what is really holding the tree. "Another
+	// run" would send the operator to `pika status`, where they would
+	// find nothing and conclude the message was lying.
+	for _, want := range []string{"src", "scope lease"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to name %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "stale") {
+		t.Errorf("error = %v, want a live session's lease never described as stale", err)
+	}
+	// Refused before the working tree was touched: `git switch -c` is
+	// the lifecycle's first write, and a branch left behind would mean
+	// the guard fired too late to matter.
+	if _, exists, err := branchCommit(context.Background(), root, "chore/pika-improve"); err != nil {
+		t.Fatal(err)
+	} else if exists {
+		t.Fatal("the refused run created its branch: it reached the working tree before it was stopped")
+	}
+	// And it left no run lease of its own behind, which would have
+	// wedged the repository for everybody afterwards.
+	dir, name := repolease.RunLock(repoRoot(t, root))
+	if info, state, err := lease.Inspect(dir, name); err != nil || state != lease.StateFree {
+		t.Fatalf("run lease = %+v state = %v err = %v, want free after a refusal", info, state, err)
+	}
+
+	// The session ends the way a disconnecting agent's does, giving back
+	// what it took, and the repository runs again. The exclusion is a
+	// refusal while the ground is taken, not a permanent denial.
+	session.end()
+	result, err := Run(context.Background(), Config{
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check:  func() (*verify.Report, error) { return &verify.Report{Pass: true}, nil },
+		Runner: refusingRunner{t: t, why: "a green baseline needs no agent"},
+	})
+	if err != nil {
+		t.Fatalf("run after the session released its lease: %v", err)
+	}
+	if result.WorkID == "" {
+		t.Fatalf("result = %+v, want a run that actually started", result)
+	}
+}
+
+// writeMCPEnvelope grants an MCP session fs_write on the given paths.
+// `.project` is always among them in practice: acquire_scope appends to
+// the state board, and a session that cannot write there cannot take a
+// lease at all.
+func writeMCPEnvelope(t *testing.T, root string, paths ...string) {
+	t.Helper()
+	state := filepath.Join(root, ".project", "state")
+	if err := os.MkdirAll(state, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := "schema: 1\nallow:\n  fs_write: [" + strings.Join(paths, ", ") + "]\n"
+	if err := os.WriteFile(filepath.Join(state, "envelope.yaml"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

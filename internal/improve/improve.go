@@ -5,13 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/Choaterboater/pika/internal/evidence"
 	"github.com/Choaterboater/pika/internal/lease"
+	"github.com/Choaterboater/pika/internal/repolease"
 	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/verify"
 	"github.com/Choaterboater/pika/internal/workrec"
@@ -32,6 +32,22 @@ var ErrDirtyTree = errors.New("improve: working tree must be clean")
 // HEAD without either being told. The silent case is the one this
 // refusal exists for.
 var ErrRunInProgress = errors.New("improve: another run holds this repository")
+
+// ErrScopeLeaseHeld refuses a run because an MCP session holds a scope
+// lease somewhere inside this repository.
+//
+// It is a separate sentinel from ErrRunInProgress because the holder is
+// a separate thing. "Another run holds this repository" sends an
+// operator looking for a run with `pika status`, they find none, and
+// they conclude the refusal was lying — when what is actually in the
+// tree is an agent harness driving `pika mcp`, writing files under a
+// path it leased. The refusal has to name what is really there.
+//
+// A run is refused by it because a run commits through the whole working
+// tree, including the path that lease covers: the run's branch switch
+// moves files the session is editing, and the run's `git add` sweeps up
+// whatever the session has written so far.
+var ErrScopeLeaseHeld = errors.New("improve: a scope lease holds part of this repository")
 
 // ErrNoChanges prevents a misleading empty commit after an agent run.
 var ErrNoChanges = errors.New("improve: Codex made no changes to commit")
@@ -95,26 +111,6 @@ const privateStateDir = ".project/state"
 // reconciliation that has quietly stopped recognising the commits this
 // package actually makes.
 const deliverMessage = "chore: improve verified findings"
-
-// runLeaseName is the file a mutating run holds for as long as it is in
-// progress. It sits beside the run records rather than in `.git`,
-// because what it excludes is a Pika run and not a Git operation.
-const runLeaseName = "run.lock"
-
-// RunLease locates the whole-repository run lease.
-//
-// It is exported because `pika recover` is the one remedy for a lease
-// whose run died holding it, and a recover that spelled the path itself
-// would be a second definition of where the lease lives — free to drift
-// from this one the first time it moves, and silently, since a recover
-// looking in the wrong place reports a repository that is already clean.
-//
-// The lease covers the whole repository because the hazard does: both
-// runs write one working tree and move one HEAD. Path-scoped leases
-// would serve parallel writers, which pika does not have.
-func RunLease(root *repopath.Root) (dir, name string) {
-	return root.StateDir(), runLeaseName
-}
 
 // CheckFunc runs Pika's deterministic ladder and returns its full report.
 // The command layer supplies the same in-process check engine used by
@@ -255,7 +251,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 }
 
 // TakeRunLease claims the repository for one run, refusing rather than
-// waiting or stealing when another already holds it.
+// waiting or stealing when anything already holds ground inside it.
 //
 // Neither alternative is available. Waiting would make a run that has
 // stopped for a reason indistinguishable from one that hung, and an
@@ -269,18 +265,16 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 // repository and spawns an agent in the working tree, which is the
 // hazard this lease exists to exclude, reached through a second door.
 //
-// lease.Acquire does not create its directory, so this does. A
-// repository that has never held a run has no state directory at all,
-// and the run about to be recorded needs one regardless.
+// The exclusion it asks for is the whole repository, so an MCP session's
+// scope lease refuses it too — a run commits through the working tree
+// every scope sits in. internal/repolease owns that judgement, because
+// the two exclusions have to be decided by one rule or they are not one
+// exclusion at all.
 func TakeRunLease(root *repopath.Root, workID string) (*lease.Handle, error) {
-	dir, name := RunLease(root)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("improve: create %s: %w", dir, err)
-	}
-	handle, err := lease.Acquire(dir, name, lease.Info{ID: workID})
-	var busy *lease.HeldError
+	handle, err := repolease.TakeRun(root, workID)
+	var busy *repolease.ConflictError
 	if errors.As(err, &busy) {
-		return nil, refuseHeld(busy)
+		return nil, refuseHeld(busy.Held)
 	}
 	if err != nil {
 		return nil, err
@@ -292,10 +286,10 @@ func TakeRunLease(root *repopath.Root, workID string) (*lease.Handle, error) {
 // The states lease.Inspect distinguishes leave three different decisions
 // to make, and a single "already running" would tell them none of it:
 //
-//   - Held is a live run on this machine. Whether to wait for it or
+//   - Held is a live holder on this machine. Whether to wait for it or
 //     stop it is that operator's call, and both are things they can go
 //     and do with the pid in front of them.
-//   - Stale is a lease that outlived the run that took it: the holder's
+//   - Stale is a lease that outlived whatever took it: the holder's
 //     process is gone and its host is this one, so `pika recover` is
 //     the remedy. It is still not taken automatically — recovering is a
 //     decision, not a retry.
@@ -303,23 +297,34 @@ func TakeRunLease(root *repopath.Root, workID string) (*lease.Handle, error) {
 //     dead here can be very much alive on the host that recorded it, so
 //     this is never called stale: that word is exactly what would
 //     invite an operator to clear a lock a live writer still holds.
-func refuseHeld(busy *lease.HeldError) error {
-	if busy.Info == nil {
-		return fmt.Errorf("%w: %s is claimed but names no readable holder (%v); `pika recover` clears a lease no run is behind",
-			ErrRunInProgress, busy.Path, busy.Err)
+//
+// Which sentinel the refusal wraps follows what is actually holding the
+// ground, not which command was refused. An MCP session's scope lease is
+// not "another run", and an operator sent looking for one with `pika
+// status` would find nothing and conclude the message was lying.
+func refuseHeld(h repolease.Held) error {
+	held := ErrRunInProgress
+	if h.Kind == repolease.KindScope {
+		held = ErrScopeLeaseHeld
 	}
-	who := fmt.Sprintf("run %s (pid %d on %s, started %s)", busy.Info.ID, busy.Info.PID,
-		busy.Info.Host, busy.Info.StartedAt.Format(time.RFC3339Nano))
-	switch busy.State {
-	case lease.StateStale:
+	if h.Info == nil {
+		return fmt.Errorf("%w: %s is claimed but names no readable holder (%v); `pika recover` clears a lease no process is behind",
+			held, h.Path, h.Err)
+	}
+	who := h.Describe()
+	switch {
+	case h.State == lease.StateStale:
 		return fmt.Errorf("%w: %s is no longer running and never released its lease; `pika recover` clears it",
-			ErrRunInProgress, who)
-	case lease.StateUnverifiable:
+			held, who)
+	case h.State == lease.StateUnverifiable:
 		return fmt.Errorf("%w: %s, and %s, so whether that process is still running cannot be decided here; run `pika recover` only once you know it stopped",
-			ErrRunInProgress, who, unverifiableBecause(busy.Err))
+			held, who, unverifiableBecause(h.Err))
+	case h.Kind == repolease.KindScope:
+		return fmt.Errorf("%w: %s, and a run commits through the whole working tree, including the path that lease covers; wait for that session to release it or end",
+			held, who)
 	default:
 		return fmt.Errorf("%w: %s is in progress; one repository runs one run at a time, because both would commit through the same working tree",
-			ErrRunInProgress, who)
+			held, who)
 	}
 }
 
