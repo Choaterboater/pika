@@ -232,3 +232,68 @@ func TestCargoTOMLQuotedNameWithComment(t *testing.T) {
 		t.Errorf("members = %v, want %v", c.Workspace.Members, want)
 	}
 }
+
+// A Justfile recipe named "format" (not "fmt") must be discovered as
+// `just format`, not `just fmt`. canonicalVerb accepts both spellings as
+// meaning the same check, but the constructed command must invoke the
+// recipe that actually exists — `just fmt` on a Justfile with no recipe
+// named `fmt` fails with "justfile does not contain recipe `fmt`",
+// which is a discovery defect wearing a format-gate failure, not a
+// real finding about the repository's code.
+func TestJustfileRecipeNamedFormatIsInvokedByItsRealName(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/x\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "justfile"), []byte("format:\n    gofmt -l .\n\ntest:\n    go test ./...\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inv.ExistingChecks["fmt"]; got != "just format" {
+		t.Errorf("ExistingChecks[fmt] = %q, want %q: the recipe is named `format`, not `fmt`", got, "just format")
+	}
+}
+
+// A Justfile recipe that already IS the canonical spelling still works:
+// the fix must not stop matching a recipe literally named `fmt`.
+func TestJustfileRecipeNamedFmtStillMatches(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/x\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "justfile"), []byte("fmt:\n    gofmt -l .\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inv.ExistingChecks["fmt"]; got != "just fmt" {
+		t.Errorf("ExistingChecks[fmt] = %q, want %q", got, "just fmt")
+	}
+}
+
+// The same defect, same fix, for Taskfile.yml: a task named "format"
+// must be invoked as `task format`, not `task fmt` — `task fmt` on a
+// Taskfile with no task named `fmt` fails with `Task "fmt" does not
+// exist`.
+func TestTaskfileTaskNamedFormatIsInvokedByItsRealName(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/x\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	taskfile := "version: '3'\ntasks:\n  format:\n    cmds:\n      - gofmt -l .\n  test:\n    cmds:\n      - go test ./...\n"
+	if err := os.WriteFile(filepath.Join(root, "Taskfile.yml"), []byte(taskfile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inv.ExistingChecks["fmt"]; got != "task format" {
+		t.Errorf("ExistingChecks[fmt] = %q, want %q: the task is named `format`, not `fmt`", got, "task format")
+	}
+}

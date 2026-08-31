@@ -1,7 +1,7 @@
 name: conformance
 
 # The conformance corpus runs pika against real foreign repositories:
-# seven pinned checkouts, cloned over the network, driven through
+# eleven pinned checkouts, cloned over the network, driven through
 # `adopt` -> `apply` -> `check` with their own toolchains spawned for
 # real.
 #
@@ -67,6 +67,15 @@ jobs:
           mypy --version
           pytest --version
 
+      # DioxusLabs/taffy's justfile is the corpus's only Justfile row;
+      # without `just` on PATH its format rung reads as a missing-
+      # toolchain skip rather than the real `just fmt` this row exists
+      # to run.
+      - name: Install just
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+          just --version
+
       # go, make, node/npm and cargo are already on both runner images;
       # swift is on macOS only, so the swift row skips by name on Linux.
       # golangci-lint is on neither, which is what spf13/cobra's expected
@@ -74,7 +83,7 @@ jobs:
       # the row rather than lying if a future image ships one.
       - name: Toolchains present
         run: |
-          for t in git make go npm cargo swift ruff mypy pytest golangci-lint xo; do
+          for t in git make go npm cargo swift ruff mypy pytest golangci-lint xo just; do
             printf '%-16s %s\n' "$t" "$(command -v "$t" || echo 'not installed')"
           done
 

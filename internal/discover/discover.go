@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/goccy/go-yaml"
@@ -375,16 +376,16 @@ func existingChecks(root string, hits *walkHits) map[string]string {
 		if filepath.Dir(rel) != "." {
 			continue
 		}
-		for verb := range justfileRecipes(filepath.Join(root, rel)) {
-			record([]string{verb}, "just "+verb)
+		for verb, name := range justfileRecipes(filepath.Join(root, rel)) {
+			record([]string{verb}, "just "+name)
 		}
 	}
 	for _, rel := range hits.markerPaths["taskfile"] {
 		if filepath.Dir(rel) != "." {
 			continue
 		}
-		for verb := range taskfileTasks(filepath.Join(root, rel)) {
-			record([]string{verb}, "task "+verb)
+		for verb, name := range taskfileTasks(filepath.Join(root, rel)) {
+			record([]string{verb}, "task "+name)
 		}
 	}
 	pm := "npm"
@@ -467,28 +468,49 @@ func makefileTargets(path string) map[string]string {
 
 var justfileRecipeRe = regexp.MustCompile(`^@?([A-Za-z_][A-Za-z0-9_-]*)(?:\s+[^\s:#@]+)*\s*:`)
 
-// justfileRecipes returns the canonical check verbs that appear as recipes.
-func justfileRecipes(path string) map[string]bool {
+// justfileRecipes returns canonical check verbs found in a Justfile, mapped
+// to their recipe name — mirroring makefileTargets, because "just fmt" only
+// works when a recipe literally named `fmt` exists: canonicalVerb accepts
+// "fmt" and "format" as the same check, but a Justfile whose recipe is
+// named "format" has no recipe named "fmt" at all, and invoking the wrong
+// one fails with "justfile does not contain recipe `fmt`" — a discovery
+// defect wearing a format-gate failure.
+func justfileRecipes(path string) map[string]string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
-	verbs := map[string]bool{}
+	verbs := map[string]string{}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
 			continue
 		}
 		if m := justfileRecipeRe.FindStringSubmatch(line); m != nil {
 			if verb, ok := canonicalVerb(m[1]); ok {
-				verbs[verb] = true
+				if _, dup := verbs[verb]; !dup {
+					verbs[verb] = m[1]
+				}
 			}
 		}
 	}
 	return verbs
 }
 
-// taskfileTasks returns the canonical check verbs that appear as tasks.
-func taskfileTasks(path string) map[string]bool {
+// taskfileTasks returns canonical check verbs found in a Taskfile.yml,
+// mapped to their task name, for the same reason justfileRecipes maps to
+// a recipe name: "task fmt" only works when a task literally named
+// "fmt" exists, and a Taskfile whose task is named "format" has no task
+// named "fmt" — invoking it fails with `Task "fmt" does not exist`.
+//
+// Task names are sorted before the first-match-wins scan. tf.Tasks is a
+// Go map (YAML key order is not preserved across the outer object), so
+// without a fixed order two tasks that both canonicalize to the same
+// verb would resolve to whichever the map happened to iterate first —
+// a result that could change between identical runs. Sorting trades
+// "first in the file" (what makefileTargets and justfileRecipes give)
+// for "first alphabetically", which is not the same guarantee but is at
+// least the same answer every time.
+func taskfileTasks(path string) map[string]string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -499,10 +521,17 @@ func taskfileTasks(path string) map[string]bool {
 	if err := yaml.Unmarshal(data, &tf); err != nil {
 		return nil
 	}
-	verbs := map[string]bool{}
+	names := make([]string, 0, len(tf.Tasks))
 	for name := range tf.Tasks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	verbs := map[string]string{}
+	for _, name := range names {
 		if verb, ok := canonicalVerb(name); ok {
-			verbs[verb] = true
+			if _, dup := verbs[verb]; !dup {
+				verbs[verb] = name
+			}
 		}
 	}
 	return verbs

@@ -420,6 +420,33 @@ var Corpus = []Repo{
 		},
 	},
 	{
+		Name: "dioxuslabs-taffy",
+		URL:  "https://github.com/DioxusLabs/taffy",
+		SHA:  "b3b387132be1dda0e9d08d5044692236532c166d",
+		Ref:  "main HEAD (v0.14.0 is an older tag, a different commit)",
+		Why: "The first row to exercise Justfile discovery at all: every " +
+			"other row's format/lint either autofills or finds nothing. " +
+			"taffy's justfile declares a `fmt` recipe and nothing named " +
+			"`lint`, so the format slot is discovered (`just fmt`) while lint " +
+			"still autofills (`cargo clippy -- -D warnings`) in the same " +
+			"repository — proving discovery overrides autofill only where it " +
+			"actually finds something.",
+		Drift: "clippy, for the same reason as dtolnay-anyhow. Also: `just fmt` " +
+			"runs `cargo fmt --all`, which rewrites files rather than checking " +
+			"them — taffy's own choice of command, not pika's; a discovered " +
+			"command is run as declared, mutating or not.",
+		Needs:    []string{"git", "cargo", "cargo-fmt", "cargo-clippy", "just"},
+		Profiles: []string{"core@1", "rust@1"},
+		Gates: []GateWant{
+			{ID: "contract", Status: StatusPass},
+			{ID: "format", Status: StatusPass, Cmd: "just fmt"},
+			{ID: "lint", Status: StatusPass, Cmd: "cargo clippy -- -D warnings"},
+			{ID: "typecheck", Status: StatusPass, Cmd: "cargo build"},
+			{ID: "test", Status: StatusPass, Cmd: "cargo test"},
+			{ID: "smoke", Status: StatusSkip, Reason: "no command discovered for smoke"},
+		},
+	},
+	{
 		Name: "apple-swift-argument-parser",
 		URL:  "https://github.com/apple/swift-argument-parser",
 		SHA:  "6a52f3251125d74daf04fcbd5e6f08a75d074382",
