@@ -228,7 +228,19 @@ var Unexercised = []Gap{
 			"Swift 6.0 on, while the pack targets swift-tools-version 5.10, so a " +
 			"PATH probe for `swift` cannot tell a machine that can run this from " +
 			"one that cannot. No Swift repository's own discovery produces it " +
-			"either, so apple/swift-argument-parser's format rung skips.",
+			"either, so apple/swift-argument-parser's format rung skips.\n\n" +
+			"Unlike typescript@1's now-closed typecheck and test gaps, this is " +
+			"not a hint spelling waiting for the right corpus row: Swift Package " +
+			"Manager has no script-based discovery at all. existingChecks reads " +
+			"a Makefile/Justfile/Taskfile target name or an npm package.json " +
+			"script name, and records only that name (\"make format\", never the " +
+			"recipe body) — never the literal invocation a pack recommends. A " +
+			"Swift repository's own tooling could never produce the string " +
+			"\"swift format lint --strict --recursive Sources Tests\" through " +
+			"discovery, no matter what its Makefile runs internally. Closing " +
+			"this would mean recommending \"make format\"/\"make lint\" instead — " +
+			"advice that presumes a Makefile convention Swift Package Manager " +
+			"projects do not have, which is a worse hint than an honest gap.",
 	},
 	{
 		Pack: "swift@1", Slot: "lint", Cmd: "swift format lint --strict --recursive Sources Tests",
