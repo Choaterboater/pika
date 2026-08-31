@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/repolease"
 	"github.com/Choaterboater/pika/internal/repopath"
@@ -899,5 +900,167 @@ func TestDoctorSaysSoWhenThereIsNoHomeToCheck(t *testing.T) {
 	// Everything else still ran.
 	for _, id := range []string{"contract", "lock", "envelope", "leases", "git"} {
 		findingByID(t, rep, id)
+	}
+}
+
+// projectWithAgents lays down a healthy project whose contract declares
+// builders on two runtimes. Both binaries are absent from the test's PATH,
+// which is the state doctor has to describe rather than fail.
+func projectWithAgents(t *testing.T, agents string) *Report {
+	t.Helper()
+	dir := t.TempDir()
+	writeProject(t, dir, "core@1")
+	contractPath := filepath.Join(dir, ".project", "contract.yaml")
+	doc, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = append(bytes.TrimRight(doc, "\n"), []byte("\nagents:\n"+agents)...)
+	if err := os.WriteFile(contractPath, doc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runDoctor(t, root)
+}
+
+func agentByName(t *testing.T, rep *Report, name string) AgentFinding {
+	t.Helper()
+	for _, a := range rep.Agents {
+		if a.Name == name {
+			return a
+		}
+	}
+	t.Fatalf("no agent %q in %+v", name, rep.Agents)
+	return AgentFinding{}
+}
+
+// The schema accepts seven runtimes and the binary can spawn any of them,
+// so the one place that says which are actually installed here is doctor.
+func TestDoctorReportsEveryConfiguredAgent(t *testing.T) {
+	rep := projectWithAgents(t, "  builder:\n    runtime: claude\n  reviewer:\n    runtime: omp\n    model: glm\n")
+	if len(rep.Agents) != 2 {
+		t.Fatalf("agents = %+v, want two", rep.Agents)
+	}
+	// Sorted by contract key: a report whose rows move between runs is a
+	// report nobody trusts.
+	if rep.Agents[0].Name != "builder" || rep.Agents[1].Name != "reviewer" {
+		t.Errorf("agents = %+v, want builder then reviewer", rep.Agents)
+	}
+	builder := agentByName(t, rep, "builder")
+	if builder.Runtime != "claude" || builder.Adapter != "claude" {
+		t.Errorf("builder = %+v, want the claude adapter", builder)
+	}
+	if builder.Output != "stdout" {
+		t.Errorf("builder output = %q, want stdout", builder.Output)
+	}
+	if builder.Model != "" || builder.Effort != "" {
+		t.Errorf("builder = %+v, want no control state when the contract sets neither", builder)
+	}
+	reviewer := agentByName(t, rep, "reviewer")
+	if reviewer.Model != "mapped" {
+		t.Errorf("reviewer model = %q, want mapped: omp has a --model control", reviewer.Model)
+	}
+}
+
+// An absent harness is a warning and never an error. doctor's exit code
+// answers whether this repository is workable, and a repository whose
+// reviewer is not installed is workable — `pika work` refuses the moment
+// it is asked to run that role, naming the runtime and the binary.
+func TestDoctorReportsAnAbsentBinaryAsNotOnPath(t *testing.T) {
+	rep := projectWithAgents(t, "  builder:\n    runtime: gemini\n")
+	builder := agentByName(t, rep, "builder")
+	if builder.Found {
+		t.Errorf("builder = %+v, want not found", builder)
+	}
+	if builder.Binary != "not on PATH" {
+		t.Errorf("builder binary = %q, want \"not on PATH\"", builder.Binary)
+	}
+	f := findingByID(t, rep, "agent.builder")
+	if f.Severity != SeverityWarn {
+		t.Errorf("agent.builder severity = %q, want warn", f.Severity)
+	}
+	if !strings.Contains(f.Detail, "gemini") {
+		t.Errorf("detail = %q, want it to name the binary", f.Detail)
+	}
+	if rep.OK != true {
+		t.Error("OK = false for a repository whose only fault is an uninstalled harness")
+	}
+}
+
+// A control the runtime cannot express is reported as unmapped rather than
+// dropped: an operator who set effort and got none has to be able to see
+// that here, before a run refuses it.
+func TestDoctorReportsAnUnmappedControl(t *testing.T) {
+	rep := projectWithAgents(t, "  builder:\n    runtime: gemini\n    model: gemini-2.5-pro\n    effort: high\n")
+	builder := agentByName(t, rep, "builder")
+	if builder.Model != "mapped" {
+		t.Errorf("model = %q, want mapped", builder.Model)
+	}
+	if builder.Effort != "unmapped" {
+		t.Errorf("effort = %q, want unmapped: gemini has no effort control", builder.Effort)
+	}
+}
+
+// A runtime the table does not implement is an error with a remedy, not a
+// row that quietly reads as configured.
+//
+// A contract that loaded cannot name one: the runtime came from the
+// schema's harness enum, and adapters.TestEveryHarnessInTheContractSchemaHasAnAdapter
+// keeps that enum and the table the same length. checkAgents is called
+// directly so the guard is still tested, because the day those two lists
+// do drift this is the report an operator would be reading.
+func TestDoctorReportsARuntimeNoAdapterImplements(t *testing.T) {
+	rep := &Report{OK: true}
+	checkAgents(rep, &contract.Contract{Agents: map[string]contract.AgentConfig{
+		"builder": {Runtime: "socketpuppet"},
+	}})
+	f := findingByID(t, rep, "agent.builder")
+	if f.Severity != SeverityError {
+		t.Errorf("severity = %q, want error", f.Severity)
+	}
+	if !strings.Contains(f.Detail, "socketpuppet") {
+		t.Errorf("detail = %q, want it to name the runtime", f.Detail)
+	}
+	if f.Remediation == "" {
+		t.Error("the finding has no remedy")
+	}
+	if rep.OK {
+		t.Error("OK = true for a contract naming a runtime nothing implements")
+	}
+}
+
+// doctor's licence to be slow is narrower than check's: it never executes
+// a gate, and it must not execute a harness either. The compatibility
+// probe is the only thing here that could, and it stays behind its
+// environment variable.
+func TestDoctorSpawnsNoHarness(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	rep := projectWithAgents(t, "  builder:\n    runtime: claude\n")
+	builder := agentByName(t, rep, "builder")
+	if len(builder.CompatChecks) != 0 {
+		t.Errorf("compat = %v, want none without the probe's env var", builder.CompatChecks)
+	}
+	for _, f := range rep.Findings {
+		if strings.HasSuffix(f.ID, ".compat") {
+			t.Errorf("doctor ran a compatibility probe: %+v", f)
+		}
+	}
+}
+
+// A contract that declares no agents produces no agents block at all, so
+// the JSON every pre-M6 repository already produces is unchanged.
+func TestDoctorReportsNoAgentsWhenNoneAreConfigured(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, "core@1")
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := runDoctor(t, root)
+	if len(rep.Agents) != 0 {
+		t.Errorf("agents = %+v, want none", rep.Agents)
 	}
 }

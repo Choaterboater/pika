@@ -13,7 +13,7 @@ import (
 // the part every defect closed on 2026-08-30 lived in.
 //
 // The agent boundary is a binary looked up on PATH, so this drives
-// internal/e2e's fake `codex` — no model, no credential, no network.
+// internal/e2e's fake agent — no model, no credential, no network.
 // What that fake cannot do is stated where it matters, at the argv
 // assertion below: it accepts whatever arguments it is given, so it can
 // pin an argv pika must never spawn again, and it can never discover an
@@ -83,9 +83,9 @@ func (h *harness) repairRepo(step string) (dir, branch, repaired string, err err
 // improve drives one `pika improve` through the fake agent, which writes
 // content at the repository-relative path.
 func (h *harness) improve(dir, path, content string, extra ...string) (result, error) {
-	env := h.codexEnv(append([]string{
-		"FAKE_CODEX_FILE=" + path,
-		"FAKE_CODEX_CONTENT=" + content,
+	env := h.agentEnv(append([]string{
+		"FAKE_AGENT_FILE=" + path,
+		"FAKE_AGENT_CONTENT=" + content,
 	}, extra...)...)
 	return h.run(dir, env, "improve", "--json")
 }
@@ -156,8 +156,8 @@ func stepImprove(h *harness) error {
 	argvPath := filepath.Join(h.dir, "improve-argv.txt")
 	promptPath := filepath.Join(h.dir, "improve-prompt.md")
 	r, err := h.improve(dir, entryPath, repaired,
-		"FAKE_CODEX_ARGV="+argvPath,
-		"FAKE_CODEX_PROMPT="+promptPath)
+		"FAKE_AGENT_ARGV="+argvPath,
+		"FAKE_AGENT_PROMPT="+promptPath)
 	if err != nil {
 		return err
 	}

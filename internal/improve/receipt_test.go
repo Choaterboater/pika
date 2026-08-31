@@ -174,16 +174,14 @@ func TestBlockedRunEmitsIncompleteReceiptWithReason(t *testing.T) {
 		}},
 	}
 	result, err := Run(context.Background(), Config{
-		Root:    root,
-		Branch:  "chore/pika-improve",
-		Agent:   "builder",
-		Runtime: "codex",
+		Root:   root,
+		Branch: "chore/pika-improve",
 		Check: func() (*verify.Report, error) {
 			report := checks[0]
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: "fixed.txt", body: "not enough\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: "fixed.txt", body: "not enough\n"}},
 	})
 	if err == nil {
 		t.Fatal("run reported success on a failed recheck")
@@ -251,11 +249,9 @@ func TestReceiptRefusesToOverwriteAnExistingReceipt(t *testing.T) {
 func TestGreenBaselineIssuesNoReceipt(t *testing.T) {
 	root := fixtureAdoptedRepository(t)
 	_, err := Run(context.Background(), Config{
-		Root:    root,
-		Branch:  "chore/pika-improve",
-		Agent:   "builder",
-		Runtime: "codex",
-		Check:   func() (*verify.Report, error) { return &verify.Report{Pass: true}, nil },
+		Root:   root,
+		Branch: "chore/pika-improve",
+		Check:  func() (*verify.Report, error) { return &verify.Report{Pass: true}, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -287,16 +283,14 @@ func deliveredRun(t *testing.T, root string) Result {
 		}},
 	}
 	result, err := Run(context.Background(), Config{
-		Root:    root,
-		Branch:  "chore/pika-improve",
-		Agent:   "builder",
-		Runtime: "codex",
+		Root:   root,
+		Branch: "chore/pika-improve",
 		Check: func() (*verify.Report, error) {
 			report := checks[0]
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"}},
 	})
 	if err != nil {
 		t.Fatal(err)

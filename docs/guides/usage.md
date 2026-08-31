@@ -468,6 +468,7 @@ What it inspects:
 | leases / `lease.*` | Whether a run lease or a scope lease is held, and what can be proved about each holder. A **stale** lease (holder gone, same host) is an error and names `pika recover`: no run can start until it is released. A **held** lease is a warning — somebody's second terminal is legitimately mid-run — and names no recovery, because `pika recover` refuses a live holder. A holder on **another host** is a warning reported as exactly that, never as stale, and sends you to the machine that can answer |
 | `gate.*` | Per gate: the command that will run, or the pack's suggested hint when no command is configured — plus a warning when an envelope exists and does not authorize that gate's whole argv line, which is otherwise not discovered until an agent hits `envelope_denied` mid-task |
 | git | Whether git is available |
+| agents | Every configured agent: its runtime, the adapter it resolves to, the binary path or `not on PATH`, whether `model` and `effort` are mapped, the output mode, and whether the runtime supports resume. Printed as its own block below the findings, and included in `--json` as `agents`. See [§10](#the-runtimes-and-what-each-one-is-asked-to-do) |
 
 Worked example, on this repository:
 
@@ -724,13 +725,13 @@ A killed MCP session cannot give anything back, so its leases stay on disk; ever
 
 ---
 
-## 10. Hand a failed check to Codex
+## 10. Hand a failed check to an agent
 
 ```sh
 pika handoff
 ```
 
-`handoff` runs `pika check --all --json`, selects only failed check gates, and invokes the configured `agents.builder` when its runtime is `codex`. It runs Codex locally with a writable-workspace sandbox, automatic review, and network access disabled; it never uses a danger or approval-bypass mode. Pika also refuses the handoff if the agent changes Git history.
+`handoff` runs `pika check --all --json`, selects only failed check gates, and invokes the configured `agents.builder` under whichever runtime that entry names. Pika also refuses the handoff if the agent changes Git history.
 
 Every handoff belongs to a run, and the private bundle lives inside that run's record at `.project/state/work/<work-id>/handoff/`:
 
@@ -738,11 +739,100 @@ Every handoff belongs to a run, and the private bundle lives inside that run's r
 | --- | --- |
 | `checks-before.json` | Redacted baseline Pika report |
 | `prompt.md` | Failed gates and safe repair instructions |
-| `codex-last-message.md` | Codex's final response |
+| `<runtime>-last-message.md` | The agent's final response |
+
+The message file is named for the runtime that wrote it, so a bundle from a multi-agent run says which agent produced which message. For a `codex` builder the name is `codex-last-message.md`, exactly as it has been since M2.
 
 Warnings are not repair tasks. Intentional vendor assets, public filenames, and generated outputs must instead be covered by the applicable record in `.project/exceptions.yaml`; covered findings are excluded before the handoff is built.
 
-Choose another configured Codex agent with `pika handoff --agent <name>`. Its configured `model` and `effort` are forwarded to Codex. Use `--json` for automation.
+Choose another configured agent with `pika handoff --agent <name>`. Its configured `model` and `effort` are forwarded when the runtime can express them, and refused when it cannot. Use `--json` for automation.
+
+### The runtimes, and what each one is asked to do
+
+`agents.<name>.runtime` is drawn from a closed set of seven. Each adapter names a binary, builds one argv, and takes the least dangerous auto-approval its harness offers — pika never sends a bypass flag.
+
+| Runtime | Binary | Permission posture | Model | Effort |
+| --- | --- | --- | --- | --- |
+| `codex` | `codex` | `--approve-for-me`, network disabled | `--model` | `-c model_reasoning_effort=` |
+| `claude` | `claude` | `--permission-mode acceptEdits` | `--model` | `--effort` |
+| `omp` | `omp` | `--approval-mode write`, no session left behind | `--model` | `--thinking` |
+| `gemini` | `gemini` | `--approval-mode auto_edit`, trust prompt skipped | `--model` | not supported |
+| `opencode` | `opencode` | `--auto` | `--model` | not supported |
+| `acp` | `omp` (`command` overrides) | the agent's own permission questions, answered `allow_once` | not supported | not supported |
+| `custom` | `command` (required) | whatever your argv states | `{model}` in `args` | `{effort}` in `args` |
+
+A contract that sets `model` or `effort` on a runtime that cannot express it is **refused before anything is spawned**, naming the agent and the control:
+
+```
+pika work: agent "builder" sets effort "high"; runtime "gemini" has no effort control
+```
+
+#### `custom` and `acp`
+
+`custom` runs a command you name, with an argv template you write. Only five placeholders are substituted, and a spelling outside them is an error rather than a silent no-op:
+
+| Placeholder | Becomes |
+| --- | --- |
+| `{root}` | the repository root, absolute |
+| `{prompt}` | the absolute path of the prompt file |
+| `{output}` | the absolute path the final message must land at |
+| `{model}` | the contract's `model`, when set |
+| `{effort}` | the contract's `effort`, when set |
+
+```yaml
+agents:
+  builder:
+    runtime: custom
+    command: /usr/local/bin/harness
+    args: ["--root", "{root}", "--prompt", "{prompt}", "--out", "{output}"]
+    env: ["HARBOR_TOKEN"]
+```
+
+`env` holds variable **names**, never values: a credential in a contract is a credential in every clone of the repository. Only the names you list cross into the child, plus `PATH`, `HOME` and `TMPDIR`; a name that is not set in pika's own environment is refused rather than passed through empty.
+
+A template that names `{output}` writes the message itself. One that does not is read from the child's stdout.
+
+`acp` speaks ACP v1 over the child's stdin and stdout — no SDK, no socket, no dependency. Its default binary is `omp acp`; point `command` at any ACP agent instead. When the agent asks permission, pika selects the first `allow_once` option and never `allow_always`, because a remembered grant outlives the run that authorized it. Every decision is written to stderr as it is made.
+
+#### Three roles, one run
+
+A run can spawn up to three agents, each under its own runtime. The contract names them by key:
+
+| Key | Required | What it does |
+| --- | --- | --- |
+| `builder` | yes | does the work. `--agent <name>` selects the contract entry that plays this role. |
+| `explorer` | no | read-only research, run before the builder. Its message is handed to the builder as a `## Explorer findings` section of the builder's own prompt. |
+| `reviewer` | no | reads the verified result after the recheck passes and before the commit. |
+
+```yaml
+agents:
+  builder:
+    runtime: codex
+  reviewer:
+    runtime: omp
+```
+
+A contract naming only `builder` behaves exactly as every milestone before M6 did: one agent, and the phase sequence `baseline, handoff, recheck, deliver`.
+
+Two rules about the optional roles are worth stating plainly, because they are the reason the phases are safe to add:
+
+- **The explorer and the reviewer are read-only.** A run whose explorer or reviewer changed a file it did not already account for is refused, naming the role and the path.
+- **The review is advisory.** It is recorded in the run's receipt with the disposition `advisory: recorded, not a gate`, and it never gates the commit. pika's own rule is that the ladder is the evidence and prose is not a gate; a reviewer that could block a green ladder would be a second gate that is not deterministic.
+
+The bundle for each optional role sits beside the builder's, under `handoff/explore/` and `handoff/review/`.
+
+#### What will actually run: `pika doctor`
+
+`pika doctor` reports every configured agent — its runtime, the adapter it resolves to, the binary path or `not on PATH`, whether `model` and `effort` are mapped, the output mode, and whether the runtime supports resume. It spawns nothing. Adding `PIKA_ADAPTER_COMPAT=1` also diffs each adapter's flags against the installed binary's own `--help`, which is a static usage dump: no model call, no tokens.
+
+```
+Agents
+
+builder    claude   /usr/local/bin/claude
+                    model: mapped  effort: mapped  output: stdout  resume: no
+reviewer   gemini   not on PATH
+                    model: mapped  effort: unmapped  output: stdout  resume: no
+```
 
 ---
 
@@ -752,16 +842,16 @@ Choose another configured Codex agent with `pika handoff --agent <name>`. Its co
 pika improve
 ```
 
-`improve` requires a clean worktree. It runs a baseline check; if it is already green, it exits without creating a branch or calling Codex. For failures, it creates `chore/pika-improve`, performs the Codex handoff, reruns the same Pika checks, and commits only a non-empty, verified diff with the message `chore: improve verified findings`.
+`improve` requires a clean worktree. It runs a baseline check; if it is already green, it exits without creating a branch or calling an agent. For failures, it creates `chore/pika-improve`, performs the handoff, reruns the same Pika checks, and commits only a non-empty, verified diff with the message `chore: improve verified findings`.
 
-Use `--branch <name>` to choose another local branch and `--agent <name>` to select a configured Codex builder. On a failed handoff or recheck, Pika leaves the branch and agent edits uncommitted so they can be inspected. `improve` never pushes, opens a pull request, or merges anything.
+Use `--branch <name>` to choose another local branch and `--agent <name>` to select the contract entry that plays the builder. On a failed handoff or recheck, Pika leaves the branch and agent edits uncommitted so they can be inspected. `improve` never pushes, opens a pull request, or merges anything.
 
-Your contract needs a Codex builder, for example:
+Your contract needs a builder — any of the [seven runtimes](#the-runtimes-and-what-each-one-is-asked-to-do), not only `codex`:
 
 ```yaml
 agents:
   builder:
-    runtime: codex
+    runtime: claude
 ```
 
 ### The run branch a stopped run leaves behind
@@ -791,7 +881,7 @@ Pika does not delete the branch for you, for the same reason [`pika recover`](#1
 pika work "add a /healthz endpoint that returns 200"
 ```
 
-`work` is the normal entry point. It runs the *same* lifecycle as `improve` — clean worktree, baseline check, branch, Codex handoff, recheck, one verified local commit — and differs in exactly one decision.
+`work` is the normal entry point. It runs the *same* lifecycle as `improve` — clean worktree, baseline check, branch, handoff, recheck, one verified local commit — and differs in exactly one decision.
 
 A failed gate describes its own repair, so `improve` stops when the baseline is already green: there is nothing left to fix. A goal is work the ladder cannot describe, so a green baseline says nothing about whether the goal has been met, and `work` goes on to the agent regardless. The goal is the entire input, and it reaches the agent verbatim as the `## Goal` section of `prompt.md`.
 
@@ -869,6 +959,8 @@ pika resume <work-id>
 ```
 
 A run interrupted by a crash, a lost terminal or a `Ctrl-C` leaves a record naming its branch, its bundle and the last phase that completed. `resume` rejoins it and carries it to a terminal outcome, skipping only the phases whose product is durable: the baseline ladder it already recorded, and the handoff it already ran. The recheck is never skipped — "commit only what the ladder proved" has to be proved by this process against this tree.
+
+The two optional phases are handled on the same principle. **Explore is never resumed**: its product is a section of the builder's prompt, and the builder's own handoff is what has to be repeated to use it again, so a run interrupted in explore rejoins at the builder. **Review runs again whenever the recheck does**, because it reads the result this process's ladder produced and an advisory finding about a tree this process has not itself verified would be a finding about nothing.
 
 There is deliberately **no `--branch` flag**. The run's own record names the branch its work is on, and a flag that is silently ignored whenever the record has one is a flag that will eventually be believed.
 

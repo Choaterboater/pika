@@ -299,6 +299,10 @@ func (r respondingRunner) Run(_ context.Context, _, _, outputPath string) error 
 	return os.WriteFile(outputPath, []byte(r.response), 0o600)
 }
 
+// Runtime is what a codex handoff reports, so the bundle filenames these
+// tests assert are the ones an ordinary run produces.
+func (r respondingRunner) Runtime() string { return "codex" }
+
 type refusingRunner struct{}
 
 func (refusingRunner) Run(_ context.Context, _, _, outputPath string) error {
@@ -307,6 +311,8 @@ func (refusingRunner) Run(_ context.Context, _, _, outputPath string) error {
 	}
 	return errors.New("codex refused")
 }
+
+func (refusingRunner) Runtime() string { return "codex" }
 
 // The stopped report is the whole of what an operator gets from a failed
 // run, and it was wrong about where the run stopped in two separate

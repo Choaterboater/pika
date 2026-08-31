@@ -75,6 +75,12 @@ var steps = []step{
 		run:    stepImproveAgain,
 	},
 	{
+		id:     "roles",
+		proves: "one run spawns a claude builder and an omp reviewer, and the advisory review does not gate the commit",
+		absent: gitAbsent,
+		run:    stepRoles,
+	},
+	{
 		id:     "skills",
 		proves: "an installed projection is green, and a hand-edited kernel region fails check by name",
 		run:    stepSkills,

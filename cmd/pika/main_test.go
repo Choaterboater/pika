@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -218,12 +219,22 @@ func unregisteredMentions(text string) (missing []string, total int) {
 // reason: nothing connected the prose to the registry.
 //
 // This walks the registry against every command name mentioned in a Go
-// string literal anywhere in this module, rather than comparing one
-// known message to one known string, so the same mistake in a message
-// written later is caught too.
+// string literal anywhere in this module, and against every one in the
+// canonical skill templates, rather than comparing one known message to
+// one known string, so the same mistake in a message written later is
+// caught too.
+//
+// The templates are scanned on purpose and were not from M5 until now.
+// They are instructions an agent follows without checking them, so a
+// command name that does not exist is worse there than in prose a human
+// reads — and the walk below covers only .go files, so the skills were
+// silently outside it.
 func TestEveryCommandNamedInAMessageIsRegistered(t *testing.T) {
 	root := filepath.Join("..", "..")
 	mentions := 0
+	for _, missing := range skillTemplateMentions(t, filepath.Join(root, "internal", "skills", "templates")) {
+		t.Errorf("a canonical skill names `pika %s`, which is not a registered command", missing)
+	}
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -272,6 +283,41 @@ func TestEveryCommandNamedInAMessageIsRegistered(t *testing.T) {
 	if mentions == 0 {
 		t.Fatal("no `pika <command>` mention found in any string literal; the guard is no longer reading the messages it claims to")
 	}
+}
+
+// skillTemplateMentions returns every unregistered command the canonical
+// skill templates tell an agent to run.
+//
+// A template is an instruction with no reader to notice it is wrong: an
+// agent runs what it says. The Go walk above cannot see them, because
+// they are markdown, so they get their own pass — and the guard counts
+// them so a pass that never looks is still a failure.
+func skillTemplateMentions(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read the skill templates: %v", err)
+	}
+	found, missing := 0, []string{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		bs, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Errorf("read %s: %v", entry.Name(), err)
+			continue
+		}
+		unregistered, total := unregisteredMentions(string(bs))
+		found += total
+		for _, name := range unregistered {
+			missing = append(missing, fmt.Sprintf("%s (in %s)", name, entry.Name()))
+		}
+	}
+	if found == 0 {
+		t.Error("no `pika <command>` mention found in any skill template; the guard is no longer reading the instructions it claims to")
+	}
+	return missing
 }
 
 // jsonCase exercises one command that advertises --json: the arguments

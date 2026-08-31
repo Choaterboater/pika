@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -139,6 +140,19 @@ const deliverMessage = "chore: improve verified findings"
 // `pika check`; tests provide real, controlled reports.
 type CheckFunc func() (*verify.Report, error)
 
+// Role binds a lifecycle role to the agent that plays it.
+//
+// Name is the role — builder, explorer or reviewer — and Agent is the
+// contract key the agent was resolved from. They are separate because they
+// legitimately differ: `--agent claude-builder` plays the builder role, and
+// a record that recorded only the role could not say which contract entry
+// ran.
+type Role struct {
+	Name   string
+	Agent  string
+	Runner Runner
+}
+
 // Config configures a single run of the lifecycle.
 type Config struct {
 	Root   string
@@ -153,25 +167,34 @@ type Config struct {
 	// from the failed gates instead.
 	Goal  string
 	Check CheckFunc
-	// Agent names the contract agent this run spawns; it is recorded as
-	// the run's role. Runtime is the runtime that agent runs under.
-	// Runner is an interface and cannot name either, and a receipt that
-	// leaves the role and runtime empty is a lie of omission in a
-	// document whose whole purpose is to attest what actually ran.
-	Agent   string
-	Runtime string
-	Runner  Runner
+	// Builder is the agent that does the work. It is the only required
+	// role: a run with no builder has nothing to hand the tree to.
+	Builder Role
+	// Explorer is read-only research the builder is given before it
+	// starts. Nil means the explore phase is skipped, which is what every
+	// contract that names no explorer gets.
+	Explorer *Role
+	// Reviewer reads the verified result before the commit. Nil means the
+	// review phase is skipped. A review is advisory: it is recorded and
+	// never gates the commit, because the ladder is the evidence and prose
+	// is not a gate.
+	Reviewer *Role
 }
 
 // Result is the complete local outcome. Any error return may still include a
 // work id, branch, handoff bundle, and baseline report so the caller can
 // inspect the uncommitted state without Pika concealing it.
 type Result struct {
-	WorkID       string         `json:"workId,omitempty"`
-	Branch       string         `json:"branch,omitempty"`
-	Commit       string         `json:"commit,omitempty"`
-	ChangedFiles []string       `json:"changedFiles,omitempty"`
-	Handoff      Handoff        `json:"handoff,omitempty"`
+	WorkID       string   `json:"workId,omitempty"`
+	Branch       string   `json:"branch,omitempty"`
+	Commit       string   `json:"commit,omitempty"`
+	ChangedFiles []string `json:"changedFiles,omitempty"`
+	Handoff      Handoff  `json:"handoff,omitempty"`
+	// Review is the advisory review bundle, present only when a reviewer
+	// ran. It is separate from Handoff because it is a different agent's
+	// bundle about a different question: the builder's is the work, the
+	// reviewer's is what it thinks of the work.
+	Review       Handoff        `json:"review,omitempty"`
 	ChecksBefore *verify.Report `json:"checksBefore,omitempty"`
 	ChecksAfter  *verify.Report `json:"checksAfter,omitempty"`
 	// StoppedOn is the branch the repository was actually on when the
@@ -270,8 +293,8 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 		Goal:       cfg.Goal,
 		Kind:       kind,
 		BaseCommit: strings.TrimSpace(baseCommit),
-		Role:       cfg.Agent,
-		Runtime:    cfg.Runtime,
+		Role:       cfg.Builder.Name,
+		Runtime:    builderRuntime(cfg),
 	})
 	if err != nil {
 		return Result{}, err
@@ -284,6 +307,17 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	// that is there anyway is a collision, so settle reports it rather
 	// than writing over it.
 	return settle(ctx, root, handle, result, runErr, false)
+}
+
+// builderRuntime is the runtime the builder will run under, read from the
+// runner rather than carried as a second field. It is empty when the
+// builder has no runner yet, which is the case a run without one is about
+// to refuse.
+func builderRuntime(cfg Config) string {
+	if cfg.Builder.Runner == nil {
+		return ""
+	}
+	return cfg.Builder.Runner.Runtime()
 }
 
 // TakeRunLease claims the repository for one run, refusing rather than
@@ -379,12 +413,19 @@ func unverifiableBecause(err error) string {
 // stage names a point in the lifecycle a run can be entered at. Run
 // enters at stageBaseline and walks all of it; Resume enters at whichever
 // stage the record and Git together prove the interrupted run reached.
+//
+// Explore and review sit where they do because each is optional and each
+// feeds the phase beside it: explore precedes the builder's handoff so its
+// findings can be part of the builder's prompt, and review follows the
+// recheck so it reads a result the ladder has already passed.
 type stage int
 
 const (
 	stageBaseline stage = iota
+	stageExplore
 	stageHandoff
 	stageRecheck
+	stageReview
 )
 
 // resumedNote labels every phase stamp a resumed run writes. A resumed
@@ -520,7 +561,7 @@ func Resume(ctx context.Context, root, workID string, cfg Config) (result Result
 			ErrTreeDiverged, workID, orNoBaseCommit(rec.BaseCommit), now)
 	}
 
-	result, runErr := lifecycle(ctx, cfg, repo, kind, handle, resumeStage(rec), resumedNote)
+	result, runErr := lifecycle(ctx, cfg, repo, kind, handle, resumeStage(rec, cfg), resumedNote)
 	result.WorkID = workID
 	// This run's receipt may already be on disk: a run whose terminal
 	// save failed had already issued one. Under the run's own id that is
@@ -537,6 +578,10 @@ func Resume(ctx context.Context, root, workID string, cfg Config) (result Result
 //     Re-running it now would run it over the agent's edits and record
 //     the result as the baseline those edits came after, which is a lie
 //     in the one document the receipt quotes.
+//   - Explore is never resumed: its product is a prompt section the
+//     builder already read, and the builder's own handoff is what has to
+//     be repeated to use it again. A run interrupted in explore rejoins
+//     at the builder.
 //   - The handoff is skipped once it completed. It spawns the agent, and
 //     spawning a second one to redo work already sitting in the tree is
 //     the exact cost resume exists to avoid.
@@ -544,10 +589,16 @@ func Resume(ctx context.Context, root, workID string, cfg Config) (result Result
 //     has to be proved by this process against this tree; the record
 //     proves only what another process saw in a tree nothing has vouched
 //     for since.
-func resumeStage(rec workrec.Record) stage {
+//   - Review runs again whenever the recheck does: it reads the result
+//     this process's ladder produced, and an advisory finding about a tree
+//     this process has not itself verified would be a finding about
+//     nothing.
+func resumeStage(rec workrec.Record, cfg Config) stage {
 	switch rec.Phase {
-	case workrec.PhaseHandoff, workrec.PhaseRecheck, workrec.PhaseDeliver:
+	case workrec.PhaseHandoff, workrec.PhaseRecheck, workrec.PhaseDeliver, workrec.PhaseReview:
 		return stageRecheck
+	case workrec.PhaseExplore:
+		return stageHandoff
 	case workrec.PhaseBaseline:
 		if rec.Baseline == nil {
 			// The stamp says the ladder ran and the record has no report
@@ -555,6 +606,12 @@ func resumeStage(rec workrec.Record) stage {
 			// resume has, so where they disagree it takes the phase it
 			// can prove: run the ladder.
 			return stageBaseline
+		}
+		// Both optional phases are skipped when unconfigured, so a
+		// default contract still stamps exactly the same four phases it
+		// did before M6.
+		if cfg.Explorer != nil {
+			return stageExplore
 		}
 		return stageHandoff
 	default:
@@ -606,8 +663,8 @@ func lifecycle(ctx context.Context, cfg Config, repo *repopath.Root, kind string
 			return result, nil
 		}
 
-		if cfg.Runner == nil {
-			return result, errors.New("improve: agent runner is required")
+		if cfg.Builder.Runner == nil {
+			return result, errors.New("improve: a builder runner is required")
 		}
 		// A fresh run claims its branch, which is also where a run that
 		// stopped earlier left one behind; claimBranch decides whether
@@ -632,12 +689,50 @@ func lifecycle(ctx context.Context, cfg Config, repo *repopath.Root, kind string
 			return result, err
 		}
 
-		handoff, err := createHandoff(ctx, cfg.Root, handle.HandoffDir(), cfg.Goal, result.ChecksBefore, cfg.Runner)
+		// The explore phase: read-only research handed to the builder as
+		// a section of its own prompt. It runs before the builder and
+		// never on a resumed run that had already reached the builder,
+		// because its only product is that section.
+		var findings string
+		if cfg.Explorer != nil && from <= stageExplore {
+			explore, err := createHandoff(ctx, cfg.Root,
+				filepath.Join(handle.HandoffDir(), "explore"),
+				buildExplorePrompt(cfg.Goal, failedGates(result.ChecksBefore)),
+				result.ChecksBefore, cfg.Explorer.Runner)
+			if err != nil {
+				return result, err
+			}
+			if err := requireNoNewChanges(ctx, cfg.Root, cfg.Explorer.Name, nil); err != nil {
+				return result, err
+			}
+			findings = readFindings(explore.ResultPath)
+			if err := savePhase(handle, workrec.PhaseExplore, note, func(rec *workrec.Record) {
+				rec.Agents = append(rec.Agents, workrec.RunAgent{
+					Role:    cfg.Explorer.Name,
+					Agent:   cfg.Explorer.Agent,
+					Runtime: cfg.Explorer.Runner.Runtime(),
+				})
+			}); err != nil {
+				return result, err
+			}
+		}
+
+		handoff, err := createHandoff(ctx, cfg.Root, handle.HandoffDir(),
+			buildBuilderPrompt(cfg.Goal, failedGates(result.ChecksBefore), findings),
+			result.ChecksBefore, cfg.Builder.Runner)
 		result.Handoff = handoff
 		if err != nil {
 			return result, err
 		}
-		if err := savePhase(handle, workrec.PhaseHandoff, note, nil); err != nil {
+		if err := savePhase(handle, workrec.PhaseHandoff, note, func(rec *workrec.Record) {
+			rec.Role = cfg.Builder.Name
+			rec.Runtime = cfg.Builder.Runner.Runtime()
+			rec.Agents = append(rec.Agents, workrec.RunAgent{
+				Role:    cfg.Builder.Name,
+				Agent:   cfg.Builder.Agent,
+				Runtime: cfg.Builder.Runner.Runtime(),
+			})
+		}); err != nil {
 			return result, err
 		}
 	} else {
@@ -686,6 +781,35 @@ func lifecycle(ctx context.Context, cfg Config, repo *repopath.Root, kind string
 	result.ChangedFiles = changePaths(entries)
 	if len(result.ChangedFiles) == 0 {
 		return result, ErrNoChanges
+	}
+	// The review phase: an independent read of the verified result,
+	// after the ladder has passed and before the commit that would make
+	// it permanent. It is advisory in the strongest sense available —
+	// its finding is recorded in the receipt and it never changes the
+	// outcome, because pika's own rule is that the ladder is the evidence
+	// and prose is not a gate. A reviewer that could block a green ladder
+	// would be a second gate that is not deterministic.
+	if cfg.Reviewer != nil && from <= stageReview {
+		review, err := createHandoff(ctx, cfg.Root,
+			filepath.Join(handle.HandoffDir(), "review"),
+			buildReviewPrompt(cfg.Goal, result.ChecksBefore, after, result.ChangedFiles, readFindings(result.Handoff.ResultPath)),
+			after, cfg.Reviewer.Runner)
+		result.Review = review
+		if err != nil {
+			return result, err
+		}
+		if err := requireNoNewChanges(ctx, cfg.Root, cfg.Reviewer.Name, result.ChangedFiles); err != nil {
+			return result, err
+		}
+		if err := savePhase(handle, workrec.PhaseReview, note, func(rec *workrec.Record) {
+			rec.Agents = append(rec.Agents, workrec.RunAgent{
+				Role:    cfg.Reviewer.Name,
+				Agent:   cfg.Reviewer.Agent,
+				Runtime: cfg.Reviewer.Runner.Runtime(),
+			})
+		}); err != nil {
+			return result, err
+		}
 	}
 	state, err = currentGitState(ctx, cfg.Root)
 	if err != nil {

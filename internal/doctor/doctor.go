@@ -5,14 +5,17 @@
 package doctor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
+	"github.com/Choaterboater/pika/internal/adapters"
 	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/envelope"
@@ -42,12 +45,32 @@ type Finding struct {
 	Remediation string `json:"remediation,omitempty"`
 }
 
+// AgentFinding is one configured agent and what it resolves to.
+//
+// It carries no credential and no prompt: an agent's configuration is a
+// runtime, a binary and the controls that runtime can express, and a
+// diagnostic that echoed a contract's secrets back to a terminal would be
+// a new way to leak them.
+type AgentFinding struct {
+	Name         string   `json:"name"`
+	Runtime      string   `json:"runtime"`
+	Adapter      string   `json:"adapter"`
+	Binary       string   `json:"binary"`
+	Found        bool     `json:"found"`
+	Model        string   `json:"model,omitempty"`
+	Effort       string   `json:"effort,omitempty"`
+	Output       string   `json:"output"`
+	Resume       bool     `json:"resume"`
+	CompatChecks []string `json:"compat,omitempty"`
+}
+
 // Report is the doctor result.
 type Report struct {
-	Root     string    `json:"root"`
-	Origin   string    `json:"origin"`
-	Findings []Finding `json:"findings"`
-	OK       bool      `json:"ok"`
+	Root     string         `json:"root"`
+	Origin   string         `json:"origin"`
+	Findings []Finding      `json:"findings"`
+	Agents   []AgentFinding `json:"agents,omitempty"`
+	OK       bool           `json:"ok"`
 }
 
 func (r *Report) add(id, severity, detail, remediation string) {
@@ -83,6 +106,7 @@ func Run(root *repopath.Root, home string) *Report {
 	checkRecovery(rep, root)
 	checkLeases(rep, root)
 	checkGates(rep, root, c, resolved, env)
+	checkAgents(rep, c)
 	checkGlobalSkills(rep, home)
 	checkGit(rep)
 	return rep
@@ -507,6 +531,119 @@ func checkGateAuthorized(rep *Report, root *repopath.Root, env *envelope.Envelop
 			line, root.Envelope(), g.Cmd[0]))
 }
 
+// checkAgents reports every configured agent and what it resolves to.
+//
+// It is the only place an operator can see the answer to "what will this
+// run actually spawn" without spawning it, and it is what makes a
+// seven-runtime contract honest: the schema accepts seven values and only
+// this says which of them are installed here.
+//
+// Nothing here runs a harness. The binary is probed with exec.LookPath,
+// which is a stat, and the one check that would execute one — the
+// compatibility probe, which reads a `--help` transcript — stays behind
+// PIKA_ADAPTER_COMPAT. doctor's whole contract is that it mutates nothing
+// and spawns nothing; breaking it to report on agents would be fixing the
+// report by breaking the command.
+func checkAgents(rep *Report, c *contract.Contract) {
+	if c == nil || len(c.Agents) == 0 {
+		return
+	}
+	names := make([]string, 0, len(c.Agents))
+	for name := range c.Agents {
+		names = append(names, name)
+	}
+	// Sorted, because a map's iteration order is not a report order and a
+	// diagnostic that prints the same repository two different ways is a
+	// diagnostic nobody trusts.
+	sort.Strings(names)
+	probe := os.Getenv(adapters.EnabledEnv) == "1"
+	for _, name := range names {
+		cfg := c.Agents[name]
+		ad, ok := adapters.Lookup(cfg.Runtime)
+		if !ok {
+			// Unreachable through a contract that loaded: the runtime
+			// came from the schema's harness enum, and
+			// TestEveryHarnessInTheContractSchemaHasAnAdapter is what
+			// keeps that enum and this table the same length. It is
+			// still worth saying rather than printing a row that reads
+			// as configured, because the day the two lists do drift
+			// this is the report an operator would be reading.
+			rep.add("agent."+name, SeverityError,
+				fmt.Sprintf("%s uses runtime %q, which no adapter implements", name, cfg.Runtime),
+				fmt.Sprintf("choose one of %s, or name a command and args under runtime custom",
+					strings.Join(harnessNames(), ", ")))
+			continue
+		}
+		finding := AgentFinding{
+			Name:    name,
+			Runtime: cfg.Runtime,
+			Adapter: cfg.Runtime,
+		}
+		agent := adapters.Agent{
+			Name: name, Runtime: cfg.Runtime, Command: cfg.Command,
+			Args: cfg.Args, Env: cfg.Env, Model: cfg.Model, Effort: cfg.Effort,
+		}
+		binary := agent.Binary(ad)
+		if path, err := exec.LookPath(binary); err == nil {
+			finding.Found = true
+			finding.Binary = path
+		} else {
+			finding.Binary = "not on PATH"
+		}
+		support := agent.Support(ad)
+		finding.Model = controlState(cfg.Model, support.Model)
+		finding.Effort = controlState(cfg.Effort, support.Effort)
+		finding.Output = string(agent.Output(ad))
+		finding.Resume = ad.Resume
+
+		if !finding.Found {
+			// A warning and never an error. doctor's exit code answers
+			// "is this repository workable", and a repository whose
+			// reviewer's harness is not installed is workable: `pika
+			// work` will refuse the moment it is asked to run that
+			// role, naming the runtime and the binary, and that is the
+			// refusal with the remedy in it.
+			rep.add("agent."+name, SeverityWarn,
+				fmt.Sprintf("%s (%s): %s is not on PATH", name, cfg.Runtime, binary),
+				fmt.Sprintf("install %s, or point %s.command at the executable", binary, name))
+		} else if probe {
+			missing, err := adapters.CheckCompatibility(context.Background(), ad)
+			if err != nil {
+				rep.add("agent."+name+".compat", SeverityWarn, err.Error(),
+					fmt.Sprintf("the compatibility probe runs `%s %s`; it calls no model and spends no tokens", binary, strings.Join(ad.Help, " ")))
+			} else if len(missing) > 0 {
+				finding.CompatChecks = missing
+				rep.add("agent."+name+".compat", SeverityWarn,
+					fmt.Sprintf("%s no longer declares %s, which the %s adapter sends on every handoff", binary, strings.Join(missing, ", "), cfg.Runtime),
+					"the harness renamed or removed a flag; correct the adapter in internal/adapters and record the verified version")
+			}
+		}
+		rep.Agents = append(rep.Agents, finding)
+	}
+}
+
+// controlState reports whether a control the contract set can be
+// expressed. Empty means the contract set nothing, which is not a problem
+// and must not read like one.
+func controlState(value string, supported bool) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	if supported {
+		return "mapped"
+	}
+	return "unmapped"
+}
+
+func harnessNames() []string {
+	harnesses, err := contract.HarnessEnum()
+	if err != nil {
+		return nil
+	}
+	return harnesses
+}
+
+// checkGit reports whether Git is available.
 func checkGit(rep *Report) {
 	if _, err := exec.LookPath("git"); err != nil {
 		rep.add("git", SeverityWarn, "git is not on PATH",

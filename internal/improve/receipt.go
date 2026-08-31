@@ -140,6 +140,7 @@ func buildReceipt(ctx context.Context, root *repopath.Root, rec workrec.Record) 
 		SurfaceScenario:  evidence.SurfaceScenarioInput{Description: noSurfaceScenario},
 		BaselineFailures: baselineFailures(rec.Baseline),
 		Regressions:      regressions(rec.Baseline, rec.Recheck),
+		Review:           reviewFindings(root, rec),
 		Completion:       completion(rec),
 	})
 }
@@ -233,26 +234,93 @@ func delivered(ctx context.Context, root, commit string) (string, []evidence.Cha
 	return tree, changed, nil
 }
 
-// runRoles reports the agent the run spawned. Role and runtime are what
-// the lifecycle recorded — what actually ran — while provider and model
-// come from the contract entry that configured it. Substituted is
-// computed rather than asserted: it is true exactly when the runtime the
-// run spawned is not the one the contract named. `pika improve` refuses
-// that mismatch up front, so in practice it is false; hard-coding it
-// false would make the receipt say so even if it stopped being true.
+// runRoles reports every agent the run spawned, in spawn order.
+//
+// A run with an explorer, a builder and a reviewer lists three; a
+// pre-M6 record being resumed has no Agents slice at all and falls back
+// to the singular role and runtime it recorded, so a receipt is never
+// quieter than the record it is issued from.
+//
+// Provider and model come from the contract entry that configured the
+// agent. Substituted is computed rather than asserted: it is true exactly
+// when the runtime the run spawned is not the one the contract named.
 func runRoles(rec workrec.Record, c *contract.Contract) []evidence.RoleInput {
+	agents := rec.Agents
+	if len(agents) == 0 {
+		return singularRole(rec, c)
+	}
+	roles := make([]evidence.RoleInput, 0, len(agents))
+	for _, a := range agents {
+		roles = append(roles, roleInput(a.Role, a.Runtime, a.Agent, c))
+	}
+	return roles
+}
+
+// singularRole is the pre-M6 shape: one role and one runtime on the
+// record, with the contract entry named by the role.
+func singularRole(rec workrec.Record, c *contract.Contract) []evidence.RoleInput {
 	if rec.Role == "" && rec.Runtime == "" {
 		return nil
 	}
-	role := evidence.RoleInput{Role: rec.Role, Runtime: rec.Runtime}
-	if c != nil {
-		if agent, ok := c.Agents[rec.Role]; ok {
-			role.Provider = agent.Provider
-			role.Model = agent.Model
-			role.Substituted = agent.Runtime != rec.Runtime
+	return []evidence.RoleInput{roleInput(rec.Role, rec.Runtime, rec.Role, c)}
+}
+
+func roleInput(role, runtime, agentKey string, c *contract.Contract) evidence.RoleInput {
+	out := evidence.RoleInput{Role: role, Runtime: runtime}
+	if c == nil {
+		return out
+	}
+	agent, ok := c.Agents[agentKey]
+	if !ok {
+		return out
+	}
+	out.Provider = agent.Provider
+	out.Model = agent.Model
+	out.Substituted = agent.Runtime != runtime
+	return out
+}
+
+// reviewAdvisoryDisposition is what the receipt says about a review: it
+// was recorded and it did not gate the commit. A disposition of "fixed"
+// or "closed" would claim a decision nobody made, and the receipt is a
+// document whose whole purpose is to attest what actually happened.
+const reviewAdvisoryDisposition = "advisory: recorded, not a gate"
+
+// reviewFindings reads the reviewer's recorded finding out of the run's
+// own bundle, so the receipt says what the review actually said.
+//
+// It is absent rather than empty when no reviewer ran: a review array
+// carrying a blank finding would assert that a review happened and
+// declined to say anything.
+func reviewFindings(root *repopath.Root, rec workrec.Record) []evidence.ReviewInput {
+	role := agentWithRole(rec, "reviewer")
+	if role == nil {
+		return nil
+	}
+	handle, err := workrec.Open(root, rec.WorkID)
+	if err != nil {
+		return nil
+	}
+	message := strings.TrimSpace(readFindings(filepath.Join(handle.HandoffDir(), "review", role.Runtime+"-last-message.md")))
+	if message == "" {
+		return nil
+	}
+	return []evidence.ReviewInput{{
+		Agent:       role.Agent,
+		Finding:     message,
+		Disposition: reviewAdvisoryDisposition,
+	}}
+}
+
+// agentWithRole returns the record's entry for a role, or nil when the
+// run never spawned that role.
+func agentWithRole(rec workrec.Record, role string) *workrec.RunAgent {
+	for i := range rec.Agents {
+		if rec.Agents[i].Role == role {
+			return &rec.Agents[i]
 		}
 	}
-	return []evidence.RoleInput{role}
+	return nil
 }
 
 // gateCommands turns one ladder run into the commands it executed.

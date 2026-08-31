@@ -32,10 +32,17 @@ import (
 // binPath is the pika binary built once by TestMain.
 var binPath string
 
-// fakeCodexDir is the directory holding the fake agent binary, built
-// once by TestMain under the name pika spawns. The work-lifecycle tests
-// put it at the front of the child's PATH; see testdata/fakecodex.
-var fakeCodexDir string
+// fakeAgentDir is the directory holding the fake agent binary, built
+// once by TestMain and installed under every runtime's own name. The
+// work-lifecycle tests put it at the front of the child's PATH; see
+// testdata/fakeagent.
+var fakeAgentDir string
+
+// fakeACPPath is the scripted ACP peer, built once by TestMain. It is
+// reached through the contract's `command` field rather than through
+// PATH: ACP is a protocol, not a vendor, and pika's default ACP binary is
+// omp's, which this must not shadow.
+var fakeACPPath string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "pctl-e2e-bin")
@@ -52,15 +59,49 @@ func TestMain(m *testing.M) {
 	}
 	// The agent boundary is a binary looked up on PATH, so faking it is
 	// building one. It lives beside the pika binary and dies with it.
-	fakeCodexDir = filepath.Join(dir, "agent")
-	if err := os.MkdirAll(fakeCodexDir, 0o755); err != nil {
+	fakeAgentDir = filepath.Join(dir, "agent")
+	if err := os.MkdirAll(fakeAgentDir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "e2e: agent dir:", err)
 		os.Exit(1)
 	}
-	agent := exec.Command("go", "build", "-o", filepath.Join(fakeCodexDir, exeName("codex")), "./testdata/fakecodex")
+	// One script, one build, installed under every runtime's own binary
+	// name. pika resolves the binary by runtime, so a contract naming
+	// claude looks up `claude` on PATH and finds the same fixture a
+	// codex run does — which is what makes a multi-runtime run an
+	// end-to-end test of the adapter table rather than of one adapter.
+	harnesses, err := contract.HarnessEnum()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: harness enum: %v\n", err)
+		os.Exit(1)
+	}
+	built := filepath.Join(fakeAgentDir, exeName("fakeagent"))
+	agent := exec.Command("go", "build", "-o", built, "./testdata/fakeagent")
 	agent.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := agent.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "e2e: build fake codex: %v\n%s", err, out)
+		fmt.Fprintf(os.Stderr, "e2e: build fake agent: %v\n%s", err, out)
+		os.Exit(1)
+	}
+	source, err := os.ReadFile(built)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "e2e: read fake agent:", err)
+		os.Exit(1)
+	}
+	// custom names no binary of its own — the contract does — and acp
+	// is a transport rather than a binary, so neither gets a copy.
+	for _, name := range append(harnesses, "codex") {
+		if name == "custom" || name == "acp" {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(fakeAgentDir, exeName(name)), source, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "e2e: install fake %s: %v\n", name, err)
+			os.Exit(1)
+		}
+	}
+	fakeACPPath = filepath.Join(fakeAgentDir, exeName("fakeacp"))
+	acp := exec.Command("go", "build", "-o", fakeACPPath, "./testdata/fakeacp")
+	acp.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := acp.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: build fake acp peer: %v\n%s", err, out)
 		os.Exit(1)
 	}
 	code := m.Run()

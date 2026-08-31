@@ -74,11 +74,20 @@ type Package struct {
 }
 
 // AgentConfig configures a named agent entry.
+//
+// Command, Args and Env are how an operator points an agent at something
+// other than the adapter's own binary. Env holds variable NAMES and never
+// values: the schema's pattern refuses a value, because a credential
+// committed to a contract is a credential in every clone of the
+// repository.
 type AgentConfig struct {
-	Runtime  string `yaml:"runtime"  json:"runtime"`
-	Provider string `yaml:"provider" json:"provider,omitempty"`
-	Model    string `yaml:"model"    json:"model,omitempty"`
-	Effort   string `yaml:"effort"   json:"effort,omitempty"`
+	Runtime  string   `yaml:"runtime"  json:"runtime"`
+	Provider string   `yaml:"provider" json:"provider,omitempty"`
+	Model    string   `yaml:"model"    json:"model,omitempty"`
+	Effort   string   `yaml:"effort"   json:"effort,omitempty"`
+	Command  string   `yaml:"command"  json:"command,omitempty"`
+	Args     []string `yaml:"args"   json:"args,omitempty"`
+	Env      []string `yaml:"env"    json:"env,omitempty"`
 }
 
 // GitHub holds repository workflow settings.
@@ -119,6 +128,30 @@ type Skills struct {
 type Projection struct {
 	Harness string `yaml:"harness" json:"harness"`
 	Path    string `yaml:"path"    json:"path"`
+}
+
+// HarnessEnum returns the closed set of runtime names the embedded schema
+// accepts. It reads the schema itself, so a test that asserts every harness
+// has an adapter cannot pass against a stale copy of the list.
+//
+// The error is returned rather than swallowed because a schema without a
+// harness enum is a schema that cannot be asked, and answering an empty
+// slice would let a caller conclude the set is empty.
+func HarnessEnum() ([]string, error) {
+	var doc struct {
+		Definitions struct {
+			Harness struct {
+				Enum []string `json:"enum"`
+			} `json:"harness"`
+		} `json:"definitions"`
+	}
+	if err := json.Unmarshal(schemaJSON, &doc); err != nil {
+		return nil, fmt.Errorf("contract: read embedded schema: %w", err)
+	}
+	if len(doc.Definitions.Harness.Enum) == 0 {
+		return nil, errors.New("contract: embedded schema declares no harness enum")
+	}
+	return doc.Definitions.Harness.Enum, nil
 }
 
 // Load reads, strictly parses, and JSON-Schema-validates the contract file

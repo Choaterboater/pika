@@ -38,7 +38,7 @@ func TestRunCommitsOnlyAfterVerifiedRecheck(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestRunLeavesFailedRecheckUncommitted(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: "fixed.txt", body: "needs review\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: "fixed.txt", body: "needs review\n"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "post-handoff checks failed") {
 		t.Fatalf("error = %v, want failed recheck", err)
@@ -144,7 +144,7 @@ func TestRunRejectsAgentCreatedCommitBeforeRecheck(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: committingRunner{},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: committingRunner{}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "changed Git state") {
 		t.Fatalf("error = %v, want agent commit refusal", err)
@@ -162,7 +162,7 @@ func TestRunRejectsAgentBranchSwitchBeforeRecheck(t *testing.T) {
 		Check: func() (*verify.Report, error) {
 			return &verify.Report{Pass: false, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}}, nil
 		},
-		Runner: switchingRunner{},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: switchingRunner{}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "Git state") {
 		t.Fatalf("error = %v, want branch-switch refusal", err)
@@ -181,7 +181,7 @@ func TestRunRejectsAgentRewriteOfAnotherBranch(t *testing.T) {
 		Check: func() (*verify.Report, error) {
 			return &verify.Report{Pass: false, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}}, nil
 		},
-		Runner: rewritingRunner{},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: rewritingRunner{}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "Git state") {
 		t.Fatalf("error = %v, want ref-rewrite refusal", err)
@@ -199,7 +199,7 @@ func TestRunRejectsPendingMergeState(t *testing.T) {
 		Check: func() (*verify.Report, error) {
 			return &verify.Report{Pass: false, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}}, nil
 		},
-		Runner: pendingMergeRunner{},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: pendingMergeRunner{}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "pending Git operation") {
 		t.Fatalf("error = %v, want pending merge refusal", err)
@@ -231,7 +231,7 @@ func TestRunDoesNotCommitAgentStagedPrivateState(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: runner,
+		Builder: Role{Name: "builder", Agent: "builder", Runner: runner},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +287,7 @@ func TestRunRefusesPrivateStateRenamedOutOfTheSubtree(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: renamingRunner{from: private, to: "leaked.json"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: renamingRunner{from: private, to: "leaked.json"}},
 	})
 	if !errors.Is(err, ErrPrivateStateMoved) {
 		t.Fatalf("error = %v, want ErrPrivateStateMoved", err)
@@ -359,7 +359,7 @@ func TestPrivateStateWithANonASCIINameIsRefused(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: renamingRunner{from: private, to: "leaked.json"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: renamingRunner{from: private, to: "leaked.json"}},
 	})
 	if !errors.Is(err, ErrPrivateStateMoved) {
 		t.Fatalf("error = %v, want ErrPrivateStateMoved\nstatus after the run:\n%s",
@@ -413,7 +413,7 @@ func TestRunCommitsANonASCIIPathVerbatim(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: repaired, body: "verified fix\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: repaired, body: "verified fix\n"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -477,7 +477,7 @@ func TestRunStagesGlobMetacharacterPathsLiterally(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: repaired, body: "verified fix\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: repaired, body: "verified fix\n"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -628,7 +628,7 @@ func TestRunRecordsEveryPhaseTransition(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -714,7 +714,7 @@ func TestFeatureKindProceedsToHandoffOnGreenBaseline(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: "CHANGELOG.md", body: "# Changelog\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: "CHANGELOG.md", body: "# Changelog\n"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -753,7 +753,7 @@ func TestAgentFailureRecordsBlockedWithReason(t *testing.T) {
 		Check: func() (*verify.Report, error) {
 			return &verify.Report{Pass: false, Gates: []verify.GateResult{{ID: "lint", Status: verify.StatusFail}}}, nil
 		},
-		Runner: failingMessageRunner{},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: failingMessageRunner{}},
 	})
 	if err == nil {
 		t.Fatal("Run error = nil, want the agent failure")
@@ -850,10 +850,10 @@ func TestSecondConcurrentRunIsRefused(t *testing.T) {
 	holder := soleRunID(t, root)
 
 	result, err := Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-improve",
-		Check:  refusingCheck(t, "a second concurrent run must not reach the ladder"),
-		Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"},
+		Root:    root,
+		Branch:  "chore/pika-improve",
+		Check:   refusingCheck(t, "a second concurrent run must not reach the ladder"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"}},
 	})
 	if !errors.Is(err, ErrRunInProgress) {
 		t.Fatalf("error = %v, want ErrRunInProgress", err)
@@ -880,10 +880,10 @@ func TestSecondConcurrentRunWithADifferentBranchIsAlsoRefused(t *testing.T) {
 	holder := soleRunID(t, root)
 
 	result, err := Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-other",
-		Check:  refusingCheck(t, "a second concurrent run must not reach the ladder"),
-		Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"},
+		Root:    root,
+		Branch:  "chore/pika-other",
+		Check:   refusingCheck(t, "a second concurrent run must not reach the ladder"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"}},
 	})
 	if !errors.Is(err, ErrRunInProgress) {
 		t.Fatalf("error = %v, want ErrRunInProgress", err)
@@ -928,10 +928,10 @@ func TestRefusalNamesTheHolder(t *testing.T) {
 	}
 
 	_, err = Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-improve",
-		Check:  refusingCheck(t, "a second concurrent run must not reach the ladder"),
-		Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"},
+		Root:    root,
+		Branch:  "chore/pika-improve",
+		Check:   refusingCheck(t, "a second concurrent run must not reach the ladder"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"}},
 	})
 	if !errors.Is(err, ErrRunInProgress) {
 		t.Fatalf("error = %v, want ErrRunInProgress", err)
@@ -964,10 +964,10 @@ func TestTheFirstRunIsUnaffectedByTheRefusal(t *testing.T) {
 	holder := soleRunID(t, root)
 
 	if _, err := Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-other",
-		Check:  refusingCheck(t, "a second concurrent run must not reach the ladder"),
-		Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"},
+		Root:    root,
+		Branch:  "chore/pika-other",
+		Check:   refusingCheck(t, "a second concurrent run must not reach the ladder"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "a second concurrent run must not spawn an agent"}},
 	}); !errors.Is(err, ErrRunInProgress) {
 		t.Fatalf("error = %v, want ErrRunInProgress", err)
 	}
@@ -1019,7 +1019,7 @@ func startBlockedRun(t *testing.T, root, branch string) *blockedRun {
 				checks = checks[1:]
 				return report, nil
 			},
-			Runner: runner,
+			Builder: Role{Name: "builder", Agent: "builder", Runner: runner},
 		})
 	}()
 	select {
@@ -1149,7 +1149,7 @@ func TestResumeContinuesFromEachInterruptiblePhase(t *testing.T) {
 					queued = queued[1:]
 					return report, nil
 				},
-				Runner: runner,
+				Builder: Role{Name: "builder", Agent: "builder", Runner: runner},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -1200,9 +1200,9 @@ func TestResumeRecordsTheOutcomeGitAlreadyProves(t *testing.T) {
 	})
 
 	result, err := Resume(context.Background(), root, workID, Config{
-		Branch: branch,
-		Check:  refusingCheck(t, "Git already proves this run's work landed"),
-		Runner: refusingRunner{t: t, why: "Git already proves this run's work landed"},
+		Branch:  branch,
+		Check:   refusingCheck(t, "Git already proves this run's work landed"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "Git already proves this run's work landed"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1249,9 +1249,9 @@ func TestResumeToleratesTheReceiptAnUnsettledRunAlreadyIssued(t *testing.T) {
 		Recheck:    passingLadder(),
 	})
 	cfg := Config{
-		Branch: branch,
-		Check:  refusingCheck(t, "Git already proves this run's work landed"),
-		Runner: refusingRunner{t: t, why: "Git already proves this run's work landed"},
+		Branch:  branch,
+		Check:   refusingCheck(t, "Git already proves this run's work landed"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "Git already proves this run's work landed"}},
 	}
 	if _, err := Resume(context.Background(), root, workID, cfg); err != nil {
 		t.Fatal(err)
@@ -1311,7 +1311,7 @@ func TestResumeTreatsADeliverGitDisprovesAsACrash(t *testing.T) {
 			ladder++
 			return passingLadder(), nil
 		},
-		Runner: refusingRunner{t: t, why: "the record proves this run's agent already ran"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "the record proves this run's agent already ran"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1386,7 +1386,7 @@ func TestResumeReconcilesACommitTheDeliverStampNeverRecorded(t *testing.T) {
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1417,9 +1417,9 @@ func TestResumeReconcilesACommitTheDeliverStampNeverRecorded(t *testing.T) {
 	}
 
 	result, err := Resume(context.Background(), root, first.WorkID, Config{
-		Branch: branch,
-		Check:  refusingCheck(t, "Git already proves this run's work landed"),
-		Runner: refusingRunner{t: t, why: "Git already proves this run's work landed"},
+		Branch:  branch,
+		Check:   refusingCheck(t, "Git already proves this run's work landed"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "Git already proves this run's work landed"}},
 	})
 	if err != nil {
 		t.Fatalf("Resume = %v, want the run's own commit recognised as delivered", err)
@@ -1478,9 +1478,9 @@ func TestResumeStillRefusesACommitTheRunDidNotMake(t *testing.T) {
 	})
 
 	result, err := Resume(context.Background(), root, workID, Config{
-		Branch: branch,
-		Check:  refusingCheck(t, "a moved repository must not be re-verified"),
-		Runner: refusingRunner{t: t, why: "a moved repository must not spawn an agent"},
+		Branch:  branch,
+		Check:   refusingCheck(t, "a moved repository must not be re-verified"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "a moved repository must not spawn an agent"}},
 	})
 	assertRefusal(t, err, ErrTreeDiverged)
 	if !strings.Contains(err.Error(), base) || !strings.Contains(err.Error(), head) {
@@ -1504,9 +1504,9 @@ func TestResumeRefusesTerminalOutcome(t *testing.T) {
 		Outcome: workrec.OutcomeComplete,
 	})
 	result, err := Resume(context.Background(), root, workID, Config{
-		Branch: "chore/pika-improve",
-		Check:  refusingCheck(t, "a finished run must not be re-verified"),
-		Runner: refusingRunner{t: t, why: "a finished run must not spawn an agent"},
+		Branch:  "chore/pika-improve",
+		Check:   refusingCheck(t, "a finished run must not be re-verified"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "a finished run must not spawn an agent"}},
 	})
 	assertRefusal(t, err, ErrRunFinished)
 	if !strings.Contains(err.Error(), workID) || !strings.Contains(err.Error(), workrec.OutcomeComplete) {
@@ -1530,9 +1530,9 @@ func TestResumeRefusesMissingBranch(t *testing.T) {
 		Baseline: failingBaseline(),
 	})
 	result, err := Resume(context.Background(), root, workID, Config{
-		Branch: branch,
-		Check:  refusingCheck(t, "a run whose branch is gone must not be re-verified"),
-		Runner: refusingRunner{t: t, why: "a run whose branch is gone must not spawn an agent"},
+		Branch:  branch,
+		Check:   refusingCheck(t, "a run whose branch is gone must not be re-verified"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "a run whose branch is gone must not spawn an agent"}},
 	})
 	assertRefusal(t, err, ErrBranchGone)
 	if !strings.Contains(err.Error(), branch) {
@@ -1564,9 +1564,9 @@ func TestResumeRefusesDivergedTree(t *testing.T) {
 	head := gitOutput(t, root, "rev-parse", "HEAD")
 
 	result, err := Resume(context.Background(), root, workID, Config{
-		Branch: "chore/pika-improve",
-		Check:  refusingCheck(t, "a moved repository must not be re-verified"),
-		Runner: refusingRunner{t: t, why: "a moved repository must not spawn an agent"},
+		Branch:  "chore/pika-improve",
+		Check:   refusingCheck(t, "a moved repository must not be re-verified"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "a moved repository must not spawn an agent"}},
 	})
 	assertRefusal(t, err, ErrTreeDiverged)
 	if !strings.Contains(err.Error(), base) || !strings.Contains(err.Error(), head) {
@@ -1799,6 +1799,22 @@ func (r repairRunner) Run(_ context.Context, root, _, outputPath string) error {
 	return os.WriteFile(outputPath, []byte("repaired\n"), 0o600)
 }
 
+// Runtime is what every fake here reports. The lifecycle records it and
+// the receipt prints it, so a fake that reported nothing would be testing
+// a shape production cannot produce.
+//
+// The value is codex because that is the runtime these fixtures stood in
+// for before M6, and the bundle filenames some of them assert are the
+// ones a codex handoff writes.
+func (repairRunner) Runtime() string       { return "codex" }
+func (committingRunner) Runtime() string   { return "codex" }
+func (switchingRunner) Runtime() string    { return "codex" }
+func (*stagingRunner) Runtime() string     { return "codex" }
+func (renamingRunner) Runtime() string     { return "codex" }
+func (rewritingRunner) Runtime() string    { return "codex" }
+func (pendingMergeRunner) Runtime() string { return "codex" }
+func (r *blockingRunner) Runtime() string  { return "codex" }
+
 // assertRefusal holds a refusal to naming exactly one of the three worlds
 // resume can find itself in. Each leaves the operator with a different
 // decision, so a refusal matching two of these sentinels would be the
@@ -1922,6 +1938,10 @@ func (r refusingRunner) Run(context.Context, string, string, string) error {
 	r.t.Fatalf("the agent must not run: %s", r.why)
 	return nil
 }
+
+// Runtime never runs: this runner's only job is to fail the test if it is
+// invoked, and a name is the least it can report without doing so.
+func (r refusingRunner) Runtime() string { return "codex" }
 
 // A branch name is a value. Git reads a leading `-` as the start of an
 // option unless it is told where the options stop, so a branch called
@@ -2064,10 +2084,10 @@ func TestARunIsRefusedWhileAnMCPSessionHoldsAScope(t *testing.T) {
 	session.acquire(1, "src")
 
 	_, err := Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-improve",
-		Check:  refusingCheck(t, "a run must not reach the ladder while a scope lease is held"),
-		Runner: refusingRunner{t: t, why: "a run must not spawn an agent while a scope lease is held"},
+		Root:    root,
+		Branch:  "chore/pika-improve",
+		Check:   refusingCheck(t, "a run must not reach the ladder while a scope lease is held"),
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "a run must not spawn an agent while a scope lease is held"}},
 	})
 	if !errors.Is(err, ErrScopeLeaseHeld) {
 		t.Fatalf("error = %v, want ErrScopeLeaseHeld", err)
@@ -2103,10 +2123,10 @@ func TestARunIsRefusedWhileAnMCPSessionHoldsAScope(t *testing.T) {
 	// refusal while the ground is taken, not a permanent denial.
 	session.end()
 	result, err := Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-improve",
-		Check:  func() (*verify.Report, error) { return &verify.Report{Pass: true}, nil },
-		Runner: refusingRunner{t: t, why: "a green baseline needs no agent"},
+		Root:    root,
+		Branch:  "chore/pika-improve",
+		Check:   func() (*verify.Report, error) { return &verify.Report{Pass: true}, nil },
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "a green baseline needs no agent"}},
 	})
 	if err != nil {
 		t.Fatalf("run after the session released its lease: %v", err)
@@ -2145,10 +2165,10 @@ func writeMCPEnvelope(t *testing.T, root string, paths ...string) {
 func TestALeftoverBranchWithNoRecordedCommitsDoesNotBlockALaterRun(t *testing.T) {
 	root := fixtureRepository(t)
 	first, err := Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-improve",
-		Check:  func() (*verify.Report, error) { return failingBaseline(), nil },
-		Runner: failingMessageRunner{},
+		Root:    root,
+		Branch:  "chore/pika-improve",
+		Check:   func() (*verify.Report, error) { return failingBaseline(), nil },
+		Builder: Role{Name: "builder", Agent: "builder", Runner: failingMessageRunner{}},
 	})
 	if err == nil {
 		t.Fatal("the first run must fail: its failure is what leaves the branch behind")
@@ -2178,7 +2198,7 @@ func TestALeftoverBranchWithNoRecordedCommitsDoesNotBlockALaterRun(t *testing.T)
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"}},
 	})
 	if err != nil {
 		t.Fatalf("the second run failed on a branch that carried nothing: %v", err)
@@ -2211,7 +2231,7 @@ func TestALeftoverBranchHoldingRecordedWorkIsRefusedByBranchRunAndRemedy(t *test
 			checks = checks[1:]
 			return report, nil
 		},
-		Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"},
+		Builder: Role{Name: "builder", Agent: "builder", Runner: repairRunner{path: "fixed.txt", body: "verified fix\n"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2227,10 +2247,10 @@ func TestALeftoverBranchHoldingRecordedWorkIsRefusedByBranchRunAndRemedy(t *test
 	gitRun(t, root, "commit", "-qm", "chore: keep the delivered run's receipt")
 
 	second, err := Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-improve",
-		Check:  func() (*verify.Report, error) { return failingBaseline(), nil },
-		Runner: refusingRunner{t: t, why: "the branch it would work on already holds committed work"},
+		Root:    root,
+		Branch:  "chore/pika-improve",
+		Check:   func() (*verify.Report, error) { return failingBaseline(), nil },
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "the branch it would work on already holds committed work"}},
 	})
 	if !errors.Is(err, ErrBranchHoldsWork) {
 		t.Fatalf("error = %v, want ErrBranchHoldsWork", err)
@@ -2277,10 +2297,10 @@ func TestALeftoverBranchNoRunRecordClaimsIsRefusedToo(t *testing.T) {
 	gitRun(t, root, "switch", "--", "main")
 
 	_, err := Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-improve",
-		Check:  func() (*verify.Report, error) { return failingBaseline(), nil },
-		Runner: refusingRunner{t: t, why: "the branch it would work on holds an operator's own commit"},
+		Root:    root,
+		Branch:  "chore/pika-improve",
+		Check:   func() (*verify.Report, error) { return failingBaseline(), nil },
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "the branch it would work on holds an operator's own commit"}},
 	})
 	if !errors.Is(err, ErrBranchHoldsWork) {
 		t.Fatalf("error = %v, want ErrBranchHoldsWork", err)
@@ -2304,10 +2324,10 @@ func TestARunThatStoppedBeforeBranchingReportsTheBranchItWasOn(t *testing.T) {
 	gitRun(t, root, "switch", "-c", "feature/mine")
 
 	result, err := Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-improve",
-		Check:  func() (*verify.Report, error) { return nil, errors.New("check: no contract") },
-		Runner: refusingRunner{t: t, why: "the baseline ladder never produced a report"},
+		Root:    root,
+		Branch:  "chore/pika-improve",
+		Check:   func() (*verify.Report, error) { return nil, errors.New("check: no contract") },
+		Builder: Role{Name: "builder", Agent: "builder", Runner: refusingRunner{t: t, why: "the baseline ladder never produced a report"}},
 	})
 	if err == nil {
 		t.Fatal("Run error = nil, want the baseline failure")
@@ -2327,10 +2347,10 @@ func TestARunThatStoppedBeforeBranchingReportsTheBranchItWasOn(t *testing.T) {
 func TestARunTheAgentSwitchedAwayFromReportsTheBranchGitWasOn(t *testing.T) {
 	root := fixtureRepository(t)
 	result, err := Run(context.Background(), Config{
-		Root:   root,
-		Branch: "chore/pika-improve",
-		Check:  func() (*verify.Report, error) { return failingBaseline(), nil },
-		Runner: switchingRunner{},
+		Root:    root,
+		Branch:  "chore/pika-improve",
+		Check:   func() (*verify.Report, error) { return failingBaseline(), nil },
+		Builder: Role{Name: "builder", Agent: "builder", Runner: switchingRunner{}},
 	})
 	if err == nil {
 		t.Fatal("Run error = nil, want the branch guard")

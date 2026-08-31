@@ -41,7 +41,7 @@ func runWork(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("work", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	branch := fs.String("branch", defaultImproveBranch, "local branch for the verified commit")
-	agent := fs.String("agent", "builder", "contract agent name (must use the Codex runtime)")
+	agent := fs.String("agent", "builder", "contract agent name")
 	jsonOut := fs.Bool("json", false, "emit the work result as JSON on stdout")
 	rootFlag := fs.String("root", "", rootFlagUsage)
 	// stdlib flag stops at the first non-flag argument, so the goal is
@@ -78,16 +78,16 @@ func runWork(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(*jsonOut, stdout, stderr, "work", codeConfig, err.Error())
 	}
-	result, err := improve.Run(context.Background(), improve.Config{
-		Root:    root.Dir(),
-		Branch:  *branch,
-		Kind:    workrec.KindFeature,
-		Goal:    goal,
-		Agent:   *agent,
-		Runtime: codexRuntime,
-		Check:   func() (*verify.Report, error) { return currentCheckReport(root) },
-		Runner:  configuredRunner{root: root, agent: *agent},
-	})
+	cfg, err := configuredRoles(root, *agent)
+	if err != nil {
+		return fail(*jsonOut, stdout, stderr, "work", codeConfig, err.Error())
+	}
+	cfg.Root = root.Dir()
+	cfg.Branch = *branch
+	cfg.Kind = workrec.KindFeature
+	cfg.Goal = goal
+	cfg.Check = func() (*verify.Report, error) { return currentCheckReport(root) }
+	result, err := improve.Run(context.Background(), cfg)
 	if *jsonOut {
 		// The result is the payload on both paths: a run that stopped
 		// still has to say which branch it stopped on and where the

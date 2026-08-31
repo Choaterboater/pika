@@ -37,7 +37,7 @@ const resumeUsage = "usage: pika resume <work-id> [--agent <name>] [--json] [--r
 func runResume(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	agent := fs.String("agent", "builder", "contract agent name (must use the Codex runtime)")
+	agent := fs.String("agent", "builder", "contract agent name")
 	jsonOut := fs.Bool("json", false, "emit the resumed run as JSON on stdout")
 	rootFlag := fs.String("root", "", rootFlagUsage)
 	// stdlib flag stops at the first non-flag argument, so the work id is
@@ -69,13 +69,13 @@ func runResume(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(*jsonOut, stdout, stderr, "resume", codeConfig, err.Error())
 	}
-	result, err := improve.Resume(context.Background(), root.Dir(), workID, improve.Config{
-		Branch:  defaultImproveBranch,
-		Agent:   *agent,
-		Runtime: codexRuntime,
-		Check:   func() (*verify.Report, error) { return currentCheckReport(root) },
-		Runner:  configuredRunner{root: root, agent: *agent},
-	})
+	cfg, err := configuredRoles(root, *agent)
+	if err != nil {
+		return fail(*jsonOut, stdout, stderr, "resume", codeConfig, err.Error())
+	}
+	cfg.Branch = defaultImproveBranch
+	cfg.Check = func() (*verify.Report, error) { return currentCheckReport(root) }
+	result, err := improve.Resume(context.Background(), root.Dir(), workID, cfg)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return fail(*jsonOut, stdout, stderr, "resume", codeConfig,

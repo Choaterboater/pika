@@ -156,38 +156,6 @@ func TestCreateHandoffRedactsFinalMessageWhenRunnerFails(t *testing.T) {
 	}
 }
 
-func TestCodexRunnerArgsUseConfiguredModelAndEffort(t *testing.T) {
-	args := (CodexRunner{Binary: "codex", Model: "gpt-5.6-sol", Effort: "high"}).args("/repo", "/tmp/result.md")
-	joined := strings.Join(args, "\n")
-	for _, want := range []string{"--model\ngpt-5.6-sol", `model_reasoning_effort="high"`, "sandbox_workspace_write.network_access=false"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("args = %q, missing %q", args, want)
-		}
-	}
-}
-
-// codex rejects --sandbox alongside --approve-for-me, because approve-for-me
-// already runs shell commands under the workspace-write sandbox. Passing both
-// made `codex exec` exit 2 on argument parsing, so every handoff failed before
-// the agent read a single byte of the prompt — four milestones of plumbing
-// ending at a dead invocation. Sending workspace-write is still the intent;
-// it just may not be spelled twice.
-func TestCodexRunnerNeverSendsSandboxAlongsideApproveForMe(t *testing.T) {
-	args := (CodexRunner{Binary: "codex", Model: "gpt-5.6-sol", Effort: "high"}).args("/repo", "/tmp/result.md")
-	var sawApprove bool
-	for _, a := range args {
-		switch a {
-		case "--approve-for-me":
-			sawApprove = true
-		case "--sandbox", "-s":
-			t.Fatalf("args carry %q, which codex refuses next to --approve-for-me: %q", a, args)
-		}
-	}
-	if !sawApprove {
-		t.Fatalf("args no longer request automatic approval: %q", args)
-	}
-}
-
 // Warnings are not repair work. The refusal happens before the bundle
 // directory is created, so a run with nothing to fix leaves nothing behind.
 func TestCreateHandoffRefusesAReportWithNoFailedGates(t *testing.T) {
@@ -231,6 +199,11 @@ func (r *recordingRunner) Run(_ context.Context, root, promptPath, outputPath st
 	return os.WriteFile(outputPath, []byte(r.response), 0o600)
 }
 
+// Runtime is the codex runtime, so the bundle filenames these tests assert
+// are the ones an ordinary codex handoff produces — the same names every
+// milestone before M6 wrote.
+func (r *recordingRunner) Runtime() string { return "codex" }
+
 type failingMessageRunner struct{}
 
 func (failingMessageRunner) Run(_ context.Context, _, _, outputPath string) error {
@@ -239,6 +212,8 @@ func (failingMessageRunner) Run(_ context.Context, _, _, outputPath string) erro
 	}
 	return errors.New("Codex failed")
 }
+
+func (failingMessageRunner) Runtime() string { return "codex" }
 
 // recordBundleDir names a bundle the way a run record does: inside the run's
 // own directory. Task 4 passes (*workrec.Handle).HandoffDir() here; this

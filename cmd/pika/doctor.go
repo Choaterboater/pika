@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/Choaterboater/pika/internal/doctor"
 	"github.com/Choaterboater/pika/internal/skills"
@@ -58,8 +59,8 @@ func runDoctor(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 }
 
 // printDoctorReport writes the human-readable report: the root and how it
-// was resolved, then one line per finding with its remediation indented
-// beneath it.
+// was resolved, one line per finding with its remediation indented
+// beneath it, and then the agents the contract configures.
 func printDoctorReport(rep *doctor.Report, stdout io.Writer) {
 	fmt.Fprintf(stdout, "root  %s (%s)\n\n", rep.Root, rep.Origin)
 	for _, f := range rep.Findings {
@@ -73,4 +74,40 @@ func printDoctorReport(rep *doctor.Report, stdout io.Writer) {
 			fmt.Fprintf(stdout, "%-5s %-14s → %s\n", "", "", f.Remediation)
 		}
 	}
+	printAgents(rep, stdout)
+}
+
+// printAgents writes the one block that cannot be a finding: several facts
+// about one agent belong on one line, and a table whose rows are
+// severities has no shape for that.
+func printAgents(rep *doctor.Report, stdout io.Writer) {
+	if len(rep.Agents) == 0 {
+		return
+	}
+	fmt.Fprintf(stdout, "\nAgents\n\n")
+	for _, a := range rep.Agents {
+		fmt.Fprintf(stdout, "%-10s %-9s %s\n", a.Name, a.Runtime, a.Binary)
+		var parts []string
+		if a.Model != "" {
+			parts = append(parts, "model: "+a.Model)
+		}
+		if a.Effort != "" {
+			parts = append(parts, "effort: "+a.Effort)
+		}
+		if a.Output != "" {
+			parts = append(parts, "output: "+a.Output)
+		}
+		parts = append(parts, "resume: "+yesNo(a.Resume))
+		if len(a.CompatChecks) > 0 {
+			parts = append(parts, "missing flags: "+strings.Join(a.CompatChecks, ", "))
+		}
+		fmt.Fprintf(stdout, "%-10s %-9s %s\n", "", "", strings.Join(parts, "  "))
+	}
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }

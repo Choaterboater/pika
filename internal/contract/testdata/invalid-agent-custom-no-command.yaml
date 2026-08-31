@@ -1,0 +1,12 @@
+schema: 1
+project:
+  name: fixture
+  topology: single
+profiles: [core@1]
+github:
+  merge: squash
+evidence:
+  publish: sanitized
+agents:
+  builder:
+    runtime: custom

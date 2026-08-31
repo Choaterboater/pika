@@ -19,7 +19,7 @@ import (
 // real agent boundary.
 //
 // `pika work` spawns its agent as a `codex` binary looked up on PATH, so
-// these tests build a fake one (testdata/fakecodex) and put it at the
+// these tests build a fake one (testdata/fakeagent) and put it at the
 // front of the child's PATH. Everything else — the ladder, the run
 // record, the branch, the commit, the receipt — is production code doing
 // what it does in the field, and no model, credential or network is
@@ -61,10 +61,10 @@ func gitAbsent() string {
 	return ""
 }
 
-// codexEnv puts the fake agent on PATH ahead of anything else and adds
+// agentEnv puts the fake agent on PATH ahead of anything else and adds
 // the scenario the test wants it to play.
-func codexEnv(extra ...string) []string {
-	env := []string{"PATH=" + fakeCodexDir + string(os.PathListSeparator) + os.Getenv("PATH")}
+func agentEnv(extra ...string) []string {
+	env := []string{"PATH=" + fakeAgentDir + string(os.PathListSeparator) + os.Getenv("PATH")}
 	return append(env, extra...)
 }
 
@@ -178,9 +178,16 @@ type runRecord struct {
 	Branch     string `json:"branch"`
 	BaseCommit string `json:"base_commit"`
 	Commit     string `json:"commit"`
-	Outcome    string `json:"outcome"`
-	Reason     string `json:"reason"`
-	Phases     []struct {
+	Role       string `json:"role"`
+	Runtime    string `json:"runtime"`
+	Agents     []struct {
+		Role    string `json:"role"`
+		Agent   string `json:"agent"`
+		Runtime string `json:"runtime"`
+	} `json:"agents"`
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason"`
+	Phases  []struct {
 		Phase string `json:"phase"`
 		Note  string `json:"note"`
 	} `json:"phases"`
@@ -255,11 +262,11 @@ func TestE2EWorkDeliversAVerifiedCommitAndAReceipt(t *testing.T) {
 	promptPath := filepath.Join(side, "prompt.md")
 	argvPath := filepath.Join(side, "argv")
 
-	out := runCLIEnv(t, dir, codexEnv(
-		"FAKE_CODEX_FILE="+agentEditPath,
-		"FAKE_CODEX_CONTENT="+agentEditContent,
-		"FAKE_CODEX_PROMPT="+promptPath,
-		"FAKE_CODEX_ARGV="+argvPath,
+	out := runCLIEnv(t, dir, agentEnv(
+		"FAKE_AGENT_FILE="+agentEditPath,
+		"FAKE_AGENT_CONTENT="+agentEditContent,
+		"FAKE_AGENT_PROMPT="+promptPath,
+		"FAKE_AGENT_ARGV="+argvPath,
 	), 0, "work", workGoal, "--json")
 
 	env := unwrap(t, out, "work")
@@ -377,7 +384,7 @@ func TestE2EWorkDeliversAVerifiedCommitAndAReceipt(t *testing.T) {
 
 	// A finished run is not an interrupted one, and resume says so rather
 	// than starting the work again.
-	refusal := runCLIEnv(t, dir, codexEnv(), 2, "resume", result.WorkID, "--json")
+	refusal := runCLIEnv(t, dir, agentEnv(), 2, "resume", result.WorkID, "--json")
 	denied := unwrap(t, refusal, "resume")
 	if denied.OK || denied.Error == nil {
 		t.Fatalf("resume accepted a finished run:\n%s", refusal)
@@ -429,11 +436,11 @@ func TestE2EInterruptedRunIsVisibleInStatusAndResumable(t *testing.T) {
 	started := filepath.Join(side, "agent-started")
 	release := filepath.Join(side, "agent-release")
 
-	cmd, log := startCLI(t, dir, codexEnv(
-		"FAKE_CODEX_FILE="+agentEditPath,
-		"FAKE_CODEX_CONTENT="+agentEditContent,
-		"FAKE_CODEX_STARTED="+started,
-		"FAKE_CODEX_HANG="+release,
+	cmd, log := startCLI(t, dir, agentEnv(
+		"FAKE_AGENT_FILE="+agentEditPath,
+		"FAKE_AGENT_CONTENT="+agentEditContent,
+		"FAKE_AGENT_STARTED="+started,
+		"FAKE_AGENT_HANG="+release,
 	), "work", workGoal)
 	waitForFile(t, started, "the agent to put its edit in the repository", log)
 	if err := cmd.Process.Kill(); err != nil {
@@ -472,7 +479,7 @@ func TestE2EInterruptedRunIsVisibleInStatusAndResumable(t *testing.T) {
 	// Refused first, so what recover is for is stated rather than
 	// assumed: the killed run never gave its lease back, and resume
 	// takes no lease it did not take itself.
-	refused := runCLIEnv(t, dir, codexEnv(), 1, "resume", interrupted.WorkID, "--json")
+	refused := runCLIEnv(t, dir, agentEnv(), 1, "resume", interrupted.WorkID, "--json")
 	if why := refusalMessage(t, refused, "resume"); !strings.Contains(why, interrupted.WorkID) {
 		t.Errorf("the refusal does not name the holder: %q", why)
 	}
@@ -490,9 +497,9 @@ func TestE2EInterruptedRunIsVisibleInStatusAndResumable(t *testing.T) {
 	}
 
 	// Resumable, under the same work id.
-	out := runCLIEnv(t, dir, codexEnv(
-		"FAKE_CODEX_FILE="+agentEditPath,
-		"FAKE_CODEX_CONTENT="+agentEditContent,
+	out := runCLIEnv(t, dir, agentEnv(
+		"FAKE_AGENT_FILE="+agentEditPath,
+		"FAKE_AGENT_CONTENT="+agentEditContent,
 	), 0, "resume", interrupted.WorkID, "--json")
 	env := unwrap(t, out, "resume")
 	if !env.OK {
@@ -683,9 +690,9 @@ func TestE2EAnUnmergedRunBranchRefusesTheNextRunAndNamesTheRemedy(t *testing.T) 
 	git(t, dir, "add", ".project/evidence")
 	git(t, dir, "commit", "-m", "chore: keep the run receipt")
 
-	out := runCLIEnv(t, dir, codexEnv(
-		"FAKE_CODEX_FILE=SECOND.md",
-		"FAKE_CODEX_CONTENT=# Second\n",
+	out := runCLIEnv(t, dir, agentEnv(
+		"FAKE_AGENT_FILE=SECOND.md",
+		"FAKE_AGENT_CONTENT=# Second\n",
 	), 1, "work", workGoal, "--json")
 	env := unwrap(t, out, "work")
 	if env.OK {
@@ -742,9 +749,9 @@ func TestE2EAnUnmergedRunBranchRefusesTheNextRunAndNamesTheRemedy(t *testing.T) 
 // the result it reported.
 func runWorkAgent(t *testing.T, dir string, wantExit int, path, content string) workResult {
 	t.Helper()
-	out := runCLIEnv(t, dir, codexEnv(
-		"FAKE_CODEX_FILE="+path,
-		"FAKE_CODEX_CONTENT="+content,
+	out := runCLIEnv(t, dir, agentEnv(
+		"FAKE_AGENT_FILE="+path,
+		"FAKE_AGENT_CONTENT="+content,
 	), wantExit, "work", workGoal, "--json")
 	env := unwrap(t, out, "work")
 	if !env.OK {

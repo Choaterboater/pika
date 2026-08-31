@@ -11,10 +11,16 @@ import (
 
 // Lifecycle phases. A record's Phase names the last phase that completed
 // durably, which is exactly what `pika resume` restarts from.
+//
+// Explore and review are optional: a contract that configures neither
+// stamps neither, and a default contract still produces exactly
+// baseline, handoff, recheck, deliver.
 const (
 	PhaseBaseline = "baseline"
+	PhaseExplore  = "explore"
 	PhaseHandoff  = "handoff"
 	PhaseRecheck  = "recheck"
+	PhaseReview   = "review"
 	PhaseDeliver  = "deliver"
 )
 
@@ -31,6 +37,18 @@ const (
 	KindFeature = "feature"
 )
 
+// RunAgent records one agent a run actually spawned, in spawn order.
+//
+// Role, Agent and Runtime are all kernel-generated identity — the role the
+// contract assigned, the contract key it resolved from, and the runtime
+// that ran — so redacted() leaves all three alone, exactly as it does the
+// singular Role and Runtime this generalizes.
+type RunAgent struct {
+	Role    string `json:"role"`
+	Agent   string `json:"agent"`
+	Runtime string `json:"runtime"`
+}
+
 // PhaseStamp records that a phase completed, and when. The slice of
 // stamps on a Record is the run's history; Phase is its head.
 type PhaseStamp struct {
@@ -44,19 +62,25 @@ type PhaseStamp struct {
 // whole record is rewritten atomically on every phase transition, so
 // there is no partial-update path to get wrong.
 type Record struct {
-	WorkID     string `json:"work_id"`
-	Goal       string `json:"goal,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	Phase      string `json:"phase,omitempty"`
-	Branch     string `json:"branch,omitempty"`
-	BaseCommit string `json:"base_commit,omitempty"`
-	Commit     string `json:"commit,omitempty"`
-
-	Baseline *verify.Report `json:"baseline,omitempty"`
-	Recheck  *verify.Report `json:"recheck,omitempty"`
+	WorkID     string         `json:"work_id"`
+	Goal       string         `json:"goal,omitempty"`
+	Kind       string         `json:"kind,omitempty"`
+	Phase      string         `json:"phase,omitempty"`
+	Branch     string         `json:"branch,omitempty"`
+	BaseCommit string         `json:"base_commit,omitempty"`
+	Baseline   *verify.Report `json:"baseline,omitempty"`
+	Recheck    *verify.Report `json:"recheck,omitempty"`
 
 	Role    string `json:"role,omitempty"`
 	Runtime string `json:"runtime,omitempty"`
+
+	// Agents is every agent this run spawned, in spawn order. Role and
+	// Runtime above stay because a record written before M6 carries them
+	// and `pika resume` has to rejoin one without reading a field that
+	// did not exist when it was written.
+	Agents []RunAgent `json:"agents,omitempty"`
+
+	Commit string `json:"commit,omitempty"`
 
 	Outcome string `json:"outcome,omitempty"`
 	Reason  string `json:"reason,omitempty"`

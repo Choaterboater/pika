@@ -8,8 +8,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
+	"github.com/Choaterboater/pika/internal/adapters"
 	"github.com/Choaterboater/pika/internal/cliout"
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/evidence"
@@ -21,11 +23,6 @@ import (
 
 const defaultImproveBranch = "chore/pika-improve"
 
-// codexRuntime is the only agent runtime pika spawns: configuredCodexRunner
-// refuses a contract agent configured with any other, so this is the
-// runtime both `pika handoff` and `pika improve` record for their runs.
-const codexRuntime = "codex"
-
 // runHandoff implements `pika handoff [--agent <name>] [--json]
 // [--root <dir>]`. It is the explicit agent stage used by improve and can
 // also be run independently when a caller wants to inspect the private
@@ -33,7 +30,7 @@ const codexRuntime = "codex"
 func runHandoff(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("handoff", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	agent := fs.String("agent", "builder", "contract agent name (must use the Codex runtime)")
+	agent := fs.String("agent", "builder", "contract agent name")
 	jsonOut := fs.Bool("json", false, "emit the handoff result as JSON")
 	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
@@ -62,7 +59,7 @@ func runHandoff(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	runner, err := configuredCodexRunner(root, *agent)
+	runner, err := resolveRunner(root, *agent)
 	if err != nil {
 		return fail(*jsonOut, stdout, stderr, "handoff", codeConfig, err.Error())
 	}
@@ -126,9 +123,14 @@ func recordedHandoff(ctx context.Context, root *repopath.Root, agent string, rep
 		Kind:     workrec.KindRepair,
 		Phase:    workrec.PhaseBaseline,
 		Baseline: report,
-		Role:     agent,
-		Runtime:  codexRuntime,
-		Phases:   []workrec.PhaseStamp{{Phase: workrec.PhaseBaseline, At: time.Now().UTC()}},
+		Role:     "builder",
+		Runtime:  runner.Runtime(),
+		Agents: []workrec.RunAgent{{
+			Role:    "builder",
+			Agent:   agent,
+			Runtime: runner.Runtime(),
+		}},
+		Phases: []workrec.PhaseStamp{{Phase: workrec.PhaseBaseline, At: time.Now().UTC()}},
 	})
 	if err != nil {
 		return improve.Handoff{}, workID, err
@@ -158,7 +160,7 @@ func runImprove(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("improve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	branch := fs.String("branch", defaultImproveBranch, "local branch for verified fixes")
-	agent := fs.String("agent", "builder", "contract agent name (must use the Codex runtime)")
+	agent := fs.String("agent", "builder", "contract agent name")
 	jsonOut := fs.Bool("json", false, "emit the improve result as JSON")
 	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
@@ -172,14 +174,14 @@ func runImprove(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(*jsonOut, stdout, stderr, "improve", codeConfig, err.Error())
 	}
-	result, err := improve.Run(context.Background(), improve.Config{
-		Root:    root.Dir(),
-		Branch:  *branch,
-		Agent:   *agent,
-		Runtime: codexRuntime,
-		Check:   func() (*verify.Report, error) { return currentCheckReport(root) },
-		Runner:  configuredRunner{root: root, agent: *agent},
-	})
+	cfg, err := configuredRoles(root, *agent)
+	if err != nil {
+		return fail(*jsonOut, stdout, stderr, "improve", codeConfig, err.Error())
+	}
+	cfg.Root = root.Dir()
+	cfg.Branch = *branch
+	cfg.Check = func() (*verify.Report, error) { return currentCheckReport(root) }
+	result, err := improve.Run(context.Background(), cfg)
 	if *jsonOut {
 		// The result is the payload on both paths: a run that stopped
 		// still has to say which branch it stopped on and where the
@@ -284,39 +286,127 @@ func stoppedBranch(result improve.Result) string {
 	return orDash(result.Branch)
 }
 
-// configuredRunner delays contract-agent validation until Pika has confirmed
-// that a failed baseline actually needs a repair handoff.
+// configuredRunner delays the agent's own validation until Pika has
+// confirmed that a failed baseline actually needs a repair handoff.
+//
+// The delay is deliberate and it is why Runtime is separate from Run: a
+// repository whose ladder is already green must not be failed by a
+// misconfigured agent it was never going to spawn, and a record still has
+// to name the runtime before anything is spawned.
 type configuredRunner struct {
 	root  *repopath.Root
 	agent string
 }
 
+// Runtime reports the runtime the contract names for this agent. It
+// resolves the contract and nothing heavier, so naming the runtime never
+// costs a process.
+func (r configuredRunner) Runtime() string {
+	agent, err := contractAgent(r.root, r.agent)
+	if err != nil {
+		return ""
+	}
+	return agent.Runtime
+}
+
 func (r configuredRunner) Run(ctx context.Context, root, promptPath, outputPath string) error {
-	runner, err := configuredCodexRunner(r.root, r.agent)
+	runner, err := resolveRunner(r.root, r.agent)
 	if err != nil {
 		return err
 	}
 	return runner.Run(ctx, root, promptPath, outputPath)
 }
 
-func configuredCodexRunner(root *repopath.Root, agent string) (improve.Runner, error) {
+// contractAgent resolves one contract agent without building a runner, so
+// a caller can ask what an agent is without being committed to spawning
+// it.
+func contractAgent(root *repopath.Root, name string) (adapters.Agent, error) {
 	c, err := contract.Load(root.Contract())
+	if err != nil {
+		return adapters.Agent{}, err
+	}
+	return adapters.AgentFromContract(c, root.Contract(), name)
+}
+
+// resolveRunner builds the runner for one contract agent.
+func resolveRunner(root *repopath.Root, name string) (adapters.Runner, error) {
+	agent, err := contractAgent(root, name)
 	if err != nil {
 		return nil, err
 	}
-	configured, ok := c.Agents[agent]
-	if !ok {
-		return nil, fmt.Errorf("agent %q is not configured in %s", agent, root.Contract())
+	return adapters.New(agent)
+}
+
+// configuredRoles is the cast a run is given: the builder the --agent
+// flag names, plus the explorer and reviewer the contract declares under
+// those keys when it declares them at all.
+//
+// The builder is lazy on purpose — a repository whose ladder is already
+// green must not be failed by an agent it was never going to spawn —
+// while the two optional roles are resolved now, because "does this run
+// have an explorer" is a question the lifecycle has to answer before it
+// can plan the phase at all.
+func configuredRoles(root *repopath.Root, agent string) (improve.Config, error) {
+	cfg := improve.Config{
+		Builder: improve.Role{
+			Name:   "builder",
+			Agent:  agent,
+			Runner: configuredRunner{root: root, agent: agent},
+		},
 	}
-	if configured.Runtime != codexRuntime {
-		return nil, fmt.Errorf("agent %q uses runtime %q; `pika improve` requires runtime codex", agent, configured.Runtime)
+	explorer, err := optionalRole(root, "explorer")
+	if err != nil {
+		return cfg, err
 	}
-	return improve.CodexRunner{Model: configured.Model, Effort: configured.Effort}, nil
+	cfg.Explorer = explorer
+	reviewer, err := optionalRole(root, "reviewer")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Reviewer = reviewer
+	return cfg, nil
+}
+
+// optionalRole resolves a role the contract may not declare. "Not
+// configured" is not an error: it means the phase is skipped, which is
+// what every contract written before M6 gets.
+//
+// Any other failure is. A contract that names an explorer on a runtime
+// with no adapter, or with a model the runtime cannot express, is broken
+// in a way the operator has to fix — and discovering it at the end of a
+// run, after the builder has already been paid for, is the worst time to
+// discover it.
+func optionalRole(root *repopath.Root, name string) (*improve.Role, error) {
+	c, err := contract.Load(root.Contract())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// A repository with no contract is a state every command
+			// here has always reported at the handoff, in the words the
+			// contract loader chose. Refusing now would move that
+			// refusal ahead of the ones this command reports first —
+			// an unknown work id, a run that already finished — and
+			// reordering those refusals is a behaviour change for no
+			// gain.
+			return nil, nil
+		}
+		return nil, err
+	}
+	agent, err := adapters.AgentFromContract(c, root.Contract(), name)
+	if err != nil {
+		var notConfigured *adapters.NotConfiguredError
+		if errors.As(err, &notConfigured) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	runner, err := adapters.New(agent)
+	if err != nil {
+		return nil, err
+	}
+	return &improve.Role{Name: name, Agent: name, Runner: runner}, nil
 }
 
 // currentCheckReport runs the in-process ladder against root. The --root
-// is passed explicitly so handoff and improve verify the same repository
-// they are about to mutate, whatever the working directory is.
 func currentCheckReport(root *repopath.Root) (*verify.Report, error) {
 	var stdout, stderr bytes.Buffer
 	code := runCheck([]string{"--all", "--json", "--root", root.Dir()}, nil, &stdout, &stderr)

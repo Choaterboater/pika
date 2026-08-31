@@ -32,7 +32,7 @@ type harness struct {
 	// about what THIS file does when it is executed, never about what
 	// the package it was built from returns in-process.
 	pika string
-	// agentDir holds the fake `codex` binary, and goes on the front of
+	// agentDir holds the fake agent binary, and goes on the front of
 	// PATH for the steps that spawn an agent.
 	agentDir string
 	// home stands in for the operator's home directory. `pika doctor`
@@ -75,11 +75,27 @@ func newHarness() (*harness, error) {
 	// end-to-end suite drives.
 	for _, b := range []struct{ out, pkg string }{
 		{h.pika, "./cmd/pika"},
-		{filepath.Join(h.agentDir, exeName("codex")), "./internal/e2e/testdata/fakecodex"},
+		{filepath.Join(h.agentDir, exeName("fakeagent")), "./internal/e2e/testdata/fakeagent"},
 	} {
 		if err := h.build(b.out, b.pkg); err != nil {
 			h.close()
 			return nil, err
+		}
+	}
+	// One script, installed under every runtime's own binary name: pika
+	// resolves the harness by runtime, so a step whose contract names
+	// claude has to find something called `claude` on PATH. Custom names
+	// no binary of its own and acp is a transport, so neither gets a
+	// copy.
+	source, err := os.ReadFile(filepath.Join(h.agentDir, exeName("fakeagent")))
+	if err != nil {
+		h.close()
+		return nil, fmt.Errorf("read fake agent: %w", err)
+	}
+	for _, name := range []string{"codex", "claude", "omp", "gemini", "opencode"} {
+		if err := os.WriteFile(filepath.Join(h.agentDir, exeName(name)), source, 0o755); err != nil {
+			h.close()
+			return nil, fmt.Errorf("install fake %s: %w", name, err)
 		}
 	}
 	return h, nil
@@ -154,10 +170,10 @@ func (h *harness) run(dir string, env []string, args ...string) (result, error) 
 	return r, nil
 }
 
-// codexEnv puts the fake agent at the front of PATH and adds the
+// agentEnv puts the fake agent at the front of PATH and adds the
 // scenario the step wants it to play. See
-// internal/e2e/testdata/fakecodex for the variables.
-func (h *harness) codexEnv(extra ...string) []string {
+// internal/e2e/testdata/fakeagent for the variables.
+func (h *harness) agentEnv(extra ...string) []string {
 	env := []string{"PATH=" + h.agentDir + string(os.PathListSeparator) + os.Getenv("PATH")}
 	return append(env, extra...)
 }

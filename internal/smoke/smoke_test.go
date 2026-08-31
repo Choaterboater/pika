@@ -204,7 +204,7 @@ func TestModuleRootHoldsTheBinaryUnderTest(t *testing.T) {
 	}
 	for _, rel := range []string{
 		filepath.Join("cmd", "pika", "main.go"),
-		filepath.Join("internal", "e2e", "testdata", "fakecodex", "main.go"),
+		filepath.Join("internal", "e2e", "testdata", "fakeagent", "main.go"),
 	} {
 		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
 			t.Errorf("module root %s does not hold %s: %v", root, rel, err)

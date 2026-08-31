@@ -74,18 +74,18 @@ func TestE2ETwoConcurrentRunsAreExcludedAndTheFirstCompletes(t *testing.T) {
 	spawned := filepath.Join(side, "agent-spawned")
 	proceed := filepath.Join(side, "agent-proceed")
 
-	first, log := startCLI(t, dir, codexEnv(
-		"FAKE_CODEX_FILE="+agentEditPath,
-		"FAKE_CODEX_CONTENT="+agentEditContent,
-		"FAKE_CODEX_SPAWNED="+spawned,
-		"FAKE_CODEX_WAIT="+proceed,
+	first, log := startCLI(t, dir, agentEnv(
+		"FAKE_AGENT_FILE="+agentEditPath,
+		"FAKE_AGENT_CONTENT="+agentEditContent,
+		"FAKE_AGENT_SPAWNED="+spawned,
+		"FAKE_AGENT_WAIT="+proceed,
 	), "work", workGoal)
 	waitForFile(t, spawned, "the first run's agent to reach the repository", log)
 
 	// The second terminal. It must not spawn an agent, must not touch
 	// the tree, and must say who is in there.
 	refusal := refusalMessage(t,
-		runCLIEnv(t, dir, codexEnv(), 1, "work", "a second goal in the same repository", "--json"),
+		runCLIEnv(t, dir, agentEnv(), 1, "work", "a second goal in the same repository", "--json"),
 		"work")
 	for _, want := range []string{"another run holds this repository", "pid ", "in progress"} {
 		if !strings.Contains(refusal, want) {
@@ -103,7 +103,7 @@ func TestE2ETwoConcurrentRunsAreExcludedAndTheFirstCompletes(t *testing.T) {
 
 	// Recovery is not a way around it either. A lease whose holder is
 	// running is never cleared, whatever the operator asked for.
-	denied := unwrap(t, runCLIEnv(t, dir, codexEnv(), 2, "recover", "--apply", "--json"), "recover")
+	denied := unwrap(t, runCLIEnv(t, dir, agentEnv(), 2, "recover", "--apply", "--json"), "recover")
 	if denied.OK || denied.Error == nil {
 		t.Fatal("recover --apply cleared the lease a live run is inside")
 	}
@@ -172,11 +172,11 @@ func TestE2ERecoverClearsALeaseWhoseRunWasKilled(t *testing.T) {
 	started := filepath.Join(side, "agent-started")
 	release := filepath.Join(side, "agent-release")
 
-	cmd, log := startCLI(t, dir, codexEnv(
-		"FAKE_CODEX_FILE="+agentEditPath,
-		"FAKE_CODEX_CONTENT="+agentEditContent,
-		"FAKE_CODEX_STARTED="+started,
-		"FAKE_CODEX_HANG="+release,
+	cmd, log := startCLI(t, dir, agentEnv(
+		"FAKE_AGENT_FILE="+agentEditPath,
+		"FAKE_AGENT_CONTENT="+agentEditContent,
+		"FAKE_AGENT_STARTED="+started,
+		"FAKE_AGENT_HANG="+release,
 	), "work", workGoal)
 	waitForFile(t, started, "the agent to reach the repository", log)
 	if err := cmd.Process.Kill(); err != nil {

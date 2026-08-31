@@ -117,6 +117,32 @@ The evidence for each — including the one error code that moved on a documente
 
 What changed, and why the SQLite coordination board and the multi-agent machinery in the spec were deliberately **not** built, is recorded in [docs/reference/m4-delta.md](docs/reference/m4-delta.md).
 
+**Milestone 5 (agent skill layer) complete.** Added:
+
+| Area | What works |
+|---|---|
+| Canonical skills | Four harness-neutral skills under `.agents/skills/` — `project-work`, `project-research`, `project-review`, `project-maintain` — emitted by `init` and by `apply`'s create-if-missing path, and operator-owned once written |
+| Projections | A harness that will not read `.agents/skills/` gets the same guidance rendered where it does read, declared in the contract (`skills.projections`) and never compiled in. A projection is a marked region, so the file around it stays yours |
+| Drift is refused | Gate 1 recomputes two digests and distinguishes **stale** (the source moved; regenerate, nothing at risk) from **tampered** (somebody edited inside the markers; regenerating discards that edit). The remedies are opposites, and the gate names which one you have |
+| `pika skills` | `install`, `check` and a report mode, for the repository and — through `--global` — for the operator's home directory. A repository cannot ask for a global install at any spelling: cloning one must never grant it a capability over the machine that cloned it |
+| `agent-guidance` consumed | The pack field that was declared and empty since M1 is surfaced and composed into the generated skills, so a Go repository's guidance differs from a TypeScript one's without forking the skill |
+
+M5 shipped without its delta; what it changed underneath existing repositories, and the gaps it left, are recorded in [docs/reference/m5-delta.md](docs/reference/m5-delta.md).
+
+**Milestone 6 (runtime adapters) complete.** Added:
+
+| Area | What works |
+|---|---|
+| Seven runtimes | `codex`, `claude`, `omp`, `gemini`, `opencode`, `acp` and `custom` all run. The schema accepted all seven since M1 and the binary spawned one; the other six were refused at the only boundary that could run them |
+| Declarative adapters | `internal/adapters` is a table, not a plugin: binary, argv builder, transport, output mode, supported controls, permission posture, env allowlist. `custom` takes the operator's `command`, `args` and `env` |
+| Least-dangerous posture | Each adapter takes the least dangerous auto-approval its runtime offers, and none emits a bypass flag — asserted by test. codex still runs under `--approve-for-me` with the network disabled and no `--sandbox` beside it |
+| Fail-closed controls | A `model` or `effort` the runtime cannot express is an error naming all three facts, never a silently dropped field. So is a `custom` runtime with no `command`, a placeholder outside the five that exist, and an `env` name pika does not have |
+| ACP, with no SDK | `acp` speaks ACP v1 over stdio with `encoding/json` and `bufio`. Permission questions are answered `allow_once` and never `allow_always`, because a remembered grant outlives the run that authorized it |
+| Three roles | A run can spawn a `builder`, an optional `explorer` before it, and an optional `reviewer` after the recheck — each under its own runtime, named by contract key. The explorer and the reviewer are read-only; the review is recorded in the receipt and never gates the commit |
+| Doctor introspection | `pika doctor` reports every configured agent: runtime, adapter, binary path or `not on PATH`, mapped controls, output mode. It spawns nothing. `PIKA_ADAPTER_COMPAT=1` adds a flag diff against each installed binary's `--help` — no model call |
+| Still no model call | pika speaks to no provider, opens no socket, and still declares exactly two direct dependencies. Design §10's V1 clause stands: the adapter layer is where a built-in loop would land, and it is M7's |
+
+A contract naming only a `builder` behaves exactly as it did before M6. What changed, the two rules that make the optional roles safe, and the gaps left open are recorded in [docs/reference/m6-delta.md](docs/reference/m6-delta.md).
 
 ## Install
 
@@ -174,13 +200,13 @@ pika skills install --global
 | `pika recover` | Report what a killed process left behind — a transaction that never finished, and the run and scope leases it never gave back, with every holder, its liveness, and every file a rollback would touch — and clear it with `--apply` |
 | `pika check` | Run the verification ladder locally or in CI (`--all`, `--changed`, `--ci`; `--ci` makes no LLM calls) |
 | `pika status` | List the durable work runs this repository has, or report one in full: phases, branch, commit, outcome, and the reason it stopped |
-| `pika doctor` | Diagnose contract, lock, exceptions, envelope, per-gate command, toolchain, global agent files, and git — without executing a single gate |
+| `pika doctor` | Diagnose contract, lock, exceptions, envelope, per-gate command, every configured agent and its runtime, toolchain, global agent files, and git — without executing a single gate |
 | `pika explain` | Explain a naming rule, a verification gate, or an MCP error code: rationale, remediation, and a copy-pasteable exception record |
 | `pika authorize` | Generate the capability envelope agents need, at `.project/state/envelope.yaml` (mode 0600, local-only, never committed) |
 | `pika skills` | Report, install and verify the agent instructions this repository ships: the canonical skills under `.agents/skills/`, and the harness-native projections generated from them — and, with `--global`, the operator-wide agent files in your home directory |
-| `pika handoff` | Give actionable failed checks to the configured Codex builder and save a private handoff bundle |
-| `pika improve` | Run checks, let Codex repair failed gates, recheck, and make one verified local commit |
-| `pika work` | Run a stated goal through the same verified lifecycle: branch, builder agent, recheck, one verified local commit |
+| `pika handoff` | Give actionable failed checks to the configured builder — under any of the seven runtimes — and save a private handoff bundle |
+| `pika improve` | Run checks, let the builder repair failed gates, recheck, and make one verified local commit |
+| `pika work` | Run a stated goal through the same verified lifecycle: branch, builder agent, recheck, one verified local commit — with an optional explorer before the builder and an optional reviewer after the recheck |
 | `pika resume` | Continue an interrupted work run from the phase its record proves it reached, or refuse with the specific reason it cannot |
 | `pika mcp` | Serve the kernel to agents over MCP (stdio JSON-RPC) |
 | `pika help` | Describe pika, or one command's flags — generated from the dispatch table, so help cannot drift from the registered commands |
@@ -242,7 +268,7 @@ CGO_ENABLED=0 go build ./...   # the shipped binary is CGO-free
 
 This repository is adopted by its own kernel. `.project/contract.yaml`, `.project/profiles.lock` and `.project/exceptions.yaml` are committed; `.project/state/` is gitignored. `.github/workflows/ci.yml` builds the binary **from the commit under test** — never `go install ...@latest` — and runs `pika check --ci` on this repository, so a change that would break the verifier is caught by the verifier it breaks.
 
-The suite CI runs includes `internal/e2e`, which drives the real binary through the whole durable lifecycle — and through the upgrade path: `--force` over a hand-written README and a recorded exception, a stale lock detected by name, and `apply` refreshing a kernel-owned file — inside temp repositories, with a fake agent binary on `PATH` in place of `codex`. No model, credential or network is involved anywhere, so `pika check --ci` stays provably LLM-free while still covering the path that spawns an agent.
+The suite CI runs includes `internal/e2e`, which drives the real binary through the whole durable lifecycle — and through the upgrade path: `--force` over a hand-written README and a recorded exception, a stale lock detected by name, and `apply` refreshing a kernel-owned file — inside temp repositories, with a fake agent binary on `PATH` in place of each harness. No model, credential or network is involved anywhere, so `pika check --ci` stays provably LLM-free while still covering the path that spawns an agent.
 
 ```sh
 go build -o /tmp/pika ./cmd/pika
@@ -258,7 +284,7 @@ Cross-platform: macOS, Linux, Windows. The txn/verify fsync paths use build-tagg
 
 Rung 5 of the ladder is the real-surface smoke test, and pika's own was `go run ./cmd/pika version` until 0.5.0 — a command that printed a constant and could not fail. Every defect closed on 2026-08-30 shipped behind it green: an agent invocation the real `codex` rejected before reading a byte, a leftover run branch that killed every later run, and a lock remedy that corrupts a correct repository. None was findable by reading; all were found by running the product once.
 
-`.project/contract.yaml` now points `smoke:` at [`internal/smoke`](internal/smoke), which builds the binary from the working tree and drives it **as a subprocess** through the lifecycle an operator performs — `init` then `check`, `improve` over a planted defect, a second `improve` over the branch the first one left, `skills install` and a hand-edited kernel region, a corrupted `profiles.lock`, `doctor` — inside temp repositories it removes when it ends. Every assertion reports what it expected and what it got, and a failing step names itself. The agent boundary is `internal/e2e`'s fake `codex` on `PATH`, so there is no model call and no network, and it runs in about 12 seconds.
+`.project/contract.yaml` now points `smoke:` at [`internal/smoke`](internal/smoke), which builds the binary from the working tree and drives it **as a subprocess** through the lifecycle an operator performs — `init` then `check`, `improve` over a planted defect, a second `improve` over the branch the first one left, `work` under two runtimes with a reviewer, `skills install` and a hand-edited kernel region, a corrupted `profiles.lock`, `doctor` — inside temp repositories it removes when it ends. Every assertion reports what it expected and what it got, and a failing step names itself. The agent boundary is `internal/e2e`'s fake agent on `PATH`, installed under each runtime's own binary name, so there is no model call and no network.
 
 ```sh
 go run ./internal/smoke
