@@ -38,6 +38,8 @@ import (
 	"github.com/Choaterboater/pika/internal/lease"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/redact"
+	"github.com/Choaterboater/pika/internal/repolease"
+	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/verify"
 	"github.com/Choaterboater/pika/internal/version"
 )
@@ -74,7 +76,6 @@ const (
 	envelopePath  = ".project/state/envelope.yaml"
 	contractPath  = ".project/contract.yaml"
 	boardPath     = ".project/state/board.jsonl"
-	scopeLocksDir = ".project/state/locks"
 	evidenceDir   = ".project/evidence"
 	contractDraft = ".project/contract.yaml.draft"
 	lockDraft     = ".project/profiles.lock.draft"
@@ -178,7 +179,7 @@ var tools = []tool{
 	},
 	{
 		name:        "acquire_scope",
-		description: "Take an exclusive lease on a repository-relative path for this session. The capability envelope authorizes the request (only paths declared under allow.fs_write); the lease is what makes it exclusive. While it is held, acquiring that path — or any path inside or containing it, from this session or another process — is refused with scope_conflict. Leases never expire and are never stolen: the holding session releases it, or the session ends.",
+		description: "Take an exclusive lease on a repository-relative path for this session. The capability envelope authorizes the request (only paths declared under allow.fs_write); the lease is what makes it exclusive. While it is held, acquiring that path — or any path inside or containing it, from this session or another process — is refused with scope_conflict. A pika run (`pika work`, `pika improve`, `pika resume`, `pika handoff`) holds the whole repository for its duration, so every path is refused with scope_conflict while one is in progress: a run commits through the working tree your scope sits in. Leases never expire and are never stolen: the holding session releases it, or the session ends.",
 		inputSchema: schemaObj(map[string]any{
 			"path": map[string]any{"type": "string", "description": "repository-relative path to lease"},
 		}, "path"),
@@ -243,6 +244,11 @@ func schemaObj(properties map[string]any, required ...string) map[string]any {
 // no concurrent access to scopes.
 type server struct {
 	repoRoot string
+	// root is the same repository, in the form internal/repolease takes.
+	// It is resolved once at startup rather than per call, because a
+	// scope lease has to be judged against the run lease and both
+	// locations hang off it.
+	root *repopath.Root
 	// scopes are the leases this session took, keyed by the normalized
 	// repository-relative path. The handle is the proof of holding:
 	// release_scope refuses a path that is not in here, because a lease
@@ -256,7 +262,11 @@ type server struct {
 // and never terminates the session. Only JSON-RPC messages are written to
 // out; diagnostics belong on errOut.
 func Serve(repoRoot string, in io.Reader, out, errOut io.Writer) error {
-	s := &server{repoRoot: repoRoot, scopes: map[string]*lease.Handle{}}
+	root, err := repopath.At(repoRoot)
+	if err != nil {
+		return fmt.Errorf("mcp: %w", err)
+	}
+	s := &server{repoRoot: repoRoot, root: root, scopes: map[string]*lease.Handle{}}
 	// A clean shutdown gives back what this session took. Releasing a
 	// lease this process holds is not stealing one — Release still
 	// checks the file names this handle — and a session that kept its
@@ -584,7 +594,13 @@ func (s *server) toolRunChecks(args json.RawMessage) (map[string]any, *toolError
 // write there, the lease says nobody else is writing there right now,
 // and only the first of those is a policy decision.
 //
-// The lease is claimed before the overlap scan, never after. Claiming
+// "Nobody else" includes a `pika work` in another terminal. A run holds
+// the whole repository and commits through the working tree every scope
+// sits in, so a live run refuses this call exactly as an overlapping
+// scope lease does — internal/repolease decides both from one rule, and
+// the refusal names whichever holder it met.
+//
+// The lease is claimed before the conflict scan, never after. Claiming
 // first means two sessions racing for overlapping paths each see the
 // other's file and both refuse; scanning first would let both pass the
 // scan and both be granted. A refusal that could have been a grant is
@@ -604,34 +620,18 @@ func (s *server) toolAcquireScope(args json.RawMessage) (map[string]any, *toolEr
 	if terr := s.authorize(envelope.KindFSWrite, rel); terr != nil {
 		return nil, terr
 	}
-	name, terr := scopeLockName(rel)
-	if terr != nil {
-		return nil, terr
-	}
-	dir := ScopeLocksDir(s.repoRoot)
-	// lease.Acquire does not create its directory; the caller does.
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, toolErrf(errInternal, "acquire_scope: create %s: %v", scopeLocksDir, err)
-	}
-	h, err := lease.Acquire(dir, name, lease.Info{ID: scopeLeaseID(rel)})
-	var busy *lease.HeldError
-	if errors.As(err, &busy) {
-		return nil, toolErrf(errScopeConflict, "acquire_scope: %s is already leased (%s)",
-			rel, holderOf(busy.Info, busy.State, busy.Err))
-	}
-	if err != nil {
+	h, err := repolease.TakeScope(s.root, rel)
+	var busy *repolease.ConflictError
+	switch {
+	case errors.As(err, &busy):
+		return nil, toolErrf(errScopeConflict, "acquire_scope: %s is covered by %s, whose lease is %s: %s",
+			rel, busy.Held.What(), busy.Held.State, busy.Held.Who())
+	case errors.Is(err, repolease.ErrScopeNameTooLong):
+		// A bad argument, not a kernel failure: the agent can fix it by
+		// leasing a shorter path, and internal would tell it nothing.
+		return nil, toolErrf(errInvalidParams, "acquire_scope: %v", err)
+	case err != nil:
 		return nil, toolErrf(errInternal, "acquire_scope: %v", err)
-	}
-	conflict, err := conflictingScope(dir, rel, name)
-	if err != nil {
-		_ = h.Release()
-		return nil, toolErrf(errInternal, "acquire_scope: %v", err)
-	}
-	if conflict != "" {
-		// Giving the claim straight back: this call is refusing, so it
-		// must not leave a lease behind for a scope nobody was granted.
-		_ = h.Release()
-		return nil, toolErrf(errScopeConflict, "acquire_scope: %s overlaps %s", rel, conflict)
 	}
 	if err := s.appendBoard(map[string]any{"type": "scope_lease", "action": "acquire", "path": rel}); err != nil {
 		_ = h.Release()
@@ -687,152 +687,6 @@ func (s *server) releaseHeldScopes(errOut io.Writer) {
 		}
 		delete(s.scopes, rel)
 	}
-}
-
-// ScopeLocksDir is the directory scope leases live in beneath repoRoot.
-//
-// It is exported for the same reason improve.RunLease is: `pika recover`
-// is the one remedy for a lease whose session died holding it, and a
-// recover that spelled this path itself would be a second definition of
-// where scope leases live — free to drift from this one the first time
-// it moves, and silently, since a recover looking in the wrong place
-// reports a repository that is already clean.
-func ScopeLocksDir(repoRoot string) string {
-	return filepath.Join(repoRoot, filepath.FromSlash(scopeLocksDir))
-}
-
-// ScopeFromLockName reads the repository-relative path a lock file name
-// stands for, reporting false for any name this package did not write.
-// The lock directory is an ordinary directory and a stray file in it
-// names no scope.
-func ScopeFromLockName(name string) (string, bool) {
-	if !strings.HasSuffix(name, scopeLockSuffix) {
-		return "", false
-	}
-	return decodeScopeLockName(name)
-}
-
-// scopeLockSuffix marks the lease files this package owns, so a stray
-// file in the lock directory is not read as somebody's scope.
-const scopeLockSuffix = ".lock"
-
-// maxScopeLockName keeps the encoded name inside the shortest filename
-// limit of the supported platforms. Refusing an over-long path is
-// invalid_params — the argument cannot be served — rather than the
-// internal error the operating system's own complaint would become.
-const maxScopeLockName = 200
-
-// scopeLockName encodes a repository-relative path as one lock file
-// name. Every byte outside the unreserved set is percent-encoded, which
-// makes the name legal on every supported platform — a repository path
-// may legally contain characters Windows rejects in a filename — and
-// keeps the encoding reversible, which the overlap scan needs to read
-// the leased paths back out of a directory listing.
-func scopeLockName(rel string) (string, *toolError) {
-	var b strings.Builder
-	b.Grow(len(rel) + len(scopeLockSuffix))
-	// Byte indices, not runes: this encodes bytes, and ranging a string
-	// would decode UTF-8 and skip every continuation byte.
-	for i := range len(rel) {
-		switch c := rel[i]; {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '-', c == '_':
-			b.WriteByte(c)
-		default:
-			fmt.Fprintf(&b, "%%%02X", c)
-		}
-	}
-	b.WriteString(scopeLockSuffix)
-	if name := b.String(); len(name) <= maxScopeLockName {
-		return name, nil
-	}
-	return "", toolErrf(errInvalidParams, "acquire_scope: %s is too long to lease (its lock name exceeds %d bytes); lease a shorter path", rel, maxScopeLockName)
-}
-
-// decodeScopeLockName reverses scopeLockName. A name that does not
-// decode was not written by scopeLockName and names no scope.
-func decodeScopeLockName(name string) (string, bool) {
-	body := strings.TrimSuffix(name, scopeLockSuffix)
-	var b strings.Builder
-	b.Grow(len(body))
-	// Classic form: the body advances i past a percent escape, which a
-	// range loop's per-iteration variable would not carry.
-	for i := 0; i < len(body); i++ {
-		if body[i] != '%' {
-			b.WriteByte(body[i])
-			continue
-		}
-		if i+2 >= len(body) {
-			return "", false
-		}
-		v, err := strconv.ParseUint(body[i+1:i+3], 16, 8)
-		if err != nil {
-			return "", false
-		}
-		b.WriteByte(byte(v))
-		i += 2
-	}
-	return b.String(), true
-}
-
-// conflictingScope describes a live lease overlapping rel, or "" if
-// there is none. self is the caller's own lock name, already claimed.
-//
-// Exclusive over a path means exclusive over everything under it: a
-// lease on src conflicts with one on src/pkg in both directions. An
-// exclusion an agent could sidestep by naming a subdirectory would not
-// be one.
-func conflictingScope(dir, rel, self string) (string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", scopeLocksDir, err)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if name == self || !strings.HasSuffix(name, scopeLockSuffix) {
-			continue
-		}
-		other, ok := decodeScopeLockName(name)
-		if !ok || !scopesOverlap(rel, other) {
-			continue
-		}
-		info, state, err := lease.Inspect(dir, name)
-		if info == nil && state == lease.StateFree {
-			continue // released between the directory read and this look
-		}
-		return fmt.Sprintf("%s, which is leased (%s)", other, holderOf(info, state, err)), nil
-	}
-	return "", nil
-}
-
-// scopesOverlap reports whether two repository-relative paths cannot be
-// leased at the same time.
-func scopesOverlap(a, b string) bool {
-	return a == b || covers(a, b) || covers(b, a)
-}
-
-// covers reports whether parent's subtree contains child. "." is the
-// repository root, which contains everything.
-func covers(parent, child string) bool {
-	return parent == "." || strings.HasPrefix(child, parent+"/")
-}
-
-// scopeLeaseID identifies one acquisition. The scope is in it so a
-// refusal names something a human recognizes; the timestamp makes it
-// unique per lease taken, which is what Release checks before it removes
-// anything.
-func scopeLeaseID(rel string) string {
-	return "scope:" + rel + "#" + strconv.FormatInt(time.Now().UnixNano(), 10)
-}
-
-// holderOf renders what is known about a lease's holder. A refusal that
-// does not say who holds the thing leaves the agent nothing to do but
-// retry blindly.
-func holderOf(info *lease.Info, state lease.State, err error) string {
-	if info == nil {
-		return fmt.Sprintf("%s, no readable holder: %v", state, err)
-	}
-	return fmt.Sprintf("%s by %s, pid %d on %s since %s",
-		state, info.ID, info.PID, info.Host, info.StartedAt.UTC().Format(time.RFC3339))
 }
 
 // receiptJSON mirrors evidence.ReceiptInput with snake_case JSON keys — the

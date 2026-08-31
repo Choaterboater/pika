@@ -1,17 +1,14 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
-	"github.com/Choaterboater/pika/internal/improve"
 	"github.com/Choaterboater/pika/internal/lease"
-	"github.com/Choaterboater/pika/internal/mcp"
+	"github.com/Choaterboater/pika/internal/repolease"
 	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/txn"
 )
@@ -35,11 +32,13 @@ type recoverResult struct {
 // operator needs to decide anything — which lock, what it covers, who
 // holds it, and whether this machine can prove that holder is gone.
 type leaseReport struct {
-	// Kind is leaseKindRun or leaseKindScope.
+	// Kind is repolease.KindRun or repolease.KindScope.
 	Kind string `json:"kind"`
-	// Scope is the repository-relative path a scope lease covers. A run
-	// lease covers the whole repository and leaves this empty rather
-	// than claiming a path it does not mean.
+	// Scope is the repository-relative path a scope lease covers. The
+	// run lease covers the whole repository — repolease.RunScope, the
+	// root that contains every scope — and this field is left empty
+	// rather than printing "." at an operator who asked which paths are
+	// leased.
 	Scope     string `json:"scope,omitempty"`
 	Path      string `json:"path"`
 	State     string `json:"state"`
@@ -52,11 +51,6 @@ type leaseReport struct {
 	Detail  string `json:"detail,omitempty"`
 	Cleared bool   `json:"cleared"`
 }
-
-const (
-	leaseKindRun   = "run"
-	leaseKindScope = "scope"
-)
 
 // runRecover implements `pika recover [--apply] [--json] [--root <dir>]`:
 // it reports, and on request undoes, the state a process that never
@@ -217,74 +211,53 @@ func heldReason(pending *txn.Pending) string {
 // collectLeases reports every holder lock in the repository that is not
 // free, run lease first and then the scope leases in directory order.
 //
-// Neither location is spelled here. improve.RunLease names the run
-// lease and mcp.ScopeLocksDir names the scope directory, because a
-// second spelling of either would be free to drift from the one the
-// product actually writes — and it would drift silently, since a
-// recover looking in the wrong place cheerfully reports a repository
-// that is already clean.
+// Neither location is spelled here. internal/repolease owns where the
+// run lease and the scope leases live, because a second spelling would
+// be free to drift from the one the product actually writes — and it
+// would drift silently, since a recover looking in the wrong place
+// cheerfully reports a repository that is already clean.
 //
 // A repository that has never run anything has neither directory, and
 // that is a clean repository rather than an error.
 func collectLeases(root *repopath.Root) ([]leaseReport, error) {
-	var found []leaseReport
-	runDir, runName := improve.RunLease(root)
-	if rep, ok, err := inspectLease(runDir, runName, leaseKindRun, ""); err != nil {
-		return nil, err
-	} else if ok {
-		found = append(found, rep)
-	}
-
-	scopeDir := mcp.ScopeLocksDir(root.Dir())
-	entries, err := os.ReadDir(scopeDir)
-	if errors.Is(err, os.ErrNotExist) {
-		return found, nil
-	}
+	held, err := repolease.Scan(root)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", scopeDir, err)
+		return nil, err
 	}
-	for _, e := range entries {
-		scope, ok := mcp.ScopeFromLockName(e.Name())
-		if !ok {
-			continue
-		}
-		rep, ok, err := inspectLease(scopeDir, e.Name(), leaseKindScope, scope)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			found = append(found, rep)
-		}
+	found := make([]leaseReport, 0, len(held))
+	for _, h := range held {
+		found = append(found, newLeaseReport(h))
 	}
 	return found, nil
 }
 
-// inspectLease describes one lease name, reporting false when nothing
-// holds it. An error from Inspect is not a failure to report: a lease
-// that cannot be read is the most alarming thing recover can find, and
-// it is carried into the report as an unverifiable holder rather than
-// aborting the command that was called to explain it.
-func inspectLease(dir, name, kind, scope string) (leaseReport, bool, error) {
-	info, state, err := lease.Inspect(dir, name)
-	if state == lease.StateFree {
-		return leaseReport{}, false, nil
-	}
+// newLeaseReport renders one lease in the terms an operator needs to
+// decide anything — which lock, what it covers, who holds it, and
+// whether this machine can prove that holder is gone.
+//
+// A lease that cannot be read at all is carried through as an
+// unverifiable holder with the read error attached, rather than aborting
+// the command that was called to explain it: an unreadable lock is the
+// most alarming thing recover can find.
+func newLeaseReport(h repolease.Held) leaseReport {
 	rep := leaseReport{
-		Kind:  kind,
-		Scope: scope,
-		Path:  lease.Path(dir, name),
-		State: state.String(),
+		Kind:  string(h.Kind),
+		Path:  h.Path,
+		State: h.State.String(),
 	}
-	if err != nil {
-		rep.Detail = err.Error()
+	if h.Kind == repolease.KindScope {
+		rep.Scope = h.Scope
 	}
-	if info != nil {
-		rep.Holder = info.ID
-		rep.PID = info.PID
-		rep.Host = info.Host
-		rep.StartedAt = info.StartedAt.UTC().Format(time.RFC3339Nano)
+	if h.Err != nil {
+		rep.Detail = h.Err.Error()
 	}
-	return rep, true, nil
+	if h.Info != nil {
+		rep.Holder = h.Info.ID
+		rep.PID = h.Info.PID
+		rep.Host = h.Info.Host
+		rep.StartedAt = h.Info.StartedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return rep
 }
 
 // leaseRefusal reports why the leases must not be swept, or "" when
@@ -340,7 +313,7 @@ func splitLeasePath(path string) (dir, name string) {
 // what names the lease in the terms of whatever took it: a run lease
 // excludes the whole repository, a scope lease one path inside it.
 func (l leaseReport) what() string {
-	if l.Kind == leaseKindScope {
+	if l.Kind == string(repolease.KindScope) {
 		return fmt.Sprintf("the scope lease on %s", l.Scope)
 	}
 	return "the run holding this repository"
@@ -416,7 +389,7 @@ func printLeases(stdout io.Writer, leases []leaseReport) {
 // one lock file has no other way to learn that it stops every run in
 // the tree rather than the directory it sits in.
 func (l leaseReport) covers() string {
-	if l.Kind == leaseKindScope {
+	if l.Kind == string(repolease.KindScope) {
 		return l.Scope + " and everything under it"
 	}
 	return "the whole repository: one run at a time, because two would commit through one working tree"

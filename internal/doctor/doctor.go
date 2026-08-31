@@ -16,7 +16,9 @@ import (
 	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/envelope"
+	"github.com/Choaterboater/pika/internal/lease"
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/repolease"
 	"github.com/Choaterboater/pika/internal/repopath"
 	"github.com/Choaterboater/pika/internal/txn"
 	"github.com/Choaterboater/pika/internal/verify"
@@ -71,6 +73,7 @@ func Run(root *repopath.Root) *Report {
 	checkExceptions(rep, root)
 	env := checkEnvelope(rep, root)
 	checkRecovery(rep, root)
+	checkLeases(rep, root)
 	checkGates(rep, root, c, resolved, env)
 	checkGit(rep)
 	return rep
@@ -213,6 +216,105 @@ func checkRecovery(rep *Report, root *repopath.Root) {
 			fmt.Sprintf("%d uncommitted transaction journal(s) under %s with no lock; an interrupted apply may have left this tree half-mutated", len(pending.Txs), pending.Dir),
 			remediation)
 	}
+}
+
+// checkLeases reports the two holder locks a transaction journal knows
+// nothing about: the whole-repository run lease `pika work` holds, and
+// the scope leases an MCP session takes. Until this finding existed, a
+// repository locked out by a crashed run looked clean here — doctor
+// covered the transaction lock only, and answered "everything is fine"
+// about a repository that could not start a run.
+//
+// The operator was never stranded: `pika work` and `pika resume` name
+// `pika recover` at the point of refusal. But doctor is where somebody
+// looks when they do not yet know what is wrong, and a diagnostic that
+// is silent about the one thing blocking them teaches them not to run
+// it.
+//
+// Severity follows what each state actually costs and what can be
+// proved about it, which is the same rule checkRecovery follows:
+//
+//   - Stale is an error. The holder's process is gone and its host is
+//     this one, so this is provable, and until the lease is cleared
+//     every run in this repository refuses to start. It has a
+//     mechanical remedy and doctor must exit non-zero in agreement with
+//     the command that refused.
+//   - Held is a warning. A live run, or a live MCP session, is normal
+//     operation — somebody's colleague or somebody's second terminal is
+//     legitimately mid-run — and failing doctor for it would teach an
+//     operator that its verdict means nothing. `pika recover` is not
+//     named here, because it is not the remedy: it refuses a live
+//     holder, correctly.
+//   - Unverifiable is a warning, and is never called stale. The holder
+//     is on another host, where a pid that looks dead from here proves
+//     nothing. doctor cannot tell a colleague mid-run from a crash on
+//     that machine, and reporting the guess as an error would fail
+//     every shared checkout. `pika recover` is not the remedy for this
+//     one either — it refuses what it cannot judge — so the finding
+//     says so rather than sending an operator to a command that will
+//     turn them away.
+//   - A lease that names no readable holder is an error. The file is
+//     claimed before the holder is written into it, so this is a real
+//     crash state: every run refuses, and `pika recover` refuses too,
+//     because nothing about such a lock can be proved. The remedy is
+//     the operator's own hands, and the finding says which file.
+func checkLeases(rep *Report, root *repopath.Root) {
+	held, err := repolease.Scan(root)
+	if err != nil {
+		rep.add("leases", SeverityError, err.Error(),
+			"inspect .project/state/run.lock and .project/state/locks/; \"pika recover\" reports what it finds there")
+		return
+	}
+	if len(held) == 0 {
+		rep.add("leases", SeverityOK, "no run or scope lease is held", "")
+		return
+	}
+	for _, h := range held {
+		id, detail := leaseFindingID(h), h.What()
+		switch {
+		case h.Info == nil:
+			rep.add(id, SeverityError,
+				fmt.Sprintf("%s at %s is claimed but names no readable holder (%v); every run in this repository will refuse to start until it is gone",
+					detail, h.Path, h.Err),
+				"confirm nothing is running, then remove "+h.Path+"; \"pika recover\" will not clear a lease it cannot prove stale")
+		case h.State == lease.StateStale:
+			rep.add(id, SeverityError,
+				fmt.Sprintf("%s is stale: %s and that process is gone; every run in this repository will refuse to start until it is released",
+					detail, h.Who()),
+				"run \"pika recover\" to see what it would clear, then \"pika recover --apply\"")
+		case h.State == lease.StateUnverifiable:
+			rep.add(id, SeverityWarn,
+				fmt.Sprintf("%s is held by %s, and that is not this host, so whether the holder is still running cannot be decided here; a run started here will refuse while it is there",
+					detail, h.Who()),
+				fmt.Sprintf("confirm on %s that the holder stopped, then remove %s yourself; \"pika recover\" refuses a lease it cannot judge and never calls it stale",
+					hostOf(h), h.Path))
+		default:
+			rep.add(id, SeverityWarn,
+				fmt.Sprintf("%s is held by %s; this is normal operation, and a run started here will refuse while it lasts", detail, h.Who()),
+				"wait for it to finish, or stop that process; a live holder is not a fault and is never cleared for you")
+		}
+	}
+}
+
+// leaseFindingID names the finding after the lease it is about, so two
+// held scopes are two rows rather than one row printed twice.
+func leaseFindingID(h repolease.Held) string {
+	if h.Kind == repolease.KindScope {
+		return "lease.scope." + h.Scope
+	}
+	return "lease.run"
+}
+
+// hostOf names the machine an unverifiable holder was recorded on. The
+// only way to reach this with no host is a record written before the
+// field existed, which classify judges locally and never calls
+// unverifiable — but a finding that printed "confirm on  that" would be
+// worse than one that admits it does not know.
+func hostOf(h repolease.Held) string {
+	if h.Info == nil || h.Info.Host == "" {
+		return "the machine that recorded it"
+	}
+	return h.Info.Host
 }
 
 func grantedKinds(env *envelope.Envelope) string {

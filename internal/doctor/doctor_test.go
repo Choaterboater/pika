@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Choaterboater/pika/internal/profiles"
+	"github.com/Choaterboater/pika/internal/repolease"
 	"github.com/Choaterboater/pika/internal/repopath"
 )
 
@@ -490,5 +491,224 @@ func TestAbsentEnvelopeStaysAWarningWithNoGateDenials(t *testing.T) {
 	}
 	if !rep.OK {
 		t.Error("a repository with no envelope must still report OK")
+	}
+}
+
+// deadPID is a pid no process on this machine has. It is above the
+// default pid_max on every supported platform, so a liveness check
+// answers no rather than accidentally naming somebody's shell.
+const deadPID = 99999999
+
+// writeLeaseFile stands a holder lock up at path. A stale or
+// foreign-host holder cannot be produced by acquiring one — this process
+// is alive and is on this host — so those two states are written
+// directly, exactly as writeRecoveryLock does for the transaction lock.
+// The states that CAN be produced honestly are, below.
+func writeLeaseFile(t *testing.T, path, id string, pid int, host string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"id":` + strconv.Quote(id) + `,"pid":` + strconv.Itoa(pid) +
+		`,"startedAt":"2026-08-30T12:00:00Z","host":` + strconv.Quote(host) + "}\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func thisHost(t *testing.T) string {
+	t.Helper()
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return host
+}
+
+func mustRoot(t *testing.T, dir string) *repopath.Root {
+	t.Helper()
+	root, err := repopath.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// A repository whose run lease outlived its run cannot start a run at
+// all: every `pika work`, `pika improve`, `pika resume` and `pika
+// handoff` refuses until the lease is released. doctor reported that
+// repository as clean, because its recovery finding covered the
+// transaction lock and nothing else — the one command that would have
+// explained the lockout was silent about it.
+//
+// Error, not warning, and for the same reason a stale transaction lock
+// is an error: the state is provable here, it blocks every run, and it
+// has a mechanical remedy. A doctor that disagreed with the command that
+// refused would be worse than no doctor.
+func TestDoctorReportsAStaleRunLease(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	root := mustRoot(t, dir)
+	leaseDir, name := repolease.RunLock(root)
+	writeLeaseFile(t, filepath.Join(leaseDir, name), "20260830-feature-c0ffee01", deadPID, thisHost(t))
+
+	rep := Run(root)
+	f := findingByID(t, rep, "lease.run")
+	if f.Severity != SeverityError {
+		t.Errorf("lease.run severity = %q, want %q: no run can start in this repository", f.Severity, SeverityError)
+	}
+	for _, want := range []string{"20260830-feature-c0ffee01", strconv.Itoa(deadPID), "stale"} {
+		if !strings.Contains(f.Detail, want) {
+			t.Errorf("lease.run detail = %q, want it to name %q", f.Detail, want)
+		}
+	}
+	if !strings.Contains(f.Remediation, "pika recover") {
+		t.Errorf("lease.run remediation = %q, want it to name \"pika recover\"", f.Remediation)
+	}
+	if rep.OK {
+		t.Error("OK = true with a stale run lease: the next `pika work` refuses to start")
+	}
+}
+
+// A run that is genuinely running is not a fault. Somebody's colleague,
+// or somebody's own second terminal, is legitimately mid-run, and a
+// doctor that exited 1 for it would teach an operator that its verdict
+// means nothing.
+//
+// The lease here is the real one, taken through the entry point `pika
+// work` uses, so what is being reported is a live holder rather than a
+// fixture that resembles one.
+func TestDoctorReportsAHeldRunLeaseWithoutFailing(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	root := mustRoot(t, dir)
+	h, err := repolease.TakeRun(root, "20260830-feature-live0001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Release() })
+
+	rep := Run(root)
+	f := findingByID(t, rep, "lease.run")
+	if f.Severity != SeverityWarn {
+		t.Errorf("lease.run severity = %q, want %q: a running run is normal operation", f.Severity, SeverityWarn)
+	}
+	if !rep.OK {
+		t.Error("OK = false while a run is merely in progress: doctor must not fail a healthy second terminal")
+	}
+	if !strings.Contains(f.Detail, "20260830-feature-live0001") {
+		t.Errorf("lease.run detail = %q, want it to name the holder", f.Detail)
+	}
+	if strings.Contains(f.Detail, "stale") {
+		t.Errorf("lease.run detail = %q, want a live holder never described as stale", f.Detail)
+	}
+	// `pika recover` refuses a live holder, correctly. Naming it here
+	// would send an operator to a command that turns them away.
+	if strings.Contains(f.Remediation, "pika recover --apply") {
+		t.Errorf("lease.run remediation = %q, want it not to prescribe a recovery that will refuse", f.Remediation)
+	}
+}
+
+// "Stale" is the word that makes an operator clear a lock. A pid
+// recorded on another host proves nothing here — it can be long dead
+// locally and very much alive where it was taken — so this state is
+// reported as exactly what it is, and never as stale.
+//
+// Warn, not error: doctor cannot tell a colleague mid-run from a crash
+// on that machine, and reporting the guess as an error would fail every
+// shared checkout. The remediation sends the operator to the machine
+// that can answer, not to a recovery that will refuse.
+func TestDoctorNeverReportsAForeignHostLeaseAsStale(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	root := mustRoot(t, dir)
+	leaseDir, name := repolease.RunLock(root)
+	writeLeaseFile(t, filepath.Join(leaseDir, name), "20260830-feature-abroad01", deadPID, "build-01")
+
+	rep := Run(root)
+	f := findingByID(t, rep, "lease.run")
+	if f.Severity != SeverityWarn {
+		t.Errorf("lease.run severity = %q, want %q: nothing here can be proved", f.Severity, SeverityWarn)
+	}
+	if strings.Contains(f.Detail, "stale") || strings.Contains(f.Remediation, "stale lease") {
+		t.Errorf("lease.run = %+v, want a foreign holder never described as stale", f)
+	}
+	if !strings.Contains(f.Detail, "build-01") || !strings.Contains(f.Remediation, "build-01") {
+		t.Errorf("lease.run = %+v, want it to name the machine that can answer", f)
+	}
+	if strings.Contains(f.Remediation, "pika recover --apply") {
+		t.Errorf("lease.run remediation = %q, want it not to prescribe a sweep that refuses this state", f.Remediation)
+	}
+	if !rep.OK {
+		t.Error("OK = false for a lease this machine cannot judge: every shared checkout would fail doctor")
+	}
+}
+
+// A crashed MCP session leaves its scope leases behind, and they block
+// more than the next acquire_scope: a run covers the whole repository,
+// so a leftover scope lease stops `pika work` too. doctor said nothing
+// about either.
+func TestDoctorReportsAStaleScopeLease(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	root := mustRoot(t, dir)
+	writeLeaseFile(t, filepath.Join(repolease.ScopeLocks(root), "docs%2Fguides.lock"),
+		"scope:docs/guides#1", deadPID, thisHost(t))
+
+	rep := Run(root)
+	f := findingByID(t, rep, "lease.scope.docs/guides")
+	if f.Severity != SeverityError {
+		t.Errorf("scope lease severity = %q, want %q", f.Severity, SeverityError)
+	}
+	if !strings.Contains(f.Detail, "docs/guides") {
+		t.Errorf("scope lease detail = %q, want it to name the scope, not just the lock file", f.Detail)
+	}
+	if !strings.Contains(f.Remediation, "pika recover") {
+		t.Errorf("scope lease remediation = %q, want it to name \"pika recover\"", f.Remediation)
+	}
+	if rep.OK {
+		t.Error("OK = true with a stale scope lease: no run can start and that path cannot be leased")
+	}
+}
+
+// A lease claimed by a process that died before it wrote its holder
+// record names nobody. Every run refuses it and `pika recover` refuses
+// it too — nothing about such a file can be proved — so the finding is
+// an error that names the file rather than a command that will turn the
+// operator away.
+func TestDoctorReportsALeaseThatNamesNoHolder(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	root := mustRoot(t, dir)
+	leaseDir, name := repolease.RunLock(root)
+	path := filepath.Join(leaseDir, name)
+	if err := os.MkdirAll(leaseDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := Run(root)
+	f := findingByID(t, rep, "lease.run")
+	if f.Severity != SeverityError {
+		t.Errorf("lease.run severity = %q, want %q", f.Severity, SeverityError)
+	}
+	if !strings.Contains(f.Remediation, path) {
+		t.Errorf("lease.run remediation = %q, want it to name the file to remove", f.Remediation)
+	}
+	if rep.OK {
+		t.Error("OK = true with a lock nothing can judge: every run refuses")
+	}
+}
+
+// The common case has to be quiet and present. A finding that only
+// appears when something is wrong is one an operator cannot tell apart
+// from a check that was never run.
+func TestDoctorReportsNoLeaseHeld(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	if f := findingByID(t, Run(mustRoot(t, dir)), "leases"); f.Severity != SeverityOK {
+		t.Errorf("leases = %+v, want an ok finding on a repository holding nothing", f)
 	}
 }
