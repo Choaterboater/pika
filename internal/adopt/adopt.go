@@ -504,7 +504,7 @@ func sampleList(paths []string, n int) string {
 	if len(paths) <= n {
 		return strings.Join(paths, ", ")
 	}
-	return fmt.Sprintf("%s, +%d more (all recorded in %s)", strings.Join(paths[:n], ", "), len(paths)-n, checks.ExceptionsFile)
+	return fmt.Sprintf("%s, +%d more (all proposed for %s by `pika apply`)", strings.Join(paths[:n], ", "), len(paths)-n, checks.ExceptionsFile)
 }
 
 // classifyConventions evaluates the discovered conventions against core@1,
@@ -554,10 +554,10 @@ func classifyConventions(repoRoot string, inv *discover.Inventory, resolved *pro
 			// human: it is reported as a conflict as well, so `pika
 			// adopt` and the review bundle both put the inherited name
 			// in front of whoever approves `pika apply`.
-			detail = fmt.Sprintf("%d pre-existing path(s) carry a banned name; exceptions recorded for review: %s", len(vs), list)
+			detail = fmt.Sprintf("%d pre-existing path(s) carry a banned name; exceptions proposed for review: %s", len(vs), list)
 			for _, v := range vs {
 				conflicts = append(conflicts, Conflict{RuleID: v.RuleID, Path: v.Path,
-					Detail: v.Message + "; adopt recorded a pre-existing-name exception in " + checks.ExceptionsFile + " — accept it or narrow the name before `pika apply`"})
+					Detail: v.Message + "; adopt proposes a pre-existing-name exception, to be written to " + checks.ExceptionsFile + " by `pika apply` — accept it or narrow the name first"})
 			}
 		}
 		cm = append(cm, Convention{Name: name, Status: StatusException, Detail: detail})
