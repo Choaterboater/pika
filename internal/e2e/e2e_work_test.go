@@ -625,6 +625,10 @@ func TestE2EAMergedRunBranchDoesNotBlockTheNextRun(t *testing.T) {
 		t.Skip(why)
 	}
 	dir := workRepo(t)
+	// Not "main": git's init.defaultBranch differs per machine, and CI
+	// runners still default to master. The repository names its own
+	// starting branch and the test follows it.
+	baseBranch := git(t, dir, "rev-parse", "--abbrev-ref", "HEAD")
 	first := runWorkAgent(t, dir, 0, agentEditPath, agentEditContent)
 	if first.Commit == "" {
 		t.Fatalf("the first run made no commit: %+v", first)
@@ -632,7 +636,7 @@ func TestE2EAMergedRunBranchDoesNotBlockTheNextRun(t *testing.T) {
 
 	// The operator merges the run's work, keeps the receipt it issued,
 	// and carries on. The branch stays where it was.
-	git(t, dir, "switch", "main")
+	git(t, dir, "switch", baseBranch)
 	git(t, dir, "merge", "--ff-only", improveBranch)
 	git(t, dir, "add", ".project/evidence")
 	git(t, dir, "commit", "-m", "chore: keep the run receipt")
@@ -670,11 +674,12 @@ func TestE2EAnUnmergedRunBranchRefusesTheNextRunAndNamesTheRemedy(t *testing.T) 
 		t.Skip(why)
 	}
 	dir := workRepo(t)
+	baseBranch := git(t, dir, "rev-parse", "--abbrev-ref", "HEAD")
 	first := runWorkAgent(t, dir, 0, agentEditPath, agentEditContent)
 	if first.Commit == "" {
 		t.Fatalf("the first run made no commit: %+v", first)
 	}
-	git(t, dir, "switch", "main")
+	git(t, dir, "switch", baseBranch)
 	git(t, dir, "add", ".project/evidence")
 	git(t, dir, "commit", "-m", "chore: keep the run receipt")
 
@@ -720,8 +725,8 @@ func TestE2EAnUnmergedRunBranchRefusesTheNextRunAndNamesTheRemedy(t *testing.T) 
 	if head := git(t, dir, "rev-parse", improveBranch); head != first.Commit {
 		t.Errorf("branch %s is at %s, want the first run's commit %s untouched", improveBranch, head, first.Commit)
 	}
-	if got := git(t, dir, "rev-parse", "--abbrev-ref", "HEAD"); got != "main" {
-		t.Errorf("HEAD is on %q, want main: a refused run must not move the tree", got)
+	if got := git(t, dir, "rev-parse", "--abbrev-ref", "HEAD"); got != baseBranch {
+		t.Errorf("HEAD is on %q, want %q: a refused run must not move the tree", got, baseBranch)
 	}
 
 	// And the remedy the refusal named actually works: the operator
