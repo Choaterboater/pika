@@ -107,6 +107,7 @@ func renderProposed(b *strings.Builder, data ReviewData) {
 		fmt.Fprintf(b, "| `%s` | %s | %s |\n", c.Name, c.Status, escapeDetail(c.Detail))
 	}
 	b.WriteString("\n")
+	renderBaseline(b, rep)
 
 	if len(rep.Conflicts) == 0 {
 		b.WriteString("## Conflicts\n\nNone — no convention needs a human decision.\n\n")
@@ -222,6 +223,46 @@ func sortedCountKeys(counts map[string]int) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// renderBaseline prints the outcome of every discovered and autofilled
+// check command, run once before anything is proposed, so the operator
+// learns which gates will be red immediately after apply before
+// approving the draft — the exact fact `pika adopt`'s own terminal
+// output already states (cmd/pika/adopt.go's printAdoptReport), which
+// this must agree with word for word: a repository whose baseline
+// typecheck already fails prints "baseline is not green: typecheck is
+// failing before adoption, and that gate will fail after apply" on
+// the terminal, and review/adoption-review.md — the artifact adopt
+// itself calls "the plain-language copy of this report" and the one
+// that survives a scrolled-away terminal — used to say nothing about
+// it at all.
+func renderBaseline(b *strings.Builder, rep *Report) {
+	if len(rep.BaselineChecks) == 0 {
+		return
+	}
+	b.WriteString("## Baseline (discovered and autofilled checks, run before any change)\n\n")
+	b.WriteString("| Verb | Command | Status | Exit |\n|---|---|---|---|\n")
+	var failed []string
+	for _, c := range rep.BaselineChecks {
+		exit := fmt.Sprintf("%d", c.Exit)
+		if c.Exit < 0 {
+			exit = "—"
+		}
+		fmt.Fprintf(b, "| `%s` | `%s` | %s | %s |\n", c.Verb, escapeDetail(c.Command), c.Status, exit)
+		if c.Status != "pass" {
+			failed = append(failed, c.Verb)
+		}
+	}
+	b.WriteString("\n")
+	if len(failed) > 0 {
+		verbWord, gateWord := "is", "that gate will fail"
+		if len(failed) > 1 {
+			verbWord, gateWord = "are", "those gates will fail"
+		}
+		fmt.Fprintf(b, "**Baseline is not green:** %s %s failing before adoption, and %s after apply.\n\n",
+			strings.Join(failed, ", "), verbWord, gateWord)
+	}
 }
 
 func renderGate1(b *strings.Builder, data ReviewData) {
