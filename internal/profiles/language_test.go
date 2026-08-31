@@ -96,7 +96,10 @@ var langCases = map[string]langCase{
 			"typecheck": {"swift", "build"},
 			"test":      {"swift", "test"},
 		},
-		hints: map[string][]string{"format": {"swift", "format", "lint", "--recursive", "Sources", "Tests"}},
+		hints: map[string][]string{
+			"format": {"swift", "format", "lint", "--strict", "--recursive", "Sources", "Tests"},
+			"lint":   {"swift", "format", "lint", "--strict", "--recursive", "Sources", "Tests"},
+		},
 		// swift-format ships inside the toolchain only from Swift 6, but
 		// `swift` is on PATH from far older ones, so the PATH probe
 		// cannot tell the two apart.

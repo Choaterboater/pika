@@ -28,18 +28,31 @@ verification:
   # Swift 6.0 onward while this pack's Package.swift targets
   # swift-tools-version 5.10, so a PATH probe cannot tell a machine that
   # can run the format hint from one that cannot.
+  #
+  # Swift's toolchain offers exactly one style tool, and it does not
+  # split into a formatter and a separate linter the way go/python/rust
+  # do: `swift-format lint` diagnoses both formatting drift and style
+  # violations in the same pass, so both slots recommend the identical
+  # command rather than leaving lint a silent, unexplained skip.
+  #
+  # --strict is not a flourish. Without it, `swift-format lint` prints
+  # every finding as a warning and still exits 0 — a verification gate
+  # that cannot fail, measured directly: a file with a spacing violation
+  # produces `warning: [Spacing] ...` and exit 0 without --strict, and
+  # `error: [Spacing] ...` and exit 1 with it. That is the same
+  # `FAIL format exit=0` class of defect M4 found in cobra's own gate;
+  # --strict is what makes findings a verdict rather than a printout.
   checks:
     - id: format
       discovery: true
       # Bare `swift format` takes no paths, so it reads stdin, formats
       # nothing, exits 0, and prints a deprecation notice saying the
-      # path-less form will be removed. As a verification gate it is a
-      # guaranteed vacuous pass. `swift format lint` reports without
-      # rewriting, which is what a check gate is for; add --strict to
-      # turn its warnings into failures.
-      hint: [swift, format, lint, --recursive, Sources, Tests]
+      # path-less form will be removed. `swift format lint` reports
+      # without rewriting, which is what a check gate is for.
+      hint: [swift, format, lint, --strict, --recursive, Sources, Tests]
     - id: lint
       discovery: true
+      hint: [swift, format, lint, --strict, --recursive, Sources, Tests]
     - id: typecheck
       cmd: [swift, build]
     - id: test

@@ -303,7 +303,7 @@ result is printed by every run:
   go@1 format             fill  gofmt -l .                                   ran in golang-x-sync
   ...
   typescript@1 typecheck  hint  npm run type-check                           ran in microsoft-typescript-babel-starter
-  16 of 19 declared pack commands have executed against a repository pika did not write
+  16 of 20 declared pack commands have executed against a repository pika did not write
 ```
 
 The three that have not are listed in `Unexercised` with the reason, and that
@@ -635,8 +635,8 @@ pika version --json
 
 ```
 $ cd /tmp && pika version
-pika 0.5.1
-pack registry:   e0e7576ccd5d013c242f04d317363b8e7d78dbe0265b4381b3b9ca2675643ca0
+pika 0.5.2
+pack registry:   1551578353419543100840e7cda9e9558aaf399b771548675ebe0d5d4ab844b3
 contract schema: 1 (highest supported)
 ```
 
@@ -653,8 +653,8 @@ that repository's lock was written with, and whether it is this binary's:
 
 ```
 $ pika version --root /path/to/project
-pika 0.5.1
-pack registry:   e0e7576ccd5d013c242f04d317363b8e7d78dbe0265b4381b3b9ca2675643ca0
+pika 0.5.2
+pack registry:   1551578353419543100840e7cda9e9558aaf399b771548675ebe0d5d4ab844b3
 contract schema: 1 (highest supported)
 /path/to/project/.project/profiles.lock: e824aaaa…aaaa2fdf (differs from this binary)
 ```

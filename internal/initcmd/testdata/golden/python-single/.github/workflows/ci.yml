@@ -18,7 +18,7 @@ env:
   # that scaffolded it. `@latest` would let the verifier change with no
   # commit here, so a green pull request goes red on merge with nothing
   # in the diff to explain it. Bump this deliberately, in its own commit.
-  PIKA_REF: v0.5.1
+  PIKA_REF: v0.5.2
 
 jobs:
   check:

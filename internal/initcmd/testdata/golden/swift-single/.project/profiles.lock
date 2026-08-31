@@ -1,5 +1,5 @@
 {
-  "digest": "e0e7576ccd5d013c242f04d317363b8e7d78dbe0265b4381b3b9ca2675643ca0",
+  "digest": "1551578353419543100840e7cda9e9558aaf399b771548675ebe0d5d4ab844b3",
   "packs": {
     "core": {
       "version": "1",
@@ -9,7 +9,7 @@
     "swift": {
       "version": "1",
       "source": "embedded",
-      "digest": "68f024d5320d774d3ad8e88aa776e5412438d07faa74b5beae02f5b546c51aed"
+      "digest": "884784188798d9afa67f14b10e105f897dee19e5a1eaf17a9ffb9aeefefbf206"
     }
   }
 }

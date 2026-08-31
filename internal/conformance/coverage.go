@@ -238,12 +238,19 @@ var Unexercised = []Gap{
 			"got's package.json runs its linter from inside the test script.",
 	},
 	{
-		Pack: "swift@1", Slot: "format", Cmd: "swift format lint --recursive Sources Tests",
+		Pack: "swift@1", Slot: "format", Cmd: "swift format lint --strict --recursive Sources Tests",
 		Why: "Not autofillable: swift-format ships inside the toolchain only from " +
 			"Swift 6.0 on, while the pack targets swift-tools-version 5.10, so a " +
 			"PATH probe for `swift` cannot tell a machine that can run this from " +
 			"one that cannot. No Swift repository's own discovery produces it " +
 			"either, so apple/swift-argument-parser's format rung skips.",
+	},
+	{
+		Pack: "swift@1", Slot: "lint", Cmd: "swift format lint --strict --recursive Sources Tests",
+		Why: "Unreachable for the same reason as the format hint, and the " +
+			"identical command for the same reason it is not a second tool: " +
+			"Swift's toolchain does not split formatting from style linting, so " +
+			"both slots recommend the one command that diagnoses both.",
 	},
 }
 

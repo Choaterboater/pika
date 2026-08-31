@@ -184,8 +184,8 @@ func TestCoverageAttributesACommandToItsOwnPackAndSlot(t *testing.T) {
 
 // The registry walk itself. A slot that declares neither a command nor a
 // hint has nothing to run and must be absent rather than counted as an
-// uncovered command: core's five sentinels and swift@1's lint slot would
-// otherwise be five permanent entries in a report about gaps.
+// uncovered command: core's five sentinels and every pack's smoke slot
+// would otherwise be permanent entries in a report about gaps.
 func TestPackCommandsListsOnlyWhatThePacksDeclare(t *testing.T) {
 	declared, err := PackCommands()
 	if err != nil {
@@ -201,8 +201,8 @@ func TestPackCommandsListsOnlyWhatThePacksDeclare(t *testing.T) {
 	if got := strings.Join(byPack["go@1"], " "); got != "format lint typecheck test" {
 		t.Errorf("go@1 declares commands for [%s], want [format lint typecheck test]", got)
 	}
-	if got := strings.Join(byPack["swift@1"], " "); got != "format typecheck test" {
-		t.Errorf("swift@1 declares commands for [%s]; its lint slot carries no hint and its smoke slot none either", got)
+	if got := strings.Join(byPack["swift@1"], " "); got != "format lint typecheck test" {
+		t.Errorf("swift@1 declares commands for [%s], want [format lint typecheck test]; its smoke slot carries no hint", got)
 	}
 	// Explicit and hint are different promises, and the report says
 	// which: an explicit command runs wherever the slot is not
