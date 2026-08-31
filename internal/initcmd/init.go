@@ -165,6 +165,27 @@ func Run(opts InitOptions) (*Manifest, error) {
 		return nil, err
 	}
 
+	// A contract with more than one package could only have come from
+	// `pika adopt` + `pika apply`: buildContract below — the only
+	// contract `pika init` itself ever writes, --force included —
+	// always declares exactly one package, named after the project,
+	// rooted at ".". Regenerating over one anyway would silently
+	// discard every package's own root and profiles, replace the real
+	// discovered Commands map with pack-hint autofill alone (adopt's
+	// commands come from discovery — Makefile targets, package.json
+	// scripts, whatever the repository already runs — none of which
+	// this rebuild ever reads back), and lay down single-package
+	// scaffold files (a bare src/index.ts, say) into a repository
+	// whose real layout is nothing like it. `pika apply` already
+	// refuses outright on a repository with a committed contract, by
+	// design ("the two commands do not compose into one story for an
+	// adopted repository"); --force must refuse for the identical
+	// reason instead of quietly doing the damage apply's refusal
+	// exists to prevent.
+	if existing != nil && len(existing.Packages) > 1 {
+		return nil, fmt.Errorf("pika init: %s declares %d packages — this contract was produced by `pika adopt` and `pika apply`, not `pika init`; --force cannot regenerate it without discarding every package's root, profiles and discovered commands. There is no supported remedy yet for refreshing an adopted multi-package repository's stale scaffold", contractRel, len(existing.Packages))
+	}
+
 	requested, wantName, module := opts.Profiles, opts.Name, opts.Module
 	if existing != nil {
 		if len(requested) == 0 {
@@ -659,23 +680,6 @@ var coreTemplateTargets = []coreTarget{
 	{tmpl: "CONTRIBUTING.md.tmpl", path: "CONTRIBUTING.md"},
 	{tmpl: "pull_request_template.md.tmpl", path: ".github/pull_request_template.md", kernel: true},
 	{tmpl: "ci.yml.tmpl", path: ".github/workflows/ci.yml", kernel: true},
-}
-
-// KernelOwnsCore reports whether the core-pack file at rel — a
-// repository-relative slash path — is one the kernel alone determines,
-// and therefore one a regeneration rewrites rather than keeps. It is the
-// single reading of the boundary: `pika apply` asks this table the same
-// question `pika init --force` does, instead of carrying its own copy of
-// the answer. Two copies is how one command comes to refresh a file the
-// other silently treats as the operator's, with nothing to say which is
-// right. A path the core pack does not render is not kernel-owned.
-func KernelOwnsCore(rel string) bool {
-	for _, target := range coreTemplateTargets {
-		if target.path == rel {
-			return target.kernel
-		}
-	}
-	return false
 }
 
 // CoreFiles renders the core pack's repository files — README, AGENTS,

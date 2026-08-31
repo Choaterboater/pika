@@ -975,3 +975,51 @@ func TestForceRefusesUnparseableContract(t *testing.T) {
 		t.Errorf("refusal overwrote the contract it could not read: %q", got)
 	}
 }
+
+// A contract with more than one package could only have come from
+// `pika adopt` + `pika apply` — buildContract, the only contract
+// `pika init` itself ever writes, always declares exactly one. Real
+// case: a Tauri-shaped repository (package.json + src-tauri/Cargo.toml)
+// adopted through `pika adopt`/`pika apply`, then `pika init --force`
+// run against it (the documented remedy for a rotated pack digest,
+// applied to the wrong kind of contract) used to silently rebuild a
+// single-package, single-language, commandless contract over it and
+// scaffold a bare src/index.ts into a repository with no such layout
+// at all.
+func TestForceRefusesAnAdoptedMultiPackageContract(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, filepath.FromSlash(contractRel))
+	contractYAML := "schema: 1\n" +
+		"project:\n  name: greencli\n  topology: workspace\n" +
+		"profiles: [core@1]\n" +
+		"packages:\n" +
+		"  greencli:\n    root: .\n    profiles: [core@1, typescript@1]\n" +
+		"  src-tauri:\n    root: src-tauri\n    profiles: [core@1, rust@1]\n" +
+		"commands: {}\n" +
+		"github:\n  merge: squash\n" +
+		"evidence:\n  publish: sanitized\n"
+	if err := os.WriteFile(path, []byte(contractYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Run(InitOptions{Dir: dir, Force: true})
+	if err == nil {
+		t.Fatal("force over a multi-package contract: got nil error, want refusal")
+	}
+	if !strings.Contains(err.Error(), "pika adopt") || !strings.Contains(err.Error(), "2 packages") {
+		t.Errorf("refusal %q does not name the cause", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "src", "index.ts")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("refusal still scaffolded a single-package layout into the repository: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(contractRel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "src-tauri") {
+		t.Errorf("refusal overwrote the adopted contract it could not safely regenerate: %s", got)
+	}
+}
