@@ -2,7 +2,9 @@ package checks
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -353,6 +355,53 @@ func TestNamingSkipsRootAndDotPaths(t *testing.T) {
 	}
 	if catchAll != 1 {
 		t.Errorf("catch-all findings = %d, want 1", catchAll)
+	}
+}
+
+// TestNamingSkipsGitignoredDirectories pins the real-world-triggered
+// defect: walkFiles's only exclusions were dot-prefixed segments and
+// discover.SkipDirs's fixed name list, so a real, already-built
+// repository's gitignored build output (dist/, build/, a data
+// directory, __pycache__ which does not start with a dot) was walked
+// like any other source file and turned into naming findings —
+// hundreds of thousands of them, on a large enough build tree, each one
+// proposed by `pika adopt` as an exception nobody wrote.
+func TestNamingSkipsGitignoredDirectories(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		".gitignore":            "dist/\n__pycache__/\n",
+		"src/BadTracked.ts":     "export {}\n", // tracked; must still be found
+		"dist/BadName.js":       "// build output\n",
+		"pkg/__pycache__/x.pyc": "\x00",
+	})
+	runGit(t, dir, "init", "-q")
+	// Untracked-but-ignored counts too: nothing needs to be committed,
+	// matching the common case of a build that ran after clone and
+	// before adopt.
+	var got []string
+	for _, v := range Naming(dir, coreRules(), nil) {
+		got = append(got, v.Path)
+	}
+	for _, bad := range []string{"dist/BadName.js", "pkg/__pycache__/x.pyc"} {
+		if slices.Contains(got, bad) {
+			t.Errorf("gitignored path %s produced a finding: %+v", bad, got)
+		}
+	}
+	if !slices.Contains(got, "src/BadTracked.ts") {
+		t.Errorf("the repository's own tracked source was not walked at all: %+v", got)
+	}
+}
+
+// runGit runs a git command in dir, failing the test on error.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 

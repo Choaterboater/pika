@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -250,14 +251,82 @@ func excepted(exceptions map[string][]Exception, ruleID, rel string) bool {
 	}
 }
 
-// walkFiles returns the slash-separated repository-relative paths of every
-// regular file under repoRoot, in lexical walk order. The root itself,
-// any dot-prefixed path segment (.git, .project, .github, dotfiles),
-// and any directory discover.SkipDirs names (node_modules, target,
-// DerivedData — vendored dependencies and build/IDE output, not the
-// repository's own naming to judge) are excluded; unreadable entries
-// are skipped rather than fatal.
+// walkFiles returns the slash-separated repository-relative paths of
+// every regular file naming should judge, in lexical order.
+//
+// A real, already-built repository routinely carries gitignored build
+// output and runtime data — a `dist/`, a `build/`, a data directory, a
+// `__pycache__` (which does not start with a dot and is not one of
+// discover.SkipDirs's fixed names) — that can dwarf the repository's own
+// source by orders of magnitude and was never authored by anyone this
+// rule could hold accountable. When repoRoot is a git work tree,
+// gitTrackedFiles asks git directly rather than guessing at names: git
+// already knows every ignore rule in play, at every directory depth,
+// and its answer never descends into an ignored directory to begin
+// with. Only when git cannot answer (not a git repository, or the git
+// binary is unavailable) does the walk fall back to the name-based
+// exclusion below.
 func walkFiles(repoRoot string) []string {
+	if files, ok := gitTrackedFiles(repoRoot); ok {
+		return files
+	}
+	return filesystemWalkFiles(repoRoot)
+}
+
+// gitTrackedFiles lists every path git considers part of the repository:
+// committed, staged, or untracked-but-not-ignored. ok is false when
+// repoRoot is not a git work tree or git is not on PATH, in which case
+// the caller must fall back rather than treat an empty answer as "no
+// files" — an environmental failure here must never silently narrow
+// what naming checks.
+func gitTrackedFiles(repoRoot string) (files []string, ok bool) {
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, false
+	}
+	if out, err := gitOutput(repoRoot, "rev-parse", "--is-inside-work-tree"); err != nil || strings.TrimSpace(out) != "true" {
+		return nil, false
+	}
+	out, err := gitOutput(repoRoot, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, false
+	}
+	for _, p := range strings.Split(out, "\x00") {
+		if p == "" {
+			continue
+		}
+		rel := filepath.ToSlash(p)
+		if hasDotSegment(rel) {
+			continue
+		}
+		// git lists what the index and the working tree agree exists;
+		// a path removed from disk without `git rm` is still tracked
+		// and would otherwise be reported unreadable rather than
+		// simply absent.
+		if info, err := os.Lstat(filepath.Join(repoRoot, filepath.FromSlash(rel))); err != nil || info.IsDir() {
+			continue
+		}
+		files = append(files, rel)
+	}
+	slices.Sort(files)
+	return files, true
+}
+
+// gitOutput runs one git subcommand in dir and returns its stdout.
+func gitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+// filesystemWalkFiles is walkFiles's fallback for a repository git
+// cannot answer for: the root itself, any dot-prefixed path segment
+// (.git, .project, .github, dotfiles), and any directory
+// discover.SkipDirs names (node_modules, target, DerivedData —
+// vendored dependencies and build/IDE output, not the repository's own
+// naming to judge) are excluded; unreadable entries are skipped rather
+// than fatal.
+func filesystemWalkFiles(repoRoot string) []string {
 	var files []string
 	err := filepath.WalkDir(repoRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
