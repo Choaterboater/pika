@@ -169,21 +169,27 @@ func Run(opts InitOptions) (*Manifest, error) {
 	// `pika adopt` + `pika apply`: buildContract below — the only
 	// contract `pika init` itself ever writes, --force included —
 	// always declares exactly one package, named after the project,
-	// rooted at ".". Regenerating over one anyway would silently
+	// rooted at ".". Rebuilding it the ordinary way would silently
 	// discard every package's own root and profiles, replace the real
 	// discovered Commands map with pack-hint autofill alone (adopt's
 	// commands come from discovery — Makefile targets, package.json
 	// scripts, whatever the repository already runs — none of which
 	// this rebuild ever reads back), and lay down single-package
 	// scaffold files (a bare src/index.ts, say) into a repository
-	// whose real layout is nothing like it. `pika apply` already
-	// refuses outright on a repository with a committed contract, by
-	// design ("the two commands do not compose into one story for an
-	// adopted repository"); --force must refuse for the identical
-	// reason instead of quietly doing the damage apply's refusal
-	// exists to prevent.
+	// whose real layout is nothing like it.
+	//
+	// The one thing --force exists to fix — a rotated pack digest —
+	// still needs a remedy here, so this takes the narrower path
+	// instead of the ordinary rebuild: refresh profiles.lock and the
+	// two kernel-owned core files against the *current* registry,
+	// leaving contract.yaml, every package's root and profiles, and
+	// every discovered command completely untouched. `pika apply`
+	// still refuses outright on a repository with a committed
+	// contract, by design; this is the identical refresh --force
+	// already performs for a single-package contract, scoped down to
+	// the two things a multi-package one can have refreshed safely.
 	if existing != nil && len(existing.Packages) > 1 {
-		return nil, fmt.Errorf("pika init: %s declares %d packages — this contract was produced by `pika adopt` and `pika apply`, not `pika init`; --force cannot regenerate it without discarding every package's root, profiles and discovered commands. There is no supported remedy yet for refreshing an adopted multi-package repository's stale scaffold", contractRel, len(existing.Packages))
+		return refreshMultiPackageScaffold(dir, existing, opts.ResetDocs)
 	}
 
 	requested, wantName, module := opts.Profiles, opts.Name, opts.Module
@@ -315,6 +321,74 @@ func Run(opts InitOptions) (*Manifest, error) {
 	}
 
 	return &Manifest{Files: filePaths(written), Commands: commands}, nil
+}
+
+// refreshMultiPackageScaffold is --force's remedy for an adopted
+// multi-package (workspace) contract: it refreshes exactly the two
+// things a rotated pack digest actually breaks — profiles.lock and
+// the two kernel-owned core files — and touches nothing else. It
+// never rebuilds contract.yaml: every package's own root and
+// profiles, and every command `pika adopt` discovered, are read back
+// unchanged from the existing contract, not reconstructed.
+//
+// The lock is written from checks.ProfileRefs(existing) — every pack
+// any package references, project-level and per-package alike, the
+// exact union `pika adopt`'s own writeDrafts already pins — not from
+// existing.Profiles alone, which can be core@1 by itself when the
+// repository's packages span more than one language. profiles.WriteLock
+// has no composition constraint (it pins each pack independently), so
+// the exhaustive set is always safe to ask it for, unlike
+// profiles.Resolve, which composes at most one language pack and is
+// used here only for the repository-level rendering: the language the
+// two kernel-owned files' CI/PR templates are written in falls back to
+// core@1's own bare rendering when no single language applies
+// uniformly, matching every other repository-level fallback this
+// codebase already uses for the identical ambiguity.
+func refreshMultiPackageScaffold(dir string, existing *contract.Contract, resetDocs bool) (*Manifest, error) {
+	resolved, err := profiles.Resolve(existing.Profiles)
+	if err != nil {
+		return nil, fmt.Errorf("pika init: the committed contract's repository-level profiles no longer resolve: %w", err)
+	}
+	if err := profiles.WriteLock(filepath.Join(dir, filepath.FromSlash(lockRel)), checks.ProfileRefs(existing)); err != nil {
+		return nil, fmt.Errorf("pika init: %w", err)
+	}
+	written := []genFile{{path: lockRel, kernel: true}}
+
+	lang := LanguageName(existing.Profiles)
+	core, err := CoreFiles(lang, existing.Project.Name)
+	if err != nil {
+		return nil, err
+	}
+	for _, target := range coreTemplateTargets {
+		if !target.kernel {
+			continue
+		}
+		if err := writeFile(dir, target.path, core[target.path]); err != nil {
+			return nil, err
+		}
+		written = append(written, genFile{path: target.path, kernel: true})
+	}
+
+	root, err := repopath.At(dir)
+	if err != nil {
+		return nil, fmt.Errorf("pika init: %w", err)
+	}
+	st, err := skills.Install(root, existing, resolved, resetDocs)
+	if err != nil {
+		return nil, fmt.Errorf("pika init: %w", err)
+	}
+	for _, s := range st.Skills {
+		if s.Written {
+			written = append(written, genFile{path: s.Path})
+		}
+	}
+	for _, p := range st.Projections {
+		if p.Written {
+			written = append(written, genFile{path: p.Path})
+		}
+	}
+
+	return &Manifest{Files: filePaths(written), Commands: existing.Commands}, nil
 }
 
 // existingContract returns the contract already in place at path, or nil

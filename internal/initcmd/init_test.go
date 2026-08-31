@@ -1020,12 +1020,18 @@ func TestForceRefusesUnparseableContract(t *testing.T) {
 // `pika init` itself ever writes, always declares exactly one. Real
 // case: a Tauri-shaped repository (package.json + src-tauri/Cargo.toml)
 // adopted through `pika adopt`/`pika apply`, then `pika init --force`
-// run against it (the documented remedy for a rotated pack digest,
-// applied to the wrong kind of contract) used to silently rebuild a
-// single-package, single-language, commandless contract over it and
-// scaffold a bare src/index.ts into a repository with no such layout
-// at all.
-func TestForceRefusesAnAdoptedMultiPackageContract(t *testing.T) {
+// run against it (the documented remedy for a rotated pack digest)
+// used to silently rebuild a single-package, single-language,
+// commandless contract over it and scaffold a bare src/index.ts into
+// a repository with no such layout at all.
+//
+// --force now takes the narrower path instead: refresh profiles.lock
+// and the two kernel-owned core files against the current registry,
+// leaving contract.yaml — every package's root, profiles, and every
+// discovered command — completely untouched. This is the actual
+// remedy a rotated pack digest needs, scoped to what a multi-package
+// contract can have refreshed safely.
+func TestForceRefreshesLockAndKernelFilesForAnAdoptedMultiPackageContract(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".project"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1037,28 +1043,91 @@ func TestForceRefusesAnAdoptedMultiPackageContract(t *testing.T) {
 		"packages:\n" +
 		"  greencli:\n    root: .\n    profiles: [core@1, typescript@1]\n" +
 		"  src-tauri:\n    root: src-tauri\n    profiles: [core@1, rust@1]\n" +
-		"commands: {}\n" +
+		"commands:\n  test: \"cargo test && npm test\"\n" +
 		"github:\n  merge: squash\n" +
 		"evidence:\n  publish: sanitized\n"
 	if err := os.WriteFile(path, []byte(contractYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// A lock recording digests no current registry could ever produce
+	// — the stale-pack-digest state --force exists to fix.
+	staleLock := `{"digest":"stale","packs":{"core":{"version":"1","source":"embedded","digest":"stale"},"typescript":{"version":"1","source":"embedded","digest":"stale"},"rust":{"version":"1","source":"embedded","digest":"stale"}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(lockRel)), []byte(staleLock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-existing kernel-owned files, standing in for whatever an
+	// older kernel scaffolded.
+	const staleCI = "# stale workflow\n"
+	const stalePR = "## stale PR template\n"
+	if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".github", "workflows", "ci.yml"), []byte(staleCI), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".github", "pull_request_template.md"), []byte(stalePR), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := Run(InitOptions{Dir: dir, Force: true})
-	if err == nil {
-		t.Fatal("force over a multi-package contract: got nil error, want refusal")
+	manifest, err := Run(InitOptions{Dir: dir, Force: true})
+	if err != nil {
+		t.Fatalf("force over a multi-package contract: %v", err)
 	}
-	if !strings.Contains(err.Error(), "pika adopt") || !strings.Contains(err.Error(), "2 packages") {
-		t.Errorf("refusal %q does not name the cause", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "src", "index.ts")); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("refusal still scaffolded a single-package layout into the repository: %v", err)
-	}
-	got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(contractRel)))
+
+	// The contract itself is byte-identical: not rebuilt at all.
+	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "src-tauri") {
-		t.Errorf("refusal overwrote the adopted contract it could not safely regenerate: %s", got)
+	if string(got) != contractYAML {
+		t.Errorf("contract.yaml was rewritten:\ngot  %q\nwant %q (byte-identical)", got, contractYAML)
+	}
+
+	// No single-package scaffold pollution.
+	if _, err := os.Stat(filepath.Join(dir, "src", "index.ts")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a single-package layout was scaffolded into the repository: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "README.md")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an operator-owned scaffold file was created where none existed: %v", err)
+	}
+
+	// The lock now matches the current registry — the whole point.
+	lock, err := profiles.ReadLock(filepath.Join(dir, filepath.FromSlash(lockRel)))
+	if err != nil {
+		t.Fatalf("refreshed lock is invalid: %v", err)
+	}
+	if lock.Digest != profiles.PackDigest() {
+		t.Errorf("lock.Digest = %q, want the current registry digest %q", lock.Digest, profiles.PackDigest())
+	}
+	for _, pack := range []string{"core", "typescript", "rust"} {
+		got, ok := lock.Packs[pack]
+		if !ok {
+			t.Errorf("refreshed lock is missing pack %q", pack)
+			continue
+		}
+		if want, _ := profiles.PackDigestFor(pack + "@1"); got.Digest != want {
+			t.Errorf("lock pack %q digest = %q, want current %q", pack, got.Digest, want)
+		}
+	}
+
+	// The two kernel-owned files were refreshed, not left stale.
+	ci, err := os.ReadFile(filepath.Join(dir, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(ci) == staleCI {
+		t.Error("ci.yml was not refreshed")
+	}
+	pr, err := os.ReadFile(filepath.Join(dir, ".github", "pull_request_template.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pr) == stalePR {
+		t.Error("pull_request_template.md was not refreshed")
+	}
+
+	// The real discovered command is reported unchanged.
+	if got := manifest.Commands["test"]; got != "cargo test && npm test" {
+		t.Errorf("manifest.Commands[test] = %q, want the existing command preserved", got)
 	}
 }
