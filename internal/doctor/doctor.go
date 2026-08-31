@@ -55,6 +55,7 @@ type AgentFinding struct {
 	Name         string   `json:"name"`
 	Runtime      string   `json:"runtime"`
 	Adapter      string   `json:"adapter"`
+	Provider     string   `json:"provider,omitempty"`
 	Binary       string   `json:"binary"`
 	Found        bool     `json:"found"`
 	Model        string   `json:"model,omitempty"`
@@ -575,16 +576,23 @@ func checkAgents(rep *Report, c *contract.Contract) {
 			continue
 		}
 		finding := AgentFinding{
-			Name:    name,
-			Runtime: cfg.Runtime,
-			Adapter: cfg.Runtime,
+			Name:     name,
+			Runtime:  cfg.Runtime,
+			Adapter:  cfg.Runtime,
+			Provider: cfg.Provider,
 		}
 		agent := adapters.Agent{
 			Name: name, Runtime: cfg.Runtime, Command: cfg.Command,
 			Args: cfg.Args, Env: cfg.Env, Model: cfg.Model, Effort: cfg.Effort,
+			Provider: cfg.Provider,
 		}
 		binary := agent.Binary(ad)
-		if path, err := exec.LookPath(binary); err == nil {
+		if ad.Transport == adapters.TransportLoop {
+			// The built-in loop has no binary to stat: it runs
+			// in-process, so it is found by construction.
+			finding.Found = true
+			finding.Binary = "in-process"
+		} else if path, err := exec.LookPath(binary); err == nil {
 			finding.Found = true
 			finding.Binary = path
 		} else {

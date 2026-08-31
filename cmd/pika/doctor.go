@@ -88,6 +88,9 @@ func printAgents(rep *doctor.Report, stdout io.Writer) {
 	for _, a := range rep.Agents {
 		fmt.Fprintf(stdout, "%-10s %-9s %s\n", a.Name, a.Runtime, a.Binary)
 		var parts []string
+		if a.Provider != "" {
+			parts = append(parts, "provider: "+a.Provider)
+		}
 		if a.Model != "" {
 			parts = append(parts, "model: "+a.Model)
 		}

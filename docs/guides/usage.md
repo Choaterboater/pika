@@ -749,7 +749,7 @@ Choose another configured agent with `pika handoff --agent <name>`. Its configur
 
 ### The runtimes, and what each one is asked to do
 
-`agents.<name>.runtime` is drawn from a closed set of seven. Each adapter names a binary, builds one argv, and takes the least dangerous auto-approval its harness offers — pika never sends a bypass flag.
+`agents.<name>.runtime` is drawn from a closed set of eight. Each adapter names a binary, builds one argv, and takes the least dangerous auto-approval its harness offers — pika never sends a bypass flag.
 
 | Runtime | Binary | Permission posture | Model | Effort |
 | --- | --- | --- | --- | --- |
@@ -760,6 +760,7 @@ Choose another configured agent with `pika handoff --agent <name>`. Its configur
 | `opencode` | `opencode` | `--auto` | `--model` | not supported |
 | `acp` | `omp` (`command` overrides) | the agent's own permission questions, answered `allow_once` | not supported | not supported |
 | `custom` | `command` (required) | whatever your argv states | `{model}` in `args` | `{effort}` in `args` |
+| `pika` | in-process | three in-process tools; `run_command` is unrestricted | provider default, or the contract's | provider reasoning control |
 
 A contract that sets `model` or `effort` on a runtime that cannot express it is **refused before anything is spawned**, naming the agent and the control:
 
@@ -794,6 +795,31 @@ A template that names `{output}` writes the message itself. One that does not is
 
 `acp` speaks ACP v1 over the child's stdin and stdout — no SDK, no socket, no dependency. Its default binary is `omp acp`; point `command` at any ACP agent instead. When the agent asks permission, pika selects the first `allow_once` option and never `allow_always`, because a remembered grant outlives the run that authorized it. Every decision is written to stderr as it is made.
 
+#### `pika`: the built-in loop
+
+`pika` is the only runtime that spawns nothing: it is a coding-agent loop inside the kernel, speaking to a provider over plain HTTP with no SDK. It is selected the same way as every other runtime, with one extra, required field — `provider` picks the wire:
+
+| Provider | Key variable | Base-URL override | Default model |
+| --- | --- | --- | --- |
+| `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `claude-sonnet-4-5` |
+| `openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | `gpt-5-codex` |
+| `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `anthropic/claude-sonnet-4-5` |
+
+```yaml
+agents:
+  builder:
+    runtime: pika
+    provider: anthropic
+    model: claude-sonnet-4-5   # optional; the table's default otherwise
+    effort: high               # optional; maps to the provider's reasoning control
+```
+
+The key comes from pika's own environment, never from the contract — a credential in a contract is a credential in every clone. A missing provider, an unknown one, or an unset key variable is refused before any request is made. The base-URL override repoints the whole provider at another endpoint; it is also the only testing seam, which is how the suite (and `pika check --ci`) stays provably LLM-free.
+
+The loop works the repository with three tools: `read_file` (the first 32 KiB, head-truncated with a marker), `write_file` (the full new content), and `run_command` (any shell command, tail-truncated to the last 8 KiB, 10-minute timeout). `run_command` is deliberately unrestricted — the same posture as the most permissive harness adapter — and the run's own checks are what hold the tools to the role: the Git-state equality check, the read-only rule for explorer and reviewer, and the recheck ladder. Paths must stay inside the repository, and `.project/state/` is refused outright. Two runaway guards are constants, not policy: 40 turns and 400,000 tokens per run. Each provider call has a 5-minute timeout, and a 429 or 5xx retries with backoff while any other 4xx surfaces verbatim.
+
+A loop run writes two things the other runtimes cannot: `pika-transcript.json` (mode 0600) in the handoff bundle — the whole conversation, redacted at the point of writing — and three usage counters (`calls`, `tokens_in`, `tokens_out`) on the agent's entry in the run's `record.json`. The counters are omitted for runtimes that cannot know them, and the committed evidence receipt is unchanged.
+
 #### Three roles, one run
 
 A run can spawn up to three agents, each under its own runtime. The contract names them by key:
@@ -823,13 +849,13 @@ The bundle for each optional role sits beside the builder's, under `handoff/expl
 
 #### What will actually run: `pika doctor`
 
-`pika doctor` reports every configured agent — its runtime, the adapter it resolves to, the binary path or `not on PATH`, whether `model` and `effort` are mapped, the output mode, and whether the runtime supports resume. It spawns nothing. Adding `PIKA_ADAPTER_COMPAT=1` also diffs each adapter's flags against the installed binary's own `--help`, which is a static usage dump: no model call, no tokens.
+`pika doctor` reports every configured agent — its runtime, the adapter it resolves to, the binary path or `not on PATH` (or `in-process` for the built-in loop), the contract's `provider` when one is set, whether `model` and `effort` are mapped, the output mode, and whether the runtime supports resume. It spawns nothing. Adding `PIKA_ADAPTER_COMPAT=1` also diffs each adapter's flags against the installed binary's own `--help`, which is a static usage dump: no model call, no tokens.
 
 ```
 Agents
 
-builder    claude   /usr/local/bin/claude
-                    model: mapped  effort: mapped  output: stdout  resume: no
+builder    pika     in-process
+                    provider: anthropic  model: mapped  effort: mapped  output: file  resume: no
 reviewer   gemini   not on PATH
                     model: mapped  effort: unmapped  output: stdout  resume: no
 ```

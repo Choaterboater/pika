@@ -3,10 +3,12 @@
 //
 // An adapter is a table entry, not a plugin: it names a binary, builds one
 // argv, and declares how the runtime hands back its final message.
-// pika never speaks to a model, opens a socket or implements an agent loop:
-// every adapter delegates the loop to a harness binary, which is the
-// standing V1 rule in design §10 and the reason this package imports
-// nothing but the standard library and the contract.
+// Every adapter but one delegates the loop to a harness binary. The
+// exception is the pika runtime itself: the built-in loop M7 added,
+// which runs in-process and is the reason this package imports
+// internal/loop alongside the standard library and the contract. The V1
+// rule in design §10 — that pika never implements an agent loop — is
+// reversed by M7; adapters remains the boundary for harness binaries.
 //
 // Two rules hold everywhere here and are the point of the package:
 //
@@ -24,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/Choaterboater/pika/internal/contract"
+	"github.com/Choaterboater/pika/internal/loop"
 )
 
 // Runtime names. They mirror the contract's harness enum, and
@@ -37,6 +40,7 @@ const (
 	RuntimeOpenCode = "opencode"
 	RuntimeACP      = "acp"
 	RuntimeCustom   = "custom"
+	RuntimePika     = "pika"
 )
 
 // Placeholders a template may reference. They are the complete set: a
@@ -86,6 +90,8 @@ const (
 	TransportProcess Transport = iota
 	// TransportACP is JSON-RPC 2.0 (ACP v1) over the child's stdio.
 	TransportACP
+	// TransportLoop is the built-in loop: in-process, no subprocess at all.
+	TransportLoop
 )
 
 // Support reports which optional contract controls an adapter can express.
@@ -238,6 +244,16 @@ var builtins = []Adapter{
 		// the template names {output}.
 		Output: OutputStdout,
 	},
+	{
+		// The built-in loop. It is the only runtime with no binary, no
+		// argv and no --help: it runs in-process, writes its own final
+		// message to {output}, and takes model and effort as provider
+		// controls. provider is required and selects the client.
+		Runtime:   RuntimePika,
+		Transport: TransportLoop,
+		Output:    OutputFile,
+		Support:   Support{Model: true, Effort: true},
+	},
 }
 
 // Lookup returns the adapter for a runtime name.
@@ -306,6 +322,8 @@ type Agent struct {
 	Env     []string // agent.env allowlist; nil = inherit
 	Model   string
 	Effort  string
+	// contract provider, "" when unset
+	Provider string
 }
 
 // NotConfiguredError reports a contract that declares no agent by this
@@ -339,13 +357,14 @@ func AgentFromContract(c *contract.Contract, contractPath, name string) (Agent, 
 		return Agent{}, &NotConfiguredError{Name: name, ContractPath: contractPath}
 	}
 	return Agent{
-		Name:    name,
-		Runtime: cfg.Runtime,
-		Command: cfg.Command,
-		Args:    cfg.Args,
-		Env:     cfg.Env,
-		Model:   cfg.Model,
-		Effort:  cfg.Effort,
+		Name:     name,
+		Runtime:  cfg.Runtime,
+		Command:  cfg.Command,
+		Args:     cfg.Args,
+		Env:      cfg.Env,
+		Model:    cfg.Model,
+		Effort:   cfg.Effort,
+		Provider: cfg.Provider,
 	}, nil
 }
 
@@ -413,6 +432,18 @@ func New(a Agent) (Runner, error) {
 	}
 	if err := declaredEnv(a); err != nil {
 		return nil, err
+	}
+	if ad.Transport == TransportLoop {
+		if a.Command != "" {
+			return nil, fmt.Errorf("agent %q declares command on runtime pika; the loop has no binary", a.Name)
+		}
+		if len(a.Args) > 0 {
+			return nil, fmt.Errorf("agent %q declares args on runtime pika; the loop has no argv", a.Name)
+		}
+		if len(a.Env) > 0 {
+			return nil, fmt.Errorf("agent %q declares env on runtime pika; the loop reads the provider's canonical key var instead", a.Name)
+		}
+		return loop.NewRunner(a.Name, a.Provider, a.Model, a.Effort)
 	}
 	if ad.Transport == TransportACP {
 		return &ACPRunner{agent: a, adapter: ad}, nil

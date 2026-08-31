@@ -140,9 +140,22 @@ M5 shipped without its delta; what it changed underneath existing repositories, 
 | ACP, with no SDK | `acp` speaks ACP v1 over stdio with `encoding/json` and `bufio`. Permission questions are answered `allow_once` and never `allow_always`, because a remembered grant outlives the run that authorized it |
 | Three roles | A run can spawn a `builder`, an optional `explorer` before it, and an optional `reviewer` after the recheck — each under its own runtime, named by contract key. The explorer and the reviewer are read-only; the review is recorded in the receipt and never gates the commit |
 | Doctor introspection | `pika doctor` reports every configured agent: runtime, adapter, binary path or `not on PATH`, mapped controls, output mode. It spawns nothing. `PIKA_ADAPTER_COMPAT=1` adds a flag diff against each installed binary's `--help` — no model call |
-| Still no model call | pika speaks to no provider, opens no socket, and still declares exactly two direct dependencies. Design §10's V1 clause stands: the adapter layer is where a built-in loop would land, and it is M7's |
+| Still no model call | pika speaks to no provider, opens no socket, and still declares exactly two direct dependencies. Design §10's V1 clause stands: the adapter layer is where a built-in loop would land, and it is M7's (reversed in M7) |
 
 A contract naming only a `builder` behaves exactly as it did before M6. What changed, the two rules that make the optional roles safe, and the gaps left open are recorded in [docs/reference/m6-delta.md](docs/reference/m6-delta.md).
+
+**Milestone 7 (the built-in loop) complete.** Added:
+
+| Area | What works |
+|---|---|
+| The eighth runtime | `runtime: pika` is a coding-agent loop inside the kernel — the only runtime that spawns no process. It reverses design §10's V1 clause: pika now speaks to a provider over stdlib `net/http`, with no SDK and still exactly two direct dependencies |
+| Two wire shapes, one loop | Anthropic Messages and OpenAI-compatible Chat Completions behind one provider-agnostic turn loop; `anthropic`, `openai` and `openrouter` are rows in a provider table. `provider` is required, the key comes from pika's own environment (never the contract), and a base-URL override is the only testing seam — the suite stays provably LLM-free |
+| Three tools, no sandbox | `read_file` (32 KiB head-truncated), `write_file`, and an unrestricted `run_command` (8 KiB tail-truncated, 10-minute timeout) — the same posture as the most permissive harness adapter, held to the role by the run's own tree checks. Paths stay inside the repository; `.project/state/` is refused |
+| Guards pika finally owns | 40 turns and 400,000 tokens per run as constants, and a 5-minute timeout on every provider call — the per-handoff timeout M6 documented as impossible for a loop pika did not write. 429/5xx retries with backoff; any other 4xx surfaces verbatim, redacted |
+| Usage, recorded | Loop runs write a redacted `pika-transcript.json` (0600) into the handoff bundle, and `record.json` gains `calls`/`tokens_in`/`tokens_out` per agent — omitted for every runtime that cannot know them. The committed evidence receipt stays at schema 1, untouched |
+| Doctor introspection | A `pika` row reports binary `in-process` and the contract's `provider`; the compat probe skips the loop by construction. No new commands — the surface stays at 19 |
+
+Every other runtime is byte-identical, and a contract naming no `pika` agent spawns nothing new. The reversal, the unrestricted-exec posture, and the gaps left open (`pika do`, budget, no receipt change) are recorded in [docs/reference/m7-delta.md](docs/reference/m7-delta.md).
 
 ## Install
 

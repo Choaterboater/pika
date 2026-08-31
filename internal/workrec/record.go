@@ -42,11 +42,19 @@ const (
 // Role, Agent and Runtime are all kernel-generated identity — the role the
 // contract assigned, the contract key it resolved from, and the runtime
 // that ran — so redacted() leaves all three alone, exactly as it does the
-// singular Role and Runtime this generalizes.
+// singular Role and Runtime this generalizes. Calls, TokensIn and TokensOut
+// are the same kind of fact: kernel-generated counters of what the run
+// spent, reported only by runtimes that can know them (a subprocess runner
+// would be guessing), so they are left alone too. All three are omitempty,
+// so a record whose runtime does not report — and every pre-M7 record —
+// encodes byte-identical to before.
 type RunAgent struct {
-	Role    string `json:"role"`
-	Agent   string `json:"agent"`
-	Runtime string `json:"runtime"`
+	Role      string `json:"role"`
+	Agent     string `json:"agent"`
+	Runtime   string `json:"runtime"`
+	Calls     int    `json:"calls,omitempty"`
+	TokensIn  int    `json:"tokens_in,omitempty"`
+	TokensOut int    `json:"tokens_out,omitempty"`
 }
 
 // PhaseStamp records that a phase completed, and when. The slice of

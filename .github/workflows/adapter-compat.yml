@@ -1,16 +1,17 @@
-name: codex-compat
+name: adapter-compat
 
-# CodexRunner constructs a fixed argv for `codex exec` (internal/improve/
-# handoff.go). codex 0.151.0 once rejected `--sandbox` alongside
-# `--approve-for-me` and every handoff died on argument parsing before an
-# agent read a byte of the prompt — four milestones of plumbing that had
-# never once executed against the real binary, because the fake codex at
-# internal/e2e/testdata/fakecodex accepts any argv by design.
+# internal/adapters is a table of argv builders for harness binaries the
+# kernel does not control. codex 0.151.0 once rejected `--sandbox`
+# alongside `--approve-for-me` and every handoff died on argument parsing
+# before an agent read a byte of the prompt — four milestones of plumbing
+# that had never once executed against the real binary, because the fake
+# agents under internal/e2e/testdata accept any argv by design.
 #
-# This job runs the real, currently-published codex CLI and diffs the
-# flags CodexRunner sends against what its own `exec --help` declares.
+# This job runs the real, currently-published harness binaries and diffs
+# the flags each adapter sends against what their own `--help` declares.
 # It calls no model and spends no tokens: --help is a static usage dump,
-# and codex needs no authentication to print it.
+# and a harness needs no authentication to print one. The built-in loop
+# (runtime `pika`) has no binary, so the probe skips it by construction.
 #
 # It is a separate workflow for the same reason conformance is: a
 # renamed flag in somebody else's release is not a reason to redden
@@ -28,7 +29,7 @@ permissions:
   contents: read
 
 jobs:
-  compat:
+  adapter-compat:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -47,7 +48,7 @@ jobs:
           npm install -g @openai/codex
           codex --version
 
-      - name: Diff CodexRunner's argv against codex exec --help
+      - name: Diff each adapter's flags against its binary's --help
         env:
-          PIKA_CODEX_COMPAT: "1"
-        run: go test ./internal/improve/ -count=1 -v -run TestRealCodexCompatibility
+          PIKA_ADAPTER_COMPAT: "1"
+        run: go test ./internal/adapters/ -count=1 -v -run TestRealAdapterCompatibility

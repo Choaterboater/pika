@@ -48,6 +48,9 @@ type runRecord struct {
 		Role    string `json:"role"`
 		Agent   string `json:"agent"`
 		Runtime string `json:"runtime"`
+		// Calls is the usage a runtime reports when it can know it —
+		// the built-in loop, and no subprocess runtime.
+		Calls int `json:"calls"`
 	} `json:"agents"`
 	Phases []struct {
 		Phase string `json:"phase"`

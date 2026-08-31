@@ -619,6 +619,23 @@ func resumeStage(rec workrec.Record, cfg Config) stage {
 	}
 }
 
+// usageReporter is the optional interface a runner implements when it can
+// say what the run spent. Subprocess runners cannot — the number would be
+// a guess — so only the built-in loop reports, and the field stays absent
+// for every other runtime.
+type usageReporter interface {
+	Usage() (calls, tokensIn, tokensOut int)
+}
+
+// usageOf returns the runner's reported usage, or zeroes when it does not
+// report.
+func usageOf(r Runner) (calls, tokensIn, tokensOut int) {
+	if u, ok := r.(usageReporter); ok {
+		return u.Usage()
+	}
+	return 0, 0, 0
+}
+
 // lifecycle is the run itself, from the baseline ladder to the verified
 // commit. It never records the terminal outcome: every one of its exits
 // is a terminal outcome, so settle owns that single write and no exit
@@ -707,10 +724,14 @@ func lifecycle(ctx context.Context, cfg Config, repo *repopath.Root, kind string
 			}
 			findings = readFindings(explore.ResultPath)
 			if err := savePhase(handle, workrec.PhaseExplore, note, func(rec *workrec.Record) {
+				calls, tokensIn, tokensOut := usageOf(cfg.Explorer.Runner)
 				rec.Agents = append(rec.Agents, workrec.RunAgent{
-					Role:    cfg.Explorer.Name,
-					Agent:   cfg.Explorer.Agent,
-					Runtime: cfg.Explorer.Runner.Runtime(),
+					Role:      cfg.Explorer.Name,
+					Agent:     cfg.Explorer.Agent,
+					Runtime:   cfg.Explorer.Runner.Runtime(),
+					Calls:     calls,
+					TokensIn:  tokensIn,
+					TokensOut: tokensOut,
 				})
 			}); err != nil {
 				return result, err
@@ -727,10 +748,14 @@ func lifecycle(ctx context.Context, cfg Config, repo *repopath.Root, kind string
 		if err := savePhase(handle, workrec.PhaseHandoff, note, func(rec *workrec.Record) {
 			rec.Role = cfg.Builder.Name
 			rec.Runtime = cfg.Builder.Runner.Runtime()
+			calls, tokensIn, tokensOut := usageOf(cfg.Builder.Runner)
 			rec.Agents = append(rec.Agents, workrec.RunAgent{
-				Role:    cfg.Builder.Name,
-				Agent:   cfg.Builder.Agent,
-				Runtime: cfg.Builder.Runner.Runtime(),
+				Role:      cfg.Builder.Name,
+				Agent:     cfg.Builder.Agent,
+				Runtime:   cfg.Builder.Runner.Runtime(),
+				Calls:     calls,
+				TokensIn:  tokensIn,
+				TokensOut: tokensOut,
 			})
 		}); err != nil {
 			return result, err
@@ -802,10 +827,14 @@ func lifecycle(ctx context.Context, cfg Config, repo *repopath.Root, kind string
 			return result, err
 		}
 		if err := savePhase(handle, workrec.PhaseReview, note, func(rec *workrec.Record) {
+			calls, tokensIn, tokensOut := usageOf(cfg.Reviewer.Runner)
 			rec.Agents = append(rec.Agents, workrec.RunAgent{
-				Role:    cfg.Reviewer.Name,
-				Agent:   cfg.Reviewer.Agent,
-				Runtime: cfg.Reviewer.Runner.Runtime(),
+				Role:      cfg.Reviewer.Name,
+				Agent:     cfg.Reviewer.Agent,
+				Runtime:   cfg.Reviewer.Runner.Runtime(),
+				Calls:     calls,
+				TokensIn:  tokensIn,
+				TokensOut: tokensOut,
 			})
 		}); err != nil {
 			return result, err

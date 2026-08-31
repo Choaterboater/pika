@@ -132,7 +132,7 @@ func TestHarnessEnumMatchesTheSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HarnessEnum: %v", err)
 	}
-	want := []string{"omp", "codex", "claude", "gemini", "opencode", "acp", "custom"}
+	want := []string{"omp", "codex", "claude", "gemini", "opencode", "acp", "custom", "pika"}
 	if len(got) != len(want) {
 		t.Fatalf("HarnessEnum() = %v, want %v", got, want)
 	}
@@ -140,5 +140,24 @@ func TestHarnessEnumMatchesTheSchema(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("HarnessEnum()[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// `pika` is the eighth harness value: the built-in loop. The schema
+// accepts the runtime with no `provider` — the provider requirement is the
+// adapter's, not the schema's, because a schema that knew about the loop
+// would be the loop's design leaking into a document that does not know
+// what a loop is.
+func TestAgentAcceptsThePikaRuntime(t *testing.T) {
+	c, err := Load("testdata/valid-agent-pika.yaml")
+	if err != nil {
+		t.Fatalf("expected valid contract, got %v", err)
+	}
+	a, ok := c.Agents["builder"]
+	if !ok {
+		t.Fatalf("agents = %+v, want a builder", c.Agents)
+	}
+	if a.Runtime != "pika" || a.Provider != "anthropic" {
+		t.Fatalf("builder = %+v, want runtime=pika provider=anthropic", a)
 	}
 }

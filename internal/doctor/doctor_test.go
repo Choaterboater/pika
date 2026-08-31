@@ -1004,6 +1004,29 @@ func TestDoctorReportsAnUnmappedControl(t *testing.T) {
 	}
 }
 
+// The built-in loop has no binary to stat: it runs in-process, so its row
+// is found by construction, reports "in-process" instead of a path, and
+// earns no not-on-PATH warning. The provider is reported for every
+// runtime that sets one, and the loop is the runtime that always does.
+func TestDoctorReportsTheLoopAsInProcess(t *testing.T) {
+	rep := projectWithAgents(t, "  builder:\n    runtime: pika\n    provider: anthropic\n")
+	builder := agentByName(t, rep, "builder")
+	if !builder.Found {
+		t.Errorf("builder = %+v, want found: the loop needs no binary", builder)
+	}
+	if builder.Binary != "in-process" {
+		t.Errorf("builder binary = %q, want \"in-process\"", builder.Binary)
+	}
+	if builder.Provider != "anthropic" {
+		t.Errorf("builder provider = %q, want \"anthropic\"", builder.Provider)
+	}
+	for _, f := range rep.Findings {
+		if f.ID == "agent.builder" {
+			t.Errorf("agent.builder finding = %+v, want none: there is no binary to miss", f)
+		}
+	}
+}
+
 // A runtime the table does not implement is an error with a remedy, not a
 // row that quietly reads as configured.
 //

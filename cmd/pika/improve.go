@@ -296,6 +296,18 @@ func stoppedBranch(result improve.Result) string {
 type configuredRunner struct {
 	root  *repopath.Root
 	agent string
+	// resolved caches the runner the first Run built, shared by every
+	// copy of this value (improve holds it in an interface, which
+	// copies the struct). The cache is what lets Usage below reach the
+	// runner that actually ran: without it the loop's usage would die
+	// with the runner that accumulated it, and improve's usageReporter
+	// assertion would land on a wrapper that never ran.
+	resolved *resolvedRunner
+}
+
+// resolvedRunner is the shared slot configuredRunner copies point at.
+type resolvedRunner struct {
+	runner adapters.Runner
 }
 
 // Runtime reports the runtime the contract names for this agent. It
@@ -310,11 +322,27 @@ func (r configuredRunner) Runtime() string {
 }
 
 func (r configuredRunner) Run(ctx context.Context, root, promptPath, outputPath string) error {
-	runner, err := resolveRunner(r.root, r.agent)
-	if err != nil {
-		return err
+	if r.resolved.runner == nil {
+		runner, err := resolveRunner(r.root, r.agent)
+		if err != nil {
+			return err
+		}
+		r.resolved.runner = runner
 	}
-	return runner.Run(ctx, root, promptPath, outputPath)
+	return r.resolved.runner.Run(ctx, root, promptPath, outputPath)
+}
+
+// Usage reports what the resolved runner spent, when the runner can say.
+// It exists so improve's usageReporter assertion reaches through the
+// lazy wrapper to the runner that actually ran: a runner that cannot
+// report — every subprocess runtime — answers zeroes, exactly as it does
+// when asked directly.
+func (r configuredRunner) Usage() (calls, tokensIn, tokensOut int) {
+	u, ok := r.resolved.runner.(interface{ Usage() (int, int, int) })
+	if !ok {
+		return 0, 0, 0
+	}
+	return u.Usage()
 }
 
 // contractAgent resolves one contract agent without building a runner, so
@@ -351,7 +379,7 @@ func configuredRoles(root *repopath.Root, agent string) (improve.Config, error) 
 		Builder: improve.Role{
 			Name:   "builder",
 			Agent:  agent,
-			Runner: configuredRunner{root: root, agent: agent},
+			Runner: configuredRunner{root: root, agent: agent, resolved: &resolvedRunner{}},
 		},
 	}
 	explorer, err := optionalRole(root, "explorer")

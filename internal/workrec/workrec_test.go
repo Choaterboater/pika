@@ -743,3 +743,43 @@ func TestRedactedRecordIsStillUsable(t *testing.T) {
 		t.Errorf("cached goal %q disagrees with record.json %q", cached.Goal, got.Goal)
 	}
 }
+
+// Usage is optional: a runtime that reports what the run spent (today,
+// only the built-in loop) lands in the record, and one that does not
+// leaves the fields out entirely, so a pre-M7 record is byte-identical.
+func TestRunAgentUsageRoundTripsAndZeroesOmit(t *testing.T) {
+	rec := sampleRecord("20260831-usage-0001")
+	rec.Agents = []RunAgent{
+		{Role: "implementer", Agent: "builder", Runtime: "pika", Calls: 3, TokensIn: 1200, TokensOut: 340},
+		{Role: "explorer", Agent: "scout", Runtime: "claude"},
+	}
+	raw, err := encode(rec)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var back Record
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(back.Agents) != 2 {
+		t.Fatalf("agents = %d, want 2", len(back.Agents))
+	}
+	if got := back.Agents[0]; got.Calls != 3 || got.TokensIn != 1200 || got.TokensOut != 340 {
+		t.Errorf("usage round-trip = calls:%d tokens_in:%d tokens_out:%d, want 3/1200/340", got.Calls, got.TokensIn, got.TokensOut)
+	}
+	if got := back.Agents[1]; got.Calls != 0 || got.TokensIn != 0 || got.TokensOut != 0 {
+		t.Errorf("unreported usage decoded non-zero: %+v", got)
+	}
+
+	zero := sampleRecord("20260831-usage-0002")
+	zero.Agents = []RunAgent{{Role: "implementer", Agent: "builder", Runtime: "claude"}}
+	rawZero, err := encode(zero)
+	if err != nil {
+		t.Fatalf("encode zero-usage record: %v", err)
+	}
+	for _, key := range []string{`"calls"`, `"tokens_in"`, `"tokens_out"`} {
+		if strings.Contains(string(rawZero), key) {
+			t.Errorf("zero-usage agent encodes %s; omitempty must drop it:\n%s", key, rawZero)
+		}
+	}
+}

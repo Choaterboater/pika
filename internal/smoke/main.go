@@ -17,8 +17,10 @@
 // correct repository — shipped behind a green ladder. None was findable
 // by reading. All were found by running the product once.
 //
-// It makes no model call and touches no network: the agent boundary is
-// internal/e2e's fake `codex`, put on PATH under the name pika spawns.
+// It makes no model call and touches no network beyond 127.0.0.1: the
+// harness boundary is internal/e2e's fake `codex`, put on PATH under the
+// name pika spawns, and the built-in loop's provider boundary is a
+// scripted Anthropic-shaped httptest server the loop step runs in-process.
 // So `pika check --ci` stays provably LLM-free with this gate in it.
 //
 // Run it directly:
@@ -79,6 +81,12 @@ var steps = []step{
 		proves: "one run spawns a claude builder and an omp reviewer, and the advisory review does not gate the commit",
 		absent: gitAbsent,
 		run:    stepRoles,
+	},
+	{
+		id:     "loop",
+		proves: "a run whose builder is the built-in loop delivers, with no binary, and its record names runtime pika with usage",
+		absent: gitAbsent,
+		run:    stepLoop,
 	},
 	{
 		id:     "skills",

@@ -96,7 +96,7 @@
     },
     "harness": {
       "type": "string",
-      "enum": ["omp", "codex", "claude", "gemini", "opencode", "acp", "custom"]
+      "enum": ["omp", "codex", "claude", "gemini", "opencode", "acp", "custom", "pika"]
     }
   }
 }

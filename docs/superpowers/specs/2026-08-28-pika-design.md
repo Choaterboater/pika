@@ -447,7 +447,7 @@ The lead remains the sole integration authority. Review agents are read-only by 
 
 Adapters separate role from execution backend.
 
-A runtime or harness owns the agent loop, tools, and session lifecycle. A provider supplies model inference. Role configuration may select `runtime`, `provider`, `model`, and `effort`; the runtime adapter maps those values to its supported controls. `pika` does not implement a new LLM client or coding-agent loop in V1.
+A runtime or harness owns the agent loop, tools, and session lifecycle. A provider supplies model inference. Role configuration may select `runtime`, `provider`, `model`, and `effort`; the runtime adapter maps those values to its supported controls. `pika` implements a coding-agent loop as the `pika` runtime, speaking to a provider over stdlib `net/http` with no new dependency; the adapters remain the boundary for harness binaries.
 
 Preferred order:
 

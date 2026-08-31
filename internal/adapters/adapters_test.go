@@ -7,7 +7,7 @@ import (
 	"github.com/Choaterboater/pika/internal/contract"
 )
 
-// The schema promises seven runtimes and the table must supply seven
+// The schema promises eight runtimes and the table must supply eight
 // adapters. This reads the enum from the schema rather than restating it,
 // so adding a value to the contract without adding an adapter fails here
 // instead of failing for an operator at handoff time.
@@ -28,7 +28,7 @@ func TestEveryHarnessInTheContractSchemaHasAnAdapter(t *testing.T) {
 		if ad.Runtime != h {
 			t.Errorf("Lookup(%q).Runtime = %q", h, ad.Runtime)
 		}
-		if h != RuntimeCustom && ad.Binary == "" {
+		if h != RuntimeCustom && ad.Transport != TransportLoop && ad.Binary == "" {
 			t.Errorf("adapter %q declares no binary", h)
 		}
 	}
@@ -246,6 +246,45 @@ func TestAnUnimplementedRuntimeIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no adapter implements it") {
 		t.Errorf("error = %q, want it to name the missing adapter", err)
+	}
+}
+
+// The loop has no binary, no argv and no env allowlist, so the
+// subprocess-only controls a contract could set on it are refused rather
+// than silently dropped — the same fail-closed rule every other runtime
+// is held to.
+func TestPikaRefusesCommandArgsAndEnv(t *testing.T) {
+	cases := []struct {
+		name  string
+		agent Agent
+		want  string
+	}{
+		{"command", Agent{Name: "builder", Runtime: RuntimePika, Command: "/bin/echo"}, "the loop has no binary"},
+		{"args", Agent{Name: "builder", Runtime: RuntimePika, Args: []string{"-p"}}, "the loop has no argv"},
+		{"env", Agent{Name: "builder", Runtime: RuntimePika, Env: []string{"PATH"}}, "the provider's canonical key var instead"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(tc.agent)
+			if err == nil {
+				t.Fatalf("runtime pika accepted %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A loop with no provider is a loop that cannot pick a client, so the
+// refusal comes from NewRunner before a request is ever made.
+func TestPikaRequiresAProvider(t *testing.T) {
+	_, err := New(Agent{Name: "builder", Runtime: RuntimePika})
+	if err == nil {
+		t.Fatal("runtime pika with no provider was accepted")
+	}
+	if !strings.Contains(err.Error(), "no provider") {
+		t.Errorf("error = %q, want it to name the missing provider", err)
 	}
 }
 
