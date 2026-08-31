@@ -426,6 +426,28 @@ func TestUnclassifiedEcosystemMarkersGradleAndCMake(t *testing.T) {
 	}
 }
 
+// wrangler.toml/json/jsonc: a Cloudflare Workers project, recognized
+// the same way maven/gradle/cmake are — named as unclassified, never
+// mistaken for a package, including when it is the ONLY marker in the
+// directory (a static-assets-only Worker or a workers-rs project need
+// not carry a package.json at all).
+func TestUnclassifiedEcosystemMarkerWrangler(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "wrangler.toml"), []byte("name = \"my-worker\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Packages) != 0 {
+		t.Fatalf("expected 0 packages for a wrangler.toml-only tree, got %+v", inv.Packages)
+	}
+	if !slices.Contains(inv.UnclassifiedMarkers, "wrangler.toml") {
+		t.Errorf("UnclassifiedMarkers = %v, want it to include wrangler.toml", inv.UnclassifiedMarkers)
+	}
+}
+
 // A known, narrower limitation, not a defect this package fixes:
 // goreleaser/goreleaser's own Taskfile.yml indents one task's `cmds:`
 // key level with the task name instead of nested under it — tolerated

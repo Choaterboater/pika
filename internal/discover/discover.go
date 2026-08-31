@@ -81,11 +81,11 @@ var SkipDirs = map[string]bool{
 
 // markers maps a file or directory name to a marker category.
 //
-// maven/gradle/cmake are real ecosystem markers with no language pack
-// behind them (see unclassifiedCategories below): recognizing the
-// file is what lets Discover report that it saw a real project it
-// cannot classify, rather than looking identical to a repository with
-// nothing distinctive in it at all.
+// maven/gradle/cmake/wrangler are real ecosystem markers with no
+// language pack behind them (see unclassifiedCategories below):
+// recognizing the file is what lets Discover report that it saw a
+// real project it cannot classify, rather than looking identical to
+// a repository with nothing distinctive in it at all.
 var markers = map[string]string{
 	"package.json":        "packagejson",
 	"pyproject.toml":      "pyproject",
@@ -107,6 +107,9 @@ var markers = map[string]string{
 	"build.gradle":        "gradle",
 	"build.gradle.kts":    "gradle",
 	"CMakeLists.txt":      "cmake",
+	"wrangler.toml":       "wrangler",
+	"wrangler.json":       "wrangler",
+	"wrangler.jsonc":      "wrangler",
 }
 
 // unclassifiedCategories are marker categories with no consumer at
@@ -117,10 +120,19 @@ var markers = map[string]string{
 // exactly this set is deliberate and closed — adding a marker to the
 // map above without also deciding whether it belongs here would leave
 // it silently inert either way.
+//
+// wrangler belongs here, not folded into packagejson's typescript/
+// javascript classification, because a Cloudflare Workers project
+// need not have a package.json at all — a static-assets-only Worker,
+// or one written against workers-rs (a Cargo.toml project), carries
+// only wrangler.toml/json/jsonc. When package.json is also present
+// the repository is already classified through it; wrangler.* adds
+// visibility for the case it is the only marker in the directory.
 var unclassifiedCategories = map[string]bool{
-	"maven":  true,
-	"gradle": true,
-	"cmake":  true,
+	"maven":    true,
+	"gradle":   true,
+	"cmake":    true,
+	"wrangler": true,
 }
 
 // walkHits records marker paths found during the bounded walk, plus flags for
