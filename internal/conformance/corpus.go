@@ -227,6 +227,43 @@ var Corpus = []Repo{
 		},
 	},
 	{
+		Name: "dhoinka-whichport",
+		URL:  "https://github.com/dhoinka/whichport",
+		SHA:  "12ab8b03f273fa1d64c2b19918c0e4714e668217",
+		Ref:  "main",
+		Why: "The third Go automation file, and the only row where one " +
+			"actually runs on the ladder it changes: cobra's Makefile stops " +
+			"discovery dead at the format rung and skips the rest behind its " +
+			"failure, x-sync carries no automation file so go@1's own hints " +
+			"fill every slot untouched, and neither says anything about " +
+			"whether pika reads a Taskfile at all. whichport's Taskfile " +
+			"names `fmt` and `test` tasks that match the verbs discovery " +
+			"looks for, so `task fmt` and `task test` fill the format and " +
+			"test slots and both spawn and pass; its `vet` and `build` tasks " +
+			"do not match a verb pika discovers (lint wants `lint`, not " +
+			"`vet`; typecheck wants `typecheck` or `build`, and Task's own " +
+			"`build` task builds a binary rather than type-checking, so " +
+			"go@1's `go build -o /dev/null ./...` hint fills lint and " +
+			"typecheck instead), which is the fixture that proves discovery " +
+			"matches by verb name and does not simply adopt every task a " +
+			"Taskfile names.",
+		Drift: "gofmt's formatting rules and go vet's analyzer set, which " +
+			"both travel with the Go release; go.mod's declared Go version, " +
+			"which fails typecheck outright on an older toolchain instead " +
+			"of skipping; and the `task` binary itself, which is a separate " +
+			"install from `go` and not guaranteed present alongside it.",
+		Needs:    []string{"git", "go", "task"},
+		Profiles: []string{"core@1", "go@1"},
+		Gates: []GateWant{
+			{ID: "contract", Status: StatusPass},
+			{ID: "format", Status: StatusPass, Cmd: "task fmt"},
+			{ID: "lint", Status: StatusPass, Cmd: "go vet ./..."},
+			{ID: "typecheck", Status: StatusPass, Cmd: "go build -o /dev/null ./..."},
+			{ID: "test", Status: StatusPass, Cmd: "task test"},
+			{ID: "smoke", Status: StatusSkip, Reason: "no command discovered for smoke"},
+		},
+	},
+	{
 		Name: "psf-requests",
 		URL:  "https://github.com/psf/requests",
 		SHA:  "b25c87d7cb8d6a18a37fa12442b5f883f9e41741",
