@@ -223,21 +223,6 @@ type Gap struct {
 // keeps it from silently becoming the list of things nobody checks.
 var Unexercised = []Gap{
 	{
-		Pack: "typescript@1", Slot: "format", Cmd: "npm run format",
-		Why: "typescript@1 marks no hint autofillable — every one delegates to " +
-			"a package.json script or a registry download a scaffold does not " +
-			"provide — so `pika apply` never writes this into a contract. The " +
-			"only route to it is a repository whose own package.json declares " +
-			"a `format` script, because discovery spells that as the identical " +
-			"string; got, the corpus's TypeScript row, declares none.",
-	},
-	{
-		Pack: "typescript@1", Slot: "lint", Cmd: "npm run lint",
-		Why: "Not autofillable, for the same reason as the format hint. Reachable " +
-			"only through a repository that declares a `lint` script of its own; " +
-			"got's package.json runs its linter from inside the test script.",
-	},
-	{
 		Pack: "swift@1", Slot: "format", Cmd: "swift format lint --strict --recursive Sources Tests",
 		Why: "Not autofillable: swift-format ships inside the toolchain only from " +
 			"Swift 6.0 on, while the pack targets swift-tools-version 5.10, so a " +

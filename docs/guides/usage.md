@@ -302,11 +302,11 @@ result is printed by every run:
 ```
   go@1 format             fill  gofmt -l .                                   ran in golang-x-sync
   ...
-  typescript@1 typecheck  hint  npm run type-check                           ran in microsoft-typescript-babel-starter
-  16 of 20 declared pack commands have executed against a repository pika did not write
+  typescript@1 lint       hint  npm run lint                                 ran in particle-iot-particle-api-js
+  18 of 20 declared pack commands have executed against a repository pika did not write
 ```
 
-The three that have not are listed in `Unexercised` with the reason, and that
+The two that have not are listed in `Unexercised` with the reason, and that
 list is graded in both directions: a declared command missing from both the
 corpus and the list fails by name, and an entry for a command some row has
 started running fails too and has to be deleted.

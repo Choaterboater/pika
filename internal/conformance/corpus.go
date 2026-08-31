@@ -342,6 +342,59 @@ var Corpus = []Repo{
 		},
 	},
 	{
+		Name: "particle-iot-particle-api-js",
+		URL:  "https://github.com/particle-iot/particle-api-js",
+		SHA:  "a449b595be92624830cb98033a3b6e723d4d6522",
+		Ref:  "v12.0.3",
+		Why: "The only row where typescript@1's lint slot actually spawns. Its " +
+			"package.json declares `lint` and nothing named `format`, so format " +
+			"stays an honest discovery skip instead of a failure that would " +
+			"short-circuit the ladder before lint's turn.",
+		Drift: "npm's propagation of a shell's 127 for `eslint`, which a shallow " +
+			"clone never installs.",
+		Needs: []string{"git", "npm"},
+		// The lint rung is expected to fail at `eslint: command not
+		// found`. A machine with a global eslint would get a different,
+		// slower and entirely unrelated verdict.
+		Absent:   []string{"eslint"},
+		Profiles: []string{"core@1", "typescript@1"},
+		Gates: []GateWant{
+			{ID: "contract", Status: StatusPass},
+			{ID: "format", Status: StatusSkip, Reason: "no command discovered for format"},
+			{ID: "lint", Status: StatusFail, Exit: 127, Cmd: "npm run lint"},
+			{ID: "typecheck", Status: StatusSkip, Reason: "skipped: gate lint failed"},
+			{ID: "test", Status: StatusSkip, Reason: "skipped: gate lint failed"},
+			{ID: "smoke", Status: StatusSkip, Reason: "skipped: gate lint failed"},
+		},
+	},
+	{
+		Name: "simonbengtsson-jspdf-autotable",
+		URL:  "https://github.com/simonbengtsson/jsPDF-AutoTable",
+		SHA:  "76f71916d816ebebe5492c49e5e57622ef672159",
+		Ref:  "v5.0.8",
+		Why: "The only row where typescript@1's format slot actually spawns. " +
+			"Its package.json declares `format`, and format runs first in the " +
+			"ladder, so it fails before lint, typecheck or test get a turn — " +
+			"proving format is reachable at the cost of proving nothing about " +
+			"the three rungs behind it.",
+		Drift: "npm's propagation of a shell's 127 for `prettier`, which a " +
+			"shallow clone never installs.",
+		Needs: []string{"git", "npm"},
+		// The format rung is expected to fail at `prettier: command not
+		// found`. A machine with a global prettier would get a different,
+		// slower and entirely unrelated verdict.
+		Absent:   []string{"prettier"},
+		Profiles: []string{"core@1", "typescript@1"},
+		Gates: []GateWant{
+			{ID: "contract", Status: StatusPass},
+			{ID: "format", Status: StatusFail, Exit: 127, Cmd: "npm run format"},
+			{ID: "lint", Status: StatusSkip, Reason: "skipped: gate format failed"},
+			{ID: "typecheck", Status: StatusSkip, Reason: "skipped: gate format failed"},
+			{ID: "test", Status: StatusSkip, Reason: "skipped: gate format failed"},
+			{ID: "smoke", Status: StatusSkip, Reason: "skipped: gate format failed"},
+		},
+	},
+	{
 		Name: "dtolnay-anyhow",
 		URL:  "https://github.com/dtolnay/anyhow",
 		SHA:  "f2b963a759decf0828efb58a8fdd417fb12f71fb",
