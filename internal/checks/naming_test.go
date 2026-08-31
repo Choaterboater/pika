@@ -320,6 +320,29 @@ func TestNamingSkipsRootAndDotPaths(t *testing.T) {
 	}
 }
 
+// A vendored dependency directory is not the repository author's own
+// naming to judge: node_modules, target (Rust/Cargo build output),
+// .venv (already dot-prefixed, covered separately) and DerivedData
+// (Xcode) are exactly the directories internal/discover already skips
+// when classifying a repository, and gate 1's own file walk must skip
+// the same ones — a real node_modules tree routinely carries thousands
+// of non-kebab-case and catch-all-named paths from packages nobody at
+// this repository wrote or can rename, and `pika adopt` proposing an
+// exception for each one is unusable, not merely noisy.
+func TestNamingSkipsVendoredDependencyDirs(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"src/index.ts":                           "// ok\n",
+		"node_modules/some-pkg/BadName.js":       "// vendored\n",
+		"node_modules/utils/thing.js":            "// vendored catch-all\n",
+		"target/debug/BadName.rs":                "// build output\n",
+		"DerivedData/Build/Products/BadName.txt": "// xcode build output\n",
+	})
+	if vs := Naming(dir, coreRules(), nil); len(vs) != 0 {
+		t.Fatalf("vendored/build-output directories must be skipped, got %+v", vs)
+	}
+}
+
 func TestLoadExceptions(t *testing.T) {
 	t.Run("missing file is empty", func(t *testing.T) {
 		m, err := LoadExceptions(t.TempDir())

@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Choaterboater/pika/internal/discover"
 	"github.com/Choaterboater/pika/internal/profiles"
 )
 
@@ -244,9 +245,12 @@ func excepted(exceptions map[string][]Exception, ruleID, rel string) bool {
 }
 
 // walkFiles returns the slash-separated repository-relative paths of every
-// regular file under repoRoot, in lexical walk order. The root itself and
-// any dot-prefixed path segment (.git, .project, .github, dotfiles) are
-// excluded; unreadable entries are skipped rather than fatal.
+// regular file under repoRoot, in lexical walk order. The root itself,
+// any dot-prefixed path segment (.git, .project, .github, dotfiles),
+// and any directory discover.SkipDirs names (node_modules, target,
+// DerivedData — vendored dependencies and build/IDE output, not the
+// repository's own naming to judge) are excluded; unreadable entries
+// are skipped rather than fatal.
 func walkFiles(repoRoot string) []string {
 	var files []string
 	err := filepath.WalkDir(repoRoot, func(p string, d fs.DirEntry, err error) error {
@@ -268,6 +272,9 @@ func walkFiles(repoRoot string) []string {
 			return nil
 		}
 		if d.IsDir() {
+			if discover.SkipDirs[d.Name()] {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		files = append(files, rel)

@@ -40,7 +40,14 @@ type Inventory struct {
 // file at "packages/a/package.json" is depth 3.
 const maxDepth = 3
 
-var skipDirs = map[string]bool{
+// SkipDirs names directories no naming or discovery walk should descend
+// into: vendored dependencies and build/IDE output that belongs to no
+// author at this repository and cannot be renamed. internal/checks
+// reuses this exact set for the same reason — a file inside
+// node_modules or DerivedData is not the repository's own naming to
+// judge, and it must be exactly the set discover already skips when
+// classifying the repository, not a second list that could drift.
+var SkipDirs = map[string]bool{
 	".git":         true,
 	"node_modules": true,
 	".venv":        true,
@@ -143,7 +150,7 @@ func walk(root string) (*walkHits, error) {
 				hits.markerPaths["xcodeproj"] = append(hits.markerPaths["xcodeproj"], rel)
 				return fs.SkipDir // marker, not something to descend into
 			}
-			if skipDirs[d.Name()] {
+			if SkipDirs[d.Name()] {
 				return fs.SkipDir
 			}
 			if depth >= maxDepth {
