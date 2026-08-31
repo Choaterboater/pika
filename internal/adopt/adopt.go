@@ -400,6 +400,29 @@ func sanitizeName(s string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// conventionDetailSampleSize bounds how many deviating paths a naming
+// convention's prose names directly. The full set was never lost —
+// it survives in Report.Exceptions, one bullet per record in the
+// review bundle's exceptions section, and every key of
+// .project/exceptions.yaml after apply — this bounds only the prose
+// duplicate of that same data inside one table cell of the review
+// bundle and one printed line, which a large adoption could otherwise
+// turn into megabytes of repeated path text (issue: a real adoption
+// with a gitignored build directory once produced a proposed-exception
+// list one path long per file in it).
+const conventionDetailSampleSize = 5
+
+// sampleList joins the first n of paths (already sorted by the caller)
+// with a trailing count of what was left out, or the whole list
+// unbounded when there is nothing to leave out. It never drops data —
+// only how many times this one piece of prose repeats it.
+func sampleList(paths []string, n int) string {
+	if len(paths) <= n {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%s, +%d more (all recorded in %s)", strings.Join(paths[:n], ", "), len(paths)-n, checks.ExceptionsFile)
+}
+
 // classifyConventions evaluates the discovered conventions against core@1,
 // records the valid ones in the draft contract's extensions, fills the draft
 // exceptions, and returns the map plus the proposed exceptions, conflicts,
@@ -435,7 +458,7 @@ func classifyConventions(repoRoot string, inv *discover.Inventory, resolved *pro
 		for _, v := range vs {
 			paths = append(paths, v.Path)
 		}
-		list := strings.Join(paths, ", ")
+		list := sampleList(paths, conventionDetailSampleSize)
 		detail := fmt.Sprintf("%d path(s) deviate; exceptions proposed: %s", len(vs), list)
 		if rule.Severity == checks.SeverityError {
 			// A banned name that predates adoption is not a decision

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -414,6 +415,74 @@ func TestPreviewCommittedContractRejected(t *testing.T) {
 	}
 	if after := treeDigest(t, root, false); before != after {
 		t.Fatal("adopt wrote files when a committed contract exists")
+	}
+}
+
+// A large adoption's naming convention must not turn into a wall of
+// paths: the prose caps at conventionDetailSampleSize with a "+K more"
+// tail, but nothing about the data itself narrows — every path still
+// gets its own exception record and its own line in the review bundle.
+func TestConventionDetailCapsPathsButExceptionsStayComplete(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "go.mod", "module example.com/big\n\ngo 1.26\n")
+	writeFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
+	const total = 8 // more than conventionDetailSampleSize (5)
+	var want []string
+	for i := range total {
+		rel := fmt.Sprintf("utils/file%d.go", i)
+		writeFile(t, root, rel, "package utils\n")
+		want = append(want, rel)
+	}
+
+	rep, err := Preview(root)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	c := findConvention(t, rep.ConventionMap, "naming/naming-catch-all")
+	if c.Status != StatusException {
+		t.Fatalf("catch-all status = %q, want %q", c.Status, StatusException)
+	}
+	if !strings.Contains(c.Detail, fmt.Sprintf("%d pre-existing path(s)", total)) {
+		t.Errorf("detail does not lead with the true count %d: %q", total, c.Detail)
+	}
+	if !strings.Contains(c.Detail, fmt.Sprintf("+%d more", total-conventionDetailSampleSize)) {
+		t.Errorf("detail does not name how many were left out: %q", c.Detail)
+	}
+	if !strings.Contains(c.Detail, checks.ExceptionsFile) {
+		t.Errorf("detail does not point at where the full list lives: %q", c.Detail)
+	}
+	if strings.Count(c.Detail, "utils/file") != conventionDetailSampleSize {
+		t.Errorf("detail names %d paths directly, want exactly %d: %q",
+			strings.Count(c.Detail, "utils/file"), conventionDetailSampleSize, c.Detail)
+	}
+
+	// The record is complete regardless of what the prose shows.
+	if len(rep.Exceptions) != total {
+		t.Fatalf("Report.Exceptions = %d records, want %d", len(rep.Exceptions), total)
+	}
+	var gotPaths []string
+	for _, ex := range rep.Exceptions {
+		gotPaths = append(gotPaths, ex.Path)
+	}
+	slices.Sort(gotPaths)
+	slices.Sort(want)
+	if !slices.Equal(gotPaths, want) {
+		t.Errorf("Report.Exceptions paths = %v, want %v", gotPaths, want)
+	}
+
+	// The review bundle's exceptions section is untouched by the cap:
+	// every path still gets its own line there.
+	bundle, err := os.ReadFile(filepath.Join(root, ReviewPath))
+	if err != nil {
+		t.Fatalf("read review bundle: %v", err)
+	}
+	for _, rel := range want {
+		if !strings.Contains(string(bundle), rel) {
+			t.Errorf("review bundle is missing %s despite the capped convention detail", rel)
+		}
 	}
 }
 
