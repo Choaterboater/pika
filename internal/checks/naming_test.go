@@ -293,6 +293,27 @@ func TestNamingFileSizeReview(t *testing.T) {
 	}
 }
 
+// A binary file's "line count" is not a fact about the file, only an
+// artifact of how many 0x0A bytes its non-text bytes happen to
+// contain: a small image or certificate routinely "exceeds" the
+// 500-line review threshold this way, and no author can act on that
+// finding by splitting the file into smaller text. countLines must
+// recognize binary content (a NUL byte in the leading probe, the same
+// signal git itself uses) and decline to count it at all.
+func TestNamingFileSizeReviewSkipsBinaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	// A NUL byte up front marks it binary; pad with enough 0x0A bytes
+	// to comfortably clear the 500-line threshold if they were ever
+	// counted as lines.
+	binary := "\x00PNG" + strings.Repeat("\n\xff\x00\xfe", 600)
+	writeTree(t, dir, map[string]string{"assets/logo.png": binary})
+	for _, v := range Naming(dir, coreRules(), nil) {
+		if v.RuleID == "file-size-review" && v.Path == "assets/logo.png" {
+			t.Fatalf("binary file counted as lines: %+v", v)
+		}
+	}
+}
+
 func TestNamingGeneratedOwner(t *testing.T) {
 	dir := t.TempDir()
 	writeTree(t, dir, map[string]string{

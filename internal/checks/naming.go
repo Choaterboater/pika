@@ -7,6 +7,7 @@ package checks
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -372,8 +373,23 @@ func hasDotSegment(rel string) bool {
 	return false
 }
 
+// errBinaryFile marks a file countLines declined to count: file-lines is
+// a review threshold for source text, and a "line count" over binary
+// content is not a fact about the file, only an artifact of how many
+// 0x0A bytes its non-text bytes happen to contain — a small PNG or a
+// .p12 certificate can easily "exceed" 500 "lines" this way, and no
+// author can act on that finding by splitting the file into smaller
+// text.
+var errBinaryFile = errors.New("binary file")
+
 // countLines counts lines the way wc -l does: newline characters, plus a
-// non-empty trailing line without a final newline.
+// non-empty trailing line without a final newline. It returns
+// errBinaryFile without finishing the read when the file looks binary,
+// using the same signal git itself uses to classify a file as binary:
+// a NUL byte anywhere in the leading binaryProbeSize bytes. Text
+// encodings in real use (UTF-8, ASCII, Latin-1, UTF-16 with a BOM) do
+// not place NUL between meaningful bytes; binary formats (images,
+// archives, certificates, compiled output) do so routinely.
 func countLines(p string) (int, error) {
 	f, err := os.Open(p)
 	if err != nil {
@@ -382,10 +398,20 @@ func countLines(p string) (int, error) {
 	defer f.Close()
 
 	buf := make([]byte, 64*1024)
-	lines, last := 0, byte('\n')
+	lines, last, probed := 0, byte('\n'), 0
 	for {
 		n, rerr := f.Read(buf)
 		if n > 0 {
+			if probed < binaryProbeSize {
+				probeEnd := n
+				if probed+probeEnd > binaryProbeSize {
+					probeEnd = binaryProbeSize - probed
+				}
+				if bytes.IndexByte(buf[:probeEnd], 0) >= 0 {
+					return 0, errBinaryFile
+				}
+				probed += probeEnd
+			}
 			lines += bytes.Count(buf[:n], []byte{'\n'})
 			last = buf[n-1]
 		}
@@ -401,6 +427,13 @@ func countLines(p string) (int, error) {
 	}
 	return lines, nil
 }
+
+// binaryProbeSize is how far countLines looks for a NUL byte before
+// treating a file as text. git uses the same 8000-byte probe (see
+// buffer_is_binary in git's own source) to decide whether to run diff
+// on a file; matching it means a project's own .gitattributes-driven
+// intuition for "this is binary" agrees with pika's.
+const binaryProbeSize = 8000
 
 // declaresGenerator scans the first headerScanLines lines of p for a
 // generator declaration.
