@@ -1124,11 +1124,18 @@ consulting any source:
 ```
 skills projection: tampered AGENTS.md (harness codex) was edited by hand
 inside the pika skills markers: it records region digest sha256:d8c6… but its
-bytes now hash to sha256:7b41…; that region is kernel-owned, and `pika skills
-install` would DISCARD whatever is there rather than keep it — make the change
-in the canonical skill under .agents/skills/ (or in the profile pack guidance)
-and regenerate
+bytes now hash to sha256:7b41…; the first difference is at line 214, on disk:
+    A note somebody typed directly into the file.
+, the current render: (nothing — the other side inserts here); that region is
+kernel-owned, and `pika skills install` would DISCARD whatever is there rather
+than keep it — make the change in the canonical skill under .agents/skills/
+(or in the profile pack guidance) and regenerate
 ```
+
+The diff after the two digests locates the edit — the first line where the
+recorded bytes and a fresh render of the same sources disagree, shown from
+both sides — so recovering from a tampered region does not require pulling
+up version control just to see what changed.
 
 That independence is the point. Checking the region against its own digest
 *before* comparing it to its sources is what keeps a hand edit visible when a
