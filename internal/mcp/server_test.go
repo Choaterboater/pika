@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -526,7 +527,12 @@ func TestEnvelopeDeniedCodesAndAllowance(t *testing.T) {
 }
 
 func TestPreviewPlanProducesDrafts(t *testing.T) {
-	root := fixtureRepo(t, "", envelopeYAML(".project"))
+	// go@1's format/lint/typecheck are all autofill candidates on this
+	// bare go.mod fixture (no Makefile discovers anything), so the
+	// envelope must grant them the same as any other spawn preview_plan
+	// baselines.
+	doc := "schema: 1\nallow:\n  fs_write: [.project]\n  exec: [\"gofmt -l .\", \"go vet ./...\", \"go build -o /dev/null ./...\"]\n"
+	root := fixtureRepo(t, "", doc)
 	s := startServer(t, root)
 	s.initialize()
 
@@ -589,11 +595,16 @@ func TestPreviewPlanDeniedWithoutExecGrant(t *testing.T) {
 	}
 }
 
-// The mirror image: granting exec for exactly the discovered command lets
-// the preview run it, so the grant an operator is told to make is the one
-// the tool asks for.
+// The mirror image: granting exec for the discovered command AND the
+// pack hints go@1 would autofill into the empty slots lets the preview
+// run all of them, so the grants an operator is told to make are the
+// ones the tool actually asks for. Baselining the autofill candidates
+// (not just what discover found) is what proves, before apply ever
+// writes them into the contract, whether they will pass on this real
+// repository — the promise `autofill: true` makes is measured only
+// against a freshly scaffolded project, not arbitrary existing code.
 func TestPreviewPlanAllowedWithExecGrant(t *testing.T) {
-	doc := "schema: 1\nallow:\n  fs_write: [.project]\n  exec: [\"make test\"]\n"
+	doc := "schema: 1\nallow:\n  fs_write: [.project]\n  exec: [\"make test\", \"gofmt -l .\", \"go vet ./...\", \"go build -o /dev/null ./...\"]\n"
 	root := discoverableCheckRepo(t, doc)
 	s := startServer(t, root)
 	s.initialize()
@@ -601,11 +612,17 @@ func TestPreviewPlanAllowedWithExecGrant(t *testing.T) {
 	res := wantResult(t, s.callTool(1, "preview_plan", nil))
 	data := res["data"].(map[string]any)
 	baseline, ok := data["baselineChecks"].([]any)
-	if !ok || len(baseline) != 1 {
-		t.Fatalf("baselineChecks = %v, want the one discovered command", data["baselineChecks"])
+	if !ok || len(baseline) != 4 {
+		t.Fatalf("baselineChecks = %v, want the discovered command plus the three go@1 autofill candidates", data["baselineChecks"])
 	}
-	if got := baseline[0].(map[string]any)["command"]; got != "make test" {
-		t.Errorf("baseline command = %v, want %q", got, "make test")
+	var commands []string
+	for _, b := range baseline {
+		commands = append(commands, b.(map[string]any)["command"].(string))
+	}
+	for _, want := range []string{"make test", "gofmt -l .", "go vet ./...", "go build -o /dev/null ./..."} {
+		if !slices.Contains(commands, want) {
+			t.Errorf("baselineChecks commands = %v, missing %q", commands, want)
+		}
 	}
 	for _, draft := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(draft))); err != nil {
@@ -616,21 +633,21 @@ func TestPreviewPlanAllowedWithExecGrant(t *testing.T) {
 
 // The whole loop, through the real generator: an unadopted repository
 // with a discovered check command, an envelope produced by
-// `pika authorize --scope project --exec "make test"`, and a preview_plan
-// that runs. This is the assertion that authorize can express the grant
+// `pika authorize --scope project --exec ...`, and a preview_plan that
+// runs. This is the assertion that authorize can express the grant
 // preview_plan demands — the gap that made the canonical
 // envelope_denied remediation unusable before a contract exists.
 func TestPreviewPlanAllowedWithGeneratedExecGrant(t *testing.T) {
 	root := discoverableCheckRepo(t, "")
-	writeGeneratedEnvelope(t, root, authorize.ScopeProject, "make test")
+	writeGeneratedEnvelope(t, root, authorize.ScopeProject, "make test", "gofmt -l .", "go vet ./...", "go build -o /dev/null ./...")
 	s := startServer(t, root)
 	s.initialize()
 
 	res := wantResult(t, s.callTool(1, "preview_plan", nil))
 	data := res["data"].(map[string]any)
 	baseline, ok := data["baselineChecks"].([]any)
-	if !ok || len(baseline) != 1 {
-		t.Fatalf("baselineChecks = %v, want the one discovered command", data["baselineChecks"])
+	if !ok || len(baseline) != 4 {
+		t.Fatalf("baselineChecks = %v, want the discovered command plus the three go@1 autofill candidates", data["baselineChecks"])
 	}
 	// Without the explicit grant the same generated envelope must still
 	// deny: the scope alone never authorizes a discovered command.

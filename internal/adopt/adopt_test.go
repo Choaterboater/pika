@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -464,6 +465,71 @@ func TestPreviewNoWarningWhenClassified(t *testing.T) {
 	}
 	if len(rep.Warnings) != 0 {
 		t.Errorf("Warnings = %v, want none: this fixture is a real go module", rep.Warnings)
+	}
+}
+
+// A Go module with no Makefile leaves lint/typecheck/test empty in
+// discover.ExistingChecks, so `pika apply` autofills them from go@1's
+// hints (`go vet ./...`, `go build -o /dev/null ./...`, `go test
+// ./...`). Before this fix, Preview only baselined what discover
+// found — nothing, here — so a repository whose real code fails `go
+// vet` adopted with a silent, clean baseline and a contract whose
+// first `pika check` after apply was red. Reproduces the shape found
+// against real foreign repositories (a real `cargo clippy` failure on
+// ripgrep, a real `ruff format` failure on psf/requests): the pack
+// hint is measured only against a freshly scaffolded `pika init`
+// project, not against arbitrary pre-existing code.
+func TestPreviewBaselinesAutofilledPackHintsNotJustDiscoveredCommands(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "go.mod", "module example.com/vetfail\n\ngo 1.26\n")
+	// A real go vet finding: a Printf verb mismatched with its
+	// argument's type. This compiles — vet analyzes compiled code —
+	// and go vet ./... fails on it for real.
+	writeFile(t, root, "main.go", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Printf(\"%d\\n\", \"not a number\")\n}\n")
+
+	rep, err := Preview(root)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if _, ok := rep.Inventory.ExistingChecks["lint"]; ok {
+		t.Fatal("fixture leaked a discovered lint command; the test needs an empty slot to prove autofill is baselined")
+	}
+	lint := findBaseline(t, rep.BaselineChecks, "lint")
+	if lint.Status != "fail" {
+		t.Fatalf("baseline lint = %+v, want a failing `go vet` — this is the gate `pika check` will run red after apply, and Preview never ran it", lint)
+	}
+	if lint.Command != "go vet ./..." {
+		t.Errorf("baseline lint command = %q, want the go@1 autofill hint", lint.Command)
+	}
+}
+
+// A Go module whose real code is clean gets no autofill baseline
+// failure: the fix must not turn every ordinary adoption into a false
+// warning.
+func TestPreviewAutofillBaselinePassesOnCleanCode(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "go.mod", "module example.com/vetclean\n\ngo 1.26\n")
+	writeFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
+
+	rep, err := Preview(root)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	lint := findBaseline(t, rep.BaselineChecks, "lint")
+	if lint.Status != "pass" {
+		t.Errorf("baseline lint = %+v, want pass on real clean code", lint)
 	}
 }
 

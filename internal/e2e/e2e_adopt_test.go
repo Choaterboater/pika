@@ -189,11 +189,15 @@ func TestE2EPreviewPlanExecGrantLoop(t *testing.T) {
 		t.Fatalf("mcp server did not exit cleanly on EOF: %v\nstderr: %s", err, s.stderr.String())
 	}
 
-	// Step 3: follow the remediation literally.
-	runCLI(t, dir, 0, "authorize", "--scope", "project", "--exec", "make test", "--force")
+	// Step 3: follow the remediation literally, plus the go@1 autofill
+	// candidates (format/lint/typecheck) this fixture's bare Makefile
+	// leaves empty — preview_plan now baselines those too, before
+	// `pika apply` would ever write them into the contract unverified.
+	runCLI(t, dir, 0, "authorize", "--scope", "project",
+		"--exec", "make test", "--exec", "gofmt -l .", "--exec", "go vet ./...", "--exec", "go build -o /dev/null ./...", "--force")
 
 	// Step 4: the same call now runs, and the baseline really ran the
-	// granted command.
+	// granted commands.
 	s2 := startMCP(t, dir)
 	s2.request("initialize", map[string]any{"protocolVersion": "2024-11-05"})
 	result, errObj := s2.call("preview_plan", map[string]any{})
@@ -202,12 +206,19 @@ func TestE2EPreviewPlanExecGrantLoop(t *testing.T) {
 	}
 	data, _ := result["data"].(map[string]any)
 	baseline, ok := data["baselineChecks"].([]any)
-	if !ok || len(baseline) != 1 {
-		t.Fatalf("baselineChecks = %v, want the one discovered command", data["baselineChecks"])
+	if !ok || len(baseline) != 4 {
+		t.Fatalf("baselineChecks = %v, want the discovered command plus the three go@1 autofill candidates", data["baselineChecks"])
 	}
-	entry := baseline[0].(map[string]any)
-	if entry["command"] != "make test" || entry["status"] != "pass" {
-		t.Fatalf("baseline = %v, want make test to have run and passed", entry)
+	byCommand := map[string]map[string]any{}
+	for _, b := range baseline {
+		entry := b.(map[string]any)
+		byCommand[entry["command"].(string)] = entry
+	}
+	for _, want := range []string{"make test", "gofmt -l .", "go vet ./...", "go build -o /dev/null ./..."} {
+		entry, ok := byCommand[want]
+		if !ok || entry["status"] != "pass" {
+			t.Fatalf("baseline = %v, want %q to have run and passed", data["baselineChecks"], want)
+		}
 	}
 	for _, draft := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(draft))); err != nil {

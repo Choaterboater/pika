@@ -54,6 +54,7 @@ import (
 	"github.com/Choaterboater/pika/internal/checks"
 	"github.com/Choaterboater/pika/internal/contract"
 	"github.com/Choaterboater/pika/internal/discover"
+	"github.com/Choaterboater/pika/internal/initcmd"
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/goccy/go-yaml"
 )
@@ -246,22 +247,32 @@ func Preview(repoRoot string, opts ...Option) (*Report, error) {
 	if err != nil {
 		return nil, fmt.Errorf("adopt: %w", err)
 	}
+	detected := detectedProfiles(inv.DetectedLanguages)
+	resolved, err := profiles.Resolve(detected)
+	if err != nil {
+		return nil, fmt.Errorf("adopt: %w", err)
+	}
+	draft := buildDraft(repoRoot, inv, detected)
+
 	// Every spawn this preview performs is decided here, before the
 	// first one starts and before a draft exists: a denial must cost the
-	// repository nothing.
-	commands := baselineCommands(inv.ExistingChecks)
+	// repository nothing. That now includes the pack hints `pika apply`
+	// will autofill into whichever slots the repository left empty
+	// (initcmd.CommandsFromChecks — the exact function apply itself
+	// calls): autofill is measured only against a freshly scaffolded
+	// `pika init` repository (profiles/registry.go's own documented
+	// promise), so a real, pre-existing repository is exactly the case
+	// that promise was never tested against. Baselining only the
+	// commands discover found meant adopt could report a clean, quiet
+	// baseline while writing a contract whose very first `pika check`
+	// after apply was red — the operator learned that only after
+	// approving the draft.
+	commands := append(baselineCommands(inv.ExistingChecks), autofillBaselineCommands(draft, resolved.Checks)...)
 	if cfg.authorizeExec != nil {
 		if err := cfg.authorizeExec(spawnedArgv(commands)); err != nil {
 			return nil, err
 		}
 	}
-	resolved, err := profiles.Resolve([]string{profiles.CoreRef})
-	if err != nil {
-		return nil, fmt.Errorf("adopt: %w", err)
-	}
-
-	detected := detectedProfiles(inv.DetectedLanguages)
-	draft := buildDraft(repoRoot, inv, detected)
 
 	conventions, exceptions, conflicts, changes := classifyConventions(repoRoot, inv, resolved, draft)
 
@@ -588,6 +599,34 @@ func baselineCommands(existing map[string]string) []baselineCommand {
 	for _, verb := range sortedVerbs(existing) {
 		command := existing[verb]
 		out = append(out, baselineCommand{verb: verb, command: command, argv: strings.Fields(command)})
+	}
+	return out
+}
+
+// autofillBaselineCommands returns the baseline entries for every
+// contract slot `pika apply` would autofill from a pack hint: draft
+// declares no command for it (nothing discover found), and
+// initcmd.CommandsFromChecks — the exact function apply itself calls —
+// resolves a hint for it because the tool is on PATH and the pack
+// marks it autofill:true. These are the commands the operator has
+// never seen run, because nothing in the repository named them; they
+// are only ever pack knowledge about to be written on the
+// repository's behalf, so their baseline is the one chance to learn
+// whether that knowledge actually applies here before it lands in the
+// contract.
+func autofillBaselineCommands(draft *contract.Contract, cs profiles.CheckSet) []baselineCommand {
+	hints := initcmd.CommandsFromChecks(cs)
+	slots := make([]string, 0, len(hints))
+	for slot := range hints {
+		if strings.TrimSpace(draft.Commands[slot]) == "" {
+			slots = append(slots, slot)
+		}
+	}
+	slices.Sort(slots)
+	out := make([]baselineCommand, 0, len(slots))
+	for _, slot := range slots {
+		command := hints[slot]
+		out = append(out, baselineCommand{verb: slot, command: command, argv: strings.Fields(command)})
 	}
 	return out
 }
