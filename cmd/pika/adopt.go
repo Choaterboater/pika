@@ -70,6 +70,18 @@ func printAdoptReport(rep *adopt.Report, stdout io.Writer) {
 			fmt.Fprintf(stdout, "baseline %s: %s (%s, exit %d)\n", b.Verb, b.Status, b.Command, b.Exit)
 		}
 	}
+	// A red baseline is inherited repository state, not an adopt error, so
+	// adoption still succeeds and still exits 0 — refusing here would make
+	// every imperfect repository unadoptable, which is most of them. But
+	// printing the failures and then "drafts written" reads as success:
+	// cobra adopted with `make lint` already failing and nothing said so.
+	// The operator is about to run apply and inherit exactly these.
+	if failed := failedBaselines(rep.BaselineChecks); len(failed) > 0 {
+		fmt.Fprintf(stdout, "baseline is not green: %s %s failing before adoption, and %s after apply\n",
+			strings.Join(failed, ", "),
+			plural(len(failed), "is", "are"),
+			plural(len(failed), "that gate will fail", "those gates will fail"))
+	}
 	if len(rep.Conflicts) == 0 {
 		fmt.Fprintln(stdout, "conflicts: none")
 	} else {
@@ -94,6 +106,26 @@ func printAdoptReport(rep *adopt.Report, stdout io.Writer) {
 	for _, d := range rep.Preview {
 		fmt.Fprintf(stdout, "  %s\n", d.Path)
 	}
+}
+
+// failedBaselines names the discovered check verbs that did not pass, in
+// report order. These are the gates apply will hand to the ladder.
+func failedBaselines(checks []adopt.BaselineCheck) []string {
+	var failed []string
+	for _, b := range checks {
+		if b.Status != "pass" {
+			failed = append(failed, b.Verb)
+		}
+	}
+	return failed
+}
+
+// plural picks between a singular and a plural phrasing.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // orNone renders an empty summary value as "(none)".
