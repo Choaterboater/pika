@@ -107,8 +107,15 @@ type body struct {
 	digest   string
 }
 
+// newBody composes skills and guidance into the rendered region. skills
+// is reordered into readingOrder before anything is computed from it —
+// every consumer of a body (Install's write, Inspect's and Verify's
+// read-only recompute for comparison) must derive the same bytes from
+// the same on-disk skills, so the reorder belongs here once rather
+// than at each call site where forgetting it would silently desync a
+// write from the verification that is supposed to check it.
 func newBody(skills []canonical, guidance []profiles.GuidanceSet, from origin) body {
-	b := body{skills: skills, guidance: guidance, from: from}
+	b := body{skills: orderForReading(skills), guidance: guidance, from: from}
 	b.src = b.provenance()
 	core := b.renderCore()
 	b.digest = digestOf(core)

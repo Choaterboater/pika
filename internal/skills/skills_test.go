@@ -213,6 +213,36 @@ func TestRenderStripsFrontmatterAndDemotesHeadings(t *testing.T) {
 	}
 }
 
+// A projection renders the four canonical skills in reading order —
+// project-work first, project-maintain last — regardless of the order
+// loadCanonical happened to read them off disk (alphabetical:
+// project-maintain, project-research, project-review, project-work,
+// the exact reverse of reading order for the two endpoints). Getting
+// this wrong twice is the failure mode worth pinning: rendering out of
+// order is a readability regression nobody's test would otherwise
+// catch, and reordering only at one of Install's or Inspect's two call
+// sites would desync a write from its own verification.
+func TestProjectionRendersSkillsInReadingOrderNotAlphabetical(t *testing.T) {
+	alphabetical := []canonical{
+		{name: "project-maintain", body: []byte("# Maintain\n"), digest: digestOf([]byte("m"))},
+		{name: "project-research", body: []byte("# Research\n"), digest: digestOf([]byte("r"))},
+		{name: "project-review", body: []byte("# Review\n"), digest: digestOf([]byte("v"))},
+		{name: "project-work", body: []byte("# Work\n"), digest: digestOf([]byte("w"))},
+	}
+	got := string(newBody(alphabetical, nil, repoOrigin).region)
+	work := strings.Index(got, "## Work")
+	research := strings.Index(got, "## Research")
+	review := strings.Index(got, "## Review")
+	maintain := strings.Index(got, "## Maintain")
+	if work < 0 || research < 0 || review < 0 || maintain < 0 {
+		t.Fatalf("not all four headings rendered:\n%s", got)
+	}
+	if !(work < research && research < review && review < maintain) {
+		t.Errorf("skills rendered out of reading order: work=%d research=%d review=%d maintain=%d\n%s",
+			work, research, review, maintain, got)
+	}
+}
+
 // Guidance lines are folded across source lines in pack YAML for
 // readability. A bullet that carried those newlines through would end
 // the list item at the first one.

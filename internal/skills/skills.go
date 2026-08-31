@@ -225,6 +225,39 @@ func Inspect(root *repopath.Root, c *contract.Contract, resolved *profiles.Resol
 	return st, nil
 }
 
+// readingOrder is the sequence the four canonical skills render in
+// inside a projection: the one an agent reaches for on every ordinary
+// turn first, the one it reaches for only during an upgrade last —
+// matching the M5 design spec's own table (spec §5.1). Shipped() and
+// loadCanonical() sort by name instead, because alphabetical is a
+// simpler, storage-order-independent answer for install and status
+// reporting, where nothing about reading flow is at stake; the text a
+// human or agent actually reads follows this order.
+var readingOrder = map[string]int{
+	"project-work":     0,
+	"project-research": 1,
+	"project-review":   2,
+	"project-maintain": 3,
+}
+
+// orderForReading reorders skills into readingOrder. Any name not in it
+// — an operator's own additional skill, or the global routing preface,
+// which is never a canonical skill name — keeps the position it already
+// had relative to every other such name: the sort only ever resolves
+// ties between two names readingOrder actually ranks.
+func orderForReading(skills []canonical) []canonical {
+	out := slices.Clone(skills)
+	slices.SortStableFunc(out, func(a, b canonical) int {
+		ra, oka := readingOrder[a.name]
+		rb, okb := readingOrder[b.name]
+		if oka && okb {
+			return ra - rb
+		}
+		return 0
+	})
+	return out
+}
+
 // Install writes every canonical skill the repository is missing, then
 // regenerates every declared projection from the skills on disk.
 //
