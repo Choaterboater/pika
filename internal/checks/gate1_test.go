@@ -377,3 +377,56 @@ func TestGate1IgnoresRepositoriesWithNoDeclaredProjection(t *testing.T) {
 		t.Fatalf("Gate1 exit = %d, want 0 (output %q)", exit, output)
 	}
 }
+
+// Nothing ever forces `pika adopt`'s own placeholder owner to be
+// reassigned to a human, so an adopted repository can accumulate
+// durable waivers nobody has actually accepted. gate 1 cannot fail on
+// this — a waiver's rule-id, reason and review-condition are already
+// validated, and unreviewed is not invalid — but it must stop being
+// silent, the same way a missing-toolchain skip stopped being silent.
+func TestGate1WarnsAboutExceptionsStillOwnedByAdopt(t *testing.T) {
+	root := lockFixture(t, []string{"core@1"})
+	writeTree(t, root, map[string]string{
+		".project/exceptions.yaml": "src/utils:\n  rule-id: naming-catch-all\n  reason: r\n  owner: " + AutoRecordedOwner + "\n  review-condition: c\n" +
+			"src/helpers:\n  rule-id: naming-catch-all\n  reason: r\n  owner: " + AutoRecordedOwner + "\n  review-condition: c\n",
+	})
+	c := &contract.Contract{Schema: 1, Profiles: []string{"core@1"}}
+	resolved, err := profiles.Resolve([]string{"core@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exit, output, warnings := Gate1(root, c, resolved)
+	if exit != 0 {
+		t.Fatalf("Gate1 exit = %d, want 0: an unreviewed owner is a warning, never a failure (output %q)", exit, output)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "2") && strings.Contains(w, AutoRecordedOwner) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want one naming the count and %q", warnings, AutoRecordedOwner)
+	}
+}
+
+// A repository whose owners have all been reassigned gets no warning:
+// the signal must track the placeholder, not the mere existence of a
+// naming exception.
+func TestGate1NoWarningWhenOwnersAreReassigned(t *testing.T) {
+	root := lockFixture(t, []string{"core@1"})
+	writeTree(t, root, map[string]string{
+		".project/exceptions.yaml": "src/utils:\n  rule-id: naming-catch-all\n  reason: r\n  owner: alice\n  review-condition: c\n",
+	})
+	c := &contract.Contract{Schema: 1, Profiles: []string{"core@1"}}
+	resolved, err := profiles.Resolve([]string{"core@1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, warnings := Gate1(root, c, resolved)
+	for _, w := range warnings {
+		if strings.Contains(w, AutoRecordedOwner) {
+			t.Errorf("warnings = %v, want none naming %q: every owner here is a human", warnings, AutoRecordedOwner)
+		}
+	}
+}

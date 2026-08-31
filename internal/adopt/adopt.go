@@ -85,8 +85,6 @@ const (
 // a banned name adoption inherits, which is a stronger claim and gets the
 // wording a reviewer needs to judge it.
 const (
-	exceptionOwner = "pika adopt"
-
 	exceptionReason = "pre-existing repository layout; adopt records the convention instead of renaming files for style conformity"
 	exceptionReview = "re-review when the path is next modified or at the next convention audit"
 
@@ -107,7 +105,7 @@ func proposedException(v checks.Violation) checks.Exception {
 		RuleID:          v.RuleID,
 		Path:            v.Path,
 		Reason:          reason,
-		Owner:           exceptionOwner,
+		Owner:           checks.AutoRecordedOwner,
 		ReviewCondition: review,
 	}
 }

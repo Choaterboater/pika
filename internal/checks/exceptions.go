@@ -18,6 +18,16 @@ import (
 // repository root (spec §5.3: .project/exceptions.yaml).
 const ExceptionsFile = ".project/exceptions.yaml"
 
+// AutoRecordedOwner is the placeholder `pika adopt` writes into every
+// exception it inherits unattended (naming-catch-all and
+// naming-kebab-case records adopt cannot ask a human about at adoption
+// time). It is honest — nobody has accepted the record yet — but
+// nothing forces it to be reassigned, so a repository that never
+// revisits its exceptions accumulates durable waivers with no human
+// behind them. Gate 1 warns when it sees this owner; it does not fail,
+// because unreviewed is not invalid.
+const AutoRecordedOwner = "pika adopt"
+
 // Exception is one recorded exception to a naming rule (spec §5.3: an
 // exception requires a rule ID, a rationale, an owner, and a review
 // condition — all four must be non-empty). Path is the excepted

@@ -53,6 +53,17 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 		return 1, err.Error(), nil
 	}
 	var findings []string
+	unreviewed := 0
+	for _, ex := range exceptions {
+		if ex.Owner == AutoRecordedOwner {
+			unreviewed++
+		}
+	}
+	if unreviewed > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"%d exception(s) in %s are still owned by %q; nothing forces a human to accept them — reassign an owner, or record why the default stands",
+			unreviewed, ExceptionsFile, AutoRecordedOwner))
+	}
 	for _, v := range Naming(repoRoot, resolved.NamingRules, exceptions) {
 		line := fmt.Sprintf("%s: %s: %s", v.RuleID, v.Path, v.Message)
 		if v.Severity == SeverityError {
