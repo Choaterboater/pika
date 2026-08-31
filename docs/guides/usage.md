@@ -209,6 +209,24 @@ The verification ladder: contract integrity → formatting/lint/compile → test
 
 Gate 1 also validates that your `profiles.lock` matches the contract and the embedded pack digests — a hand-edited lock or drifted contract fails here.
 
+### Rung 5 is the real surface, and it has to be able to fail
+
+`smoke` is the rung that runs the product. A `smoke:` command that prints a
+version string fills the slot and can never fail, which makes it a gate in
+name only — pika's own was `go run ./cmd/pika version` until 0.5.0, and every
+defect closed on 2026-08-30 shipped behind it green. None of them was findable
+by reading; all of them were found by running the product once.
+
+So point the slot at something that exercises the shipped artifact the way a
+user does, and make every assertion say what it expected and what it got.
+pika's own is [`internal/smoke`](../../internal/smoke): it builds the binary
+from the working tree and drives it as a subprocess through `init` → `check` →
+`improve` → a second `improve` over the branch the first one left → `skills
+install` and a hand-edited region → a corrupted `profiles.lock` → `doctor`,
+inside temp repositories it removes when it ends. The agent boundary is a fake
+`codex` binary on `PATH`, so there is no model call and no network, and `pika
+check --ci` stays provably LLM-free with the gate in it.
+
 ### The gates report; they do not fix
 
 A verification gate never edits the tree it is verifying. The format gate in
@@ -321,7 +339,7 @@ ok    gate.format    gofmt -l .
 ok    gate.lint      go vet ./...
 ok    gate.typecheck go build -o /dev/null ./...
 ok    gate.test      go test ./... -count=1
-ok    gate.smoke     go run ./cmd/pika version
+ok    gate.smoke     go run ./internal/smoke
 ok    git            git is available
 ```
 

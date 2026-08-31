@@ -16,7 +16,7 @@ commands:
   lint: go vet ./...
   typecheck: go build -o /dev/null ./...
   test: go test ./... -count=1
-  smoke: go run ./cmd/pika version
+  smoke: go run ./internal/smoke
 agents:
   builder:
     runtime: codex

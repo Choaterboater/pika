@@ -254,6 +254,16 @@ pika's own naming and file-size rules skip dot-prefixed path segments, so `.proj
 
 Cross-platform: macOS, Linux, Windows. The txn/verify fsync paths use build-tagged sync implementations (Windows tolerates read-mode `FlushFileBuffers` denials, documented in `internal/fsutil`). Process liveness is build-tagged too, and on Windows it cannot be determined — see the known gaps in [docs/reference/m2-delta.md](docs/reference/m2-delta.md#7-known-gaps-deliberately-not-closed).
 
+### The smoke gate runs the product
+
+Rung 5 of the ladder is the real-surface smoke test, and pika's own was `go run ./cmd/pika version` until 0.5.0 — a command that printed a constant and could not fail. Every defect closed on 2026-08-30 shipped behind it green: an agent invocation the real `codex` rejected before reading a byte, a leftover run branch that killed every later run, and a lock remedy that corrupts a correct repository. None was findable by reading; all were found by running the product once.
+
+`.project/contract.yaml` now points `smoke:` at [`internal/smoke`](internal/smoke), which builds the binary from the working tree and drives it **as a subprocess** through the lifecycle an operator performs — `init` then `check`, `improve` over a planted defect, a second `improve` over the branch the first one left, `skills install` and a hand-edited kernel region, a corrupted `profiles.lock`, `doctor` — inside temp repositories it removes when it ends. Every assertion reports what it expected and what it got, and a failing step names itself. The agent boundary is `internal/e2e`'s fake `codex` on `PATH`, so there is no model call and no network, and it runs in about 12 seconds.
+
+```sh
+go run ./internal/smoke
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
