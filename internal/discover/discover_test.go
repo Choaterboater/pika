@@ -126,6 +126,40 @@ func TestMonorepoPnpmWorkspaceSplit(t *testing.T) {
 	}
 }
 
+// The same split, for a Cargo workspace: no corpus row and no prior
+// test exercised it, the same shape that hid the Justfile/Taskfile
+// name defect until a real repository was pointed at it. Confirmed
+// working here so a future regression has something to trip.
+func TestMonorepoCargoWorkspaceSplit(t *testing.T) {
+	inv := inventoryFromFixture(t, "monorepo-cargo")
+	if !slices.Contains(inv.DetectedLanguages, "rust") {
+		t.Fatalf("expected rust in %v", inv.DetectedLanguages)
+	}
+	if !slices.Contains(inv.DetectedKinds, "workspace") {
+		t.Fatalf("expected workspace in kinds %v", inv.DetectedKinds)
+	}
+	if len(inv.Packages) != 2 {
+		t.Fatalf("expected 2 packages, got %d: %+v", len(inv.Packages), inv.Packages)
+	}
+	roots := []string{}
+	names := map[string]string{}
+	for _, p := range inv.Packages {
+		roots = append(roots, p.Root)
+		names[p.Root] = p.Name
+		if p.Language != "rust" {
+			t.Errorf("package %+v language = %q, want rust", p, p.Language)
+		}
+	}
+	slices.Sort(roots)
+	want := []string{"crates/a", "crates/b"}
+	if !slices.Equal(roots, want) {
+		t.Fatalf("package roots = %v, want %v", roots, want)
+	}
+	if names["crates/a"] != "pkg-a" || names["crates/b"] != "pkg-b" {
+		t.Errorf("package names = %v, want crates/a=pkg-a, crates/b=pkg-b", names)
+	}
+}
+
 func TestSingleProjectEmitsExactlyOnePackage(t *testing.T) {
 	for _, name := range []string{"ts-single", "py-single", "swift-xcode", "rust-cargo", "go-mod"} {
 		inv := inventoryFromFixture(t, name)
