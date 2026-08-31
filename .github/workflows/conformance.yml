@@ -1,7 +1,7 @@
 name: conformance
 
 # The conformance corpus runs pika against real foreign repositories:
-# five pinned checkouts, cloned over the network, driven through
+# seven pinned checkouts, cloned over the network, driven through
 # `adopt` -> `apply` -> `check` with their own toolchains spawned for
 # real.
 #
@@ -46,20 +46,26 @@ jobs:
         with:
           go-version: "1.26"
 
-      # python@1's format gate is `ruff format --check .`, and psf/requests
-      # is expected to fail it. Without ruff on PATH that gate would skip
-      # as a missing toolchain and the row would not be exercised at all,
-      # so the corpus refuses to pretend: it skips the whole row by name.
-      # Installing ruff is what turns that skip into coverage.
+      # python@1's own commands are `ruff format --check .`, `ruff check
+      # .`, `mypy .` and `pytest`, and two rows need them: psf/requests
+      # is expected to fail the format gate, and pytest-dev/iniconfig
+      # runs all four green. Without these on PATH those gates would
+      # skip as missing toolchains, so the corpus refuses to pretend and
+      # skips the whole row by name. Installing them is what turns that
+      # skip into coverage.
       #
-      # `ruff --version` is part of the step: an install that landed
-      # somewhere off PATH would otherwise become a quiet
+      # The `--version` calls are part of the step: an install that
+      # landed somewhere off PATH would otherwise become a quiet
       # missing-toolchain skip, and a corpus that loses a row without
       # anyone noticing is the failure mode this whole package is about.
-      - name: Install ruff
+      - name: Install the Python toolchain the corpus spawns
         run: |
           pipx install ruff
+          pipx install mypy
+          pipx install pytest
           ruff --version
+          mypy --version
+          pytest --version
 
       # go, make, node/npm and cargo are already on both runner images;
       # swift is on macOS only, so the swift row skips by name on Linux.
@@ -68,7 +74,7 @@ jobs:
       # the row rather than lying if a future image ships one.
       - name: Toolchains present
         run: |
-          for t in git make go npm cargo swift ruff golangci-lint xo; do
+          for t in git make go npm cargo swift ruff mypy pytest golangci-lint xo; do
             printf '%-16s %s\n' "$t" "$(command -v "$t" || echo 'not installed')"
           done
 

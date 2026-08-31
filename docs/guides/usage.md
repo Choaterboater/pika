@@ -257,19 +257,21 @@ defects appeared that self-governance structurally could not surface:
   was unadoptable.
 
 [`internal/conformance`](../../internal/conformance) is the corpus that
-catches the next one. It pins five real repositories to exact commits, runs
+catches the next one. It pins seven real repositories to exact commits, runs
 each through `adopt` → `apply` → `check --all`, and grades the result against
 expectations recorded in the manifest as data:
 
 | Repository | Pack | What it buys |
 |---|---|---|
 | spf13/cobra `v1.9.1` | go@1 | Makefile-driven commands; `make fmt` prints and exits 0, and the format rung must pass |
+| golang/sync `v0.21.0` | go@1 | no command source of its own, so go@1's four hints run for real: `gofmt -l .`, `go vet ./...`, `go build -o /dev/null ./...`, `go test ./...` |
 | psf/requests `v2.32.5` | python@1 | two files named `utils`; gate 1 must pass anyway |
+| pytest-dev/iniconfig `v2.3.0` | python@1 | python@1's four commands all run and all pass: `ruff format --check .`, `ruff check .`, `mypy .`, `pytest` |
 | sindresorhus/got `v14.4.7` | typescript@1 | a whole `utils/` directory, and three rungs that legitimately find no command |
-| dtolnay/anyhow `1.0.99` | rust@1 | the only row that goes green end to end, with real `cargo` gates |
+| dtolnay/anyhow `1.0.99` | rust@1 | real `cargo` gates, green end to end |
 | apple/swift-argument-parser `1.8.2` | swift@1 | several hundred inherited naming exceptions, and real `swift build`/`swift test` |
 
-Three properties are worth naming, because a corpus without them rots:
+Four properties are worth naming, because a corpus without them rots:
 
 **An unexpected pass fails the run.** cobra's `lint` rung is expected to fail
 on a `golangci-lint` that is not installed. The day it starts passing,
@@ -288,6 +290,26 @@ conformance failure, and neither is silent.
 before pika is invoked at all, so a fetch that fails is not evidence about
 pika and is reported as a skip naming the host. Conflating the two makes a
 corpus useless in exactly the situation it is most tempting to ignore.
+
+**Detecting a pack is not running it, and the corpus says which is which.**
+Every row records the command each rung spawned, not just its colour. cobra
+is detected as go@1 and then runs `make fmt` and `make lint`, so its green
+ladder says nothing about `gofmt -l .`; requests is detected as python@1 and
+dies at the format rung, so python@1's other three commands never start.
+`CoverageOf` subtracts what the rows ran from what the packs declare and the
+result is printed by every run:
+
+```
+  go@1 format             fill  gofmt -l .                                   ran in golang-x-sync
+  ...
+  typescript@1 test       hint  npm test                                     NOT RUN ON FOREIGN CODE
+  14 of 19 declared pack commands have executed against a repository pika did not write
+```
+
+The five that have not are listed in `Unexercised` with the reason, and that
+list is graded in both directions: a declared command missing from both the
+corpus and the list fails by name, and an entry for a command some row has
+started running fails too and has to be deleted.
 
 It is off unless asked. Cloning is slow and needs the network, so it must
 never run inside `go test ./...` or `pika check`:

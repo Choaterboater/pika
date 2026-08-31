@@ -18,10 +18,22 @@
 //
 // A repository is a row in Corpus: the URL, an exact commit SHA, the
 // profiles adopt must detect, and the verdict each rung of the ladder
-// must reach. Adding a repository is a manifest edit and nothing else.
-// An UNEXPECTED PASS fails the run exactly as an unexpected failure
-// does: a corpus that only notices regressions in one direction rots
-// silently into a corpus that notices nothing.
+// must reach along with the command that reached it. Adding a
+// repository is a manifest edit and nothing else. An UNEXPECTED PASS
+// fails the run exactly as an unexpected failure does: a corpus that
+// only notices regressions in one direction rots silently into a corpus
+// that notices nothing.
+//
+// # Detecting a pack is not running it
+//
+// Every V1 pack had a row before coverage.go existed, and the test that
+// said so was green — while cobra's Makefile overrode all four Go
+// commands and requests died at its first rung, so go@1's and
+// python@1's own hints had never been spawned on foreign code at all.
+// Each rung therefore records the command it ran, and CoverageOf
+// subtracts what the rows ran from what the packs declare. The
+// remainder is Unexercised, with a reason per entry, graded in both
+// directions.
 //
 // # Off unless asked, and honest about why it is off
 //
@@ -33,12 +45,6 @@
 // environment variable keeps every line compiled and vetted on every
 // ordinary run and moves only the network work behind the switch.
 package conformance
-
-import (
-	"fmt"
-	"os/exec"
-	"strings"
-)
 
 // EnabledEnv is the switch. Anything other than "1" and the corpus
 // skips, naming itself in the skip so a reader of the report knows the
@@ -80,6 +86,23 @@ type GateWant struct {
 	// discovered, toolchain not installed, an earlier gate failed, no
 	// changed files in scope — mean four different things.
 	Reason string
+
+	// Cmd is the whole command line the rung must spawn, argv joined
+	// with single spaces, exactly as `check --json` reports it.
+	//
+	// It is what turns a ladder of verdicts into a record of what ran.
+	// cobra's Makefile overrides every Go command pika would otherwise
+	// use, so its green format rung says nothing about `gofmt -l .`;
+	// without this field the manifest could not tell the two apart, and
+	// the fact that go@1's own hints had never executed on foreign code
+	// was visible only in a paragraph somebody wrote by hand. The
+	// coverage table in coverage.go is derived from these strings.
+	//
+	// Empty when the rung spawns nothing: the in-process contract gate,
+	// a rung that found no command, a rung skipped behind an earlier
+	// failure. A toolchain-not-installed skip is the one skip that does
+	// record a command — verify resolved it and exec never forked it.
+	Cmd string
 }
 
 // Repo is one foreign repository in the corpus, pinned to an exact
@@ -137,6 +160,14 @@ type Repo struct {
 // pinned commit. The three that found the original defects are here
 // because they found them; the Rust and Swift rows are here because
 // those two packs had never met code pika did not scaffold.
+//
+// The two rows added last are here because DETECTING a pack is not
+// RUNNING it. cobra overrides every Go command with its Makefile and
+// requests stops dead at the format rung, so go@1's and python@1's own
+// command hints — the ones `pika init` writes into every repository it
+// scaffolds — had never executed against foreign code at all. Which
+// commands have actually run is now derived from the Cmd each row
+// records, and coverage.go states the answer as data.
 var Corpus = []Repo{
 	{
 		Name: "spf13-cobra",
@@ -156,11 +187,43 @@ var Corpus = []Repo{
 		Profiles: []string{"core@1", "go@1"},
 		Gates: []GateWant{
 			{ID: "contract", Status: StatusPass},
-			{ID: "format", Status: StatusPass},
-			{ID: "lint", Status: StatusFail, Exit: 2},
+			{ID: "format", Status: StatusPass, Cmd: "make fmt"},
+			{ID: "lint", Status: StatusFail, Exit: 2, Cmd: "make lint"},
 			{ID: "typecheck", Status: StatusSkip, Reason: "skipped: gate lint failed"},
 			{ID: "test", Status: StatusSkip, Reason: "skipped: gate lint failed"},
 			{ID: "smoke", Status: StatusSkip, Reason: "skipped: gate lint failed"},
+		},
+	},
+	{
+		Name: "golang-x-sync",
+		URL:  "https://github.com/golang/sync",
+		SHA:  "5071ed6a9f1617117556b66384f765c934de3698",
+		Ref:  "v0.21.0",
+		Why: "The Go row cobra cannot be. cobra drives every check through a " +
+			"Makefile, so discovery fills all four Go slots and go@1's own " +
+			"hints — the commands `pika init` writes into every Go " +
+			"repository it scaffolds — had never once run against code pika " +
+			"did not write. golang.org/x/sync carries no Makefile, Justfile, " +
+			"Taskfile or package.json, so discovery finds nothing, apply " +
+			"autofills the pack's hints, and `gofmt -l .`, `go vet ./...`, " +
+			"`go build -o /dev/null ./...` and `go test ./...` each spawn " +
+			"for real. Its go.mod requires nothing, so the ladder needs no " +
+			"network once the tree is cached.",
+		Drift: "gofmt's formatting rules and go vet's analyzer set, which both " +
+			"travel with the Go release; and go.mod's `go 1.25.0` line, " +
+			"which makes every rung fail outright on an older toolchain " +
+			"instead of skipping — Needs can only ask whether `go` is on " +
+			"PATH, not which one. Read `go version` before believing a " +
+			"regression.",
+		Needs:    []string{"git", "go"},
+		Profiles: []string{"core@1", "go@1"},
+		Gates: []GateWant{
+			{ID: "contract", Status: StatusPass},
+			{ID: "format", Status: StatusPass, Cmd: "gofmt -l ."},
+			{ID: "lint", Status: StatusPass, Cmd: "go vet ./..."},
+			{ID: "typecheck", Status: StatusPass, Cmd: "go build -o /dev/null ./..."},
+			{ID: "test", Status: StatusPass, Cmd: "go test ./..."},
+			{ID: "smoke", Status: StatusSkip, Reason: "no command discovered for smoke"},
 		},
 	},
 	{
@@ -180,11 +243,48 @@ var Corpus = []Repo{
 		Profiles: []string{"core@1", "python@1"},
 		Gates: []GateWant{
 			{ID: "contract", Status: StatusPass},
-			{ID: "format", Status: StatusFail, Exit: 1},
+			{ID: "format", Status: StatusFail, Exit: 1, Cmd: "ruff format --check ."},
 			{ID: "lint", Status: StatusSkip, Reason: "skipped: gate format failed"},
 			{ID: "typecheck", Status: StatusSkip, Reason: "skipped: gate format failed"},
 			{ID: "test", Status: StatusSkip, Reason: "skipped: gate format failed"},
 			{ID: "smoke", Status: StatusSkip, Reason: "skipped: gate format failed"},
+		},
+	},
+	{
+		Name: "pytest-dev-iniconfig",
+		URL:  "https://github.com/pytest-dev/iniconfig",
+		SHA:  "7faed13ae50bad7c5da3f5782f254a8a7736bb84",
+		Ref:  "v2.3.0",
+		Why: "The Python row requests cannot be. requests stops at `ruff " +
+			"format --check .` failing, and a failed rung skips the rest of " +
+			"the ladder, so python@1's other three commands had never run " +
+			"on foreign code. iniconfig is the only repository of the 42 " +
+			"surveyed where all four execute and pass: pure-stdlib, " +
+			"ruff-formatted, ruff-clean, clean under `mypy .` with the " +
+			"repository's own `strict = true`, and a suite that needs " +
+			"nothing installed but pytest.\n" +
+			"One honest caveat, because a rung nobody understands is a rung " +
+			"nobody can trust: iniconfig uses a src/ layout, so the bare " +
+			"`pytest` python@1 declares collects the checkout's test files " +
+			"and imports the iniconfig in site-packages — the copy pytest " +
+			"itself depends on — rather than the tree under test. The rung " +
+			"asserts that pika resolves and spawns python@1's test command " +
+			"and reads its status. The three rungs before it read the " +
+			"checkout's own source off disk and are unaffected.",
+		Drift: "ruff's formatter style and lint rule set, and mypy's, both " +
+			"judged by whichever version the machine has; and pytest's " +
+			"dependency on iniconfig — the day pytest drops it, the test " +
+			"rung turns red at collection with an ImportError, which is a " +
+			"fact about the packaging ecosystem and not about pika.",
+		Needs:    []string{"git", "ruff", "mypy", "pytest"},
+		Profiles: []string{"core@1", "python@1"},
+		Gates: []GateWant{
+			{ID: "contract", Status: StatusPass},
+			{ID: "format", Status: StatusPass, Cmd: "ruff format --check ."},
+			{ID: "lint", Status: StatusPass, Cmd: "ruff check ."},
+			{ID: "typecheck", Status: StatusPass, Cmd: "mypy ."},
+			{ID: "test", Status: StatusPass, Cmd: "pytest"},
+			{ID: "smoke", Status: StatusSkip, Reason: "no command discovered for smoke"},
 		},
 	},
 	{
@@ -210,7 +310,12 @@ var Corpus = []Repo{
 			{ID: "format", Status: StatusSkip, Reason: "no command discovered for format"},
 			{ID: "lint", Status: StatusSkip, Reason: "no command discovered for lint"},
 			{ID: "typecheck", Status: StatusSkip, Reason: "no command discovered for typecheck"},
-			{ID: "test", Status: StatusFail, Exit: 127},
+			// `npm run test`, not typescript@1's `npm test` hint: this is
+			// got's own package.json script, which discovery found and
+			// wrote into the slot. The two spellings look alike and are
+			// not the same command, which is exactly why the manifest
+			// records the string rather than trusting the rung's colour.
+			{ID: "test", Status: StatusFail, Exit: 127, Cmd: "npm run test"},
 			{ID: "smoke", Status: StatusSkip, Reason: "skipped: gate test failed"},
 		},
 	},
@@ -232,10 +337,10 @@ var Corpus = []Repo{
 		Profiles: []string{"core@1", "rust@1"},
 		Gates: []GateWant{
 			{ID: "contract", Status: StatusPass},
-			{ID: "format", Status: StatusPass},
-			{ID: "lint", Status: StatusPass},
-			{ID: "typecheck", Status: StatusPass},
-			{ID: "test", Status: StatusPass},
+			{ID: "format", Status: StatusPass, Cmd: "cargo fmt -- --check"},
+			{ID: "lint", Status: StatusPass, Cmd: "cargo clippy -- -D warnings"},
+			{ID: "typecheck", Status: StatusPass, Cmd: "cargo build"},
+			{ID: "test", Status: StatusPass, Cmd: "cargo test"},
 			{ID: "smoke", Status: StatusSkip, Reason: "no command discovered for smoke"},
 		},
 	},
@@ -256,143 +361,9 @@ var Corpus = []Repo{
 			{ID: "contract", Status: StatusPass},
 			{ID: "format", Status: StatusSkip, Reason: "no command discovered for format"},
 			{ID: "lint", Status: StatusSkip, Reason: "no command discovered for lint"},
-			{ID: "typecheck", Status: StatusPass},
-			{ID: "test", Status: StatusPass},
+			{ID: "typecheck", Status: StatusPass, Cmd: "swift build"},
+			{ID: "test", Status: StatusPass, Cmd: "swift test"},
 			{ID: "smoke", Status: StatusSkip, Reason: "no command discovered for smoke"},
 		},
 	},
-}
-
-// Missing reports why this machine cannot exercise r, or "" when it can.
-//
-// The check runs before anything is cloned, and its verdict is about the
-// machine, never about pika. Both halves matter: a row whose toolchain
-// is absent cannot reach its recorded outcome, and a row whose recorded
-// outcome depends on a tool's absence cannot be trusted on a machine
-// that has it.
-func (r Repo) Missing() string {
-	var why []string
-	for _, tool := range r.Needs {
-		if _, err := exec.LookPath(tool); err != nil {
-			why = append(why, fmt.Sprintf("%s is not on PATH", tool))
-		}
-	}
-	for _, tool := range r.Absent {
-		if path, err := exec.LookPath(tool); err == nil {
-			why = append(why, fmt.Sprintf("%s IS on PATH (%s); this row's recorded outcome depends on its absence", tool, path))
-		}
-	}
-	return strings.Join(why, "; ")
-}
-
-// Pass reports whether the manifest expects the whole ladder to pass,
-// which is what `pika check` derives its exit code from.
-func (r Repo) Pass() bool {
-	for _, g := range r.Gates {
-		if g.Status == StatusFail {
-			return false
-		}
-	}
-	return true
-}
-
-// Grade compares the ladder pika reported against what the manifest
-// expects and returns one line per disagreement.
-//
-// A pass where the manifest recorded a failure is a disagreement, and
-// says so in the same words as the reverse. cobra's lint rung is
-// expected to fail on an absent golangci-lint; the day it starts passing
-// something changed — the Makefile, the runner image, or pika's reading
-// of an exit status — and a corpus that shrugged at good news would have
-// nothing left to say about bad news either.
-func (r Repo) Grade(gates []Gate) []string {
-	var found []string
-	got := make(map[string]Gate, len(gates))
-	order := make([]string, 0, len(gates))
-	for _, g := range gates {
-		got[g.ID] = g
-		order = append(order, g.ID)
-	}
-	want := make([]string, 0, len(r.Gates))
-	for _, w := range r.Gates {
-		want = append(want, w.ID)
-	}
-	if strings.Join(order, " ") != strings.Join(want, " ") {
-		found = append(found, fmt.Sprintf("the ladder ran [%s]; the manifest expects [%s]",
-			strings.Join(order, " "), strings.Join(want, " ")))
-	}
-	for _, w := range r.Gates {
-		g, ok := got[w.ID]
-		if !ok {
-			found = append(found, fmt.Sprintf("gate %s: the manifest expects %s, and the rung did not run at all", w.ID, w.Status))
-			continue
-		}
-		if g.Status != w.Status {
-			found = append(found, fmt.Sprintf("gate %s: wanted %s, got %s\n    %s", w.ID, w.Status, g.Status, g.Evidence()))
-			continue
-		}
-		switch w.Status {
-		case StatusFail:
-			if g.Exit != w.Exit {
-				found = append(found, fmt.Sprintf("gate %s: failed with exit %d, and the manifest records exit %d\n    %s", w.ID, g.Exit, w.Exit, g.Evidence()))
-			}
-		case StatusSkip:
-			if !strings.Contains(g.Reason, w.Reason) {
-				found = append(found, fmt.Sprintf("gate %s: skipped for %q, and the manifest records a reason containing %q", w.ID, g.Reason, w.Reason))
-			}
-		}
-	}
-	return found
-}
-
-// Coherent returns one line per gate result that contradicts itself,
-// whatever the manifest expects of it.
-//
-// These are the claims no repository is allowed to break, because they
-// are about the report rather than about the code being reported on. The
-// first of them — a failed gate carrying exit 0 — is the line that
-// started this corpus: `FAIL format exit=0` told an operator the command
-// succeeded and the gate failed in the same breath.
-func Coherent(gates []Gate) []string {
-	var found []string
-	for _, g := range gates {
-		switch {
-		case g.ID == "":
-			found = append(found, "a gate reported no id, so nothing it said can be attributed")
-		case g.Status == StatusFail && g.Exit == 0:
-			found = append(found, fmt.Sprintf("gate %s failed and reported exit 0; a failed gate never carries the exit status of a command that succeeded\n    %s", g.ID, g.Evidence()))
-		case g.Status == StatusFail && g.Reason == "":
-			found = append(found, fmt.Sprintf("gate %s failed and gave no reason\n    %s", g.ID, g.Evidence()))
-		case g.Status == StatusSkip && strings.TrimSpace(g.Reason) == "":
-			found = append(found, fmt.Sprintf("gate %s skipped without naming a reason; an unnamed skip is indistinguishable from a pass\n    %s", g.ID, g.Evidence()))
-		case g.Status == StatusPass && g.Exit != 0:
-			found = append(found, fmt.Sprintf("gate %s passed and reported exit %d\n    %s", g.ID, g.Exit, g.Evidence()))
-		case g.Status != StatusPass && g.Status != StatusFail && g.Status != StatusSkip:
-			found = append(found, fmt.Sprintf("gate %s reported status %q, which is none of pass, fail, skip", g.ID, g.Status))
-		}
-	}
-	return found
-}
-
-// Unrecorded returns the naming deviations adopt reported as conflicts
-// but did not record as exceptions.
-//
-// This is the c73f368 defect stated as an invariant instead of as a list
-// of paths: adopt walks the tree, finds names core@1 forbids, and must
-// record every one of them in the contract it writes. A deviation
-// reported to the human and withheld from the contract is an adoption
-// that cannot pass its own gate 1, which is how psf/requests and
-// sindresorhus/got were dead on arrival.
-func Unrecorded(rep AdoptReport) []string {
-	recorded := make(map[string]bool, len(rep.Exceptions))
-	for _, e := range rep.Exceptions {
-		recorded[e.RuleID+"\x00"+e.Path] = true
-	}
-	var found []string
-	for _, c := range rep.Conflicts {
-		if !recorded[c.RuleID+"\x00"+c.Path] {
-			found = append(found, fmt.Sprintf("adopt reported %s on %s as a conflict and recorded no exception for it", c.RuleID, c.Path))
-		}
-	}
-	return found
 }

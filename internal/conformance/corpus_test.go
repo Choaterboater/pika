@@ -21,6 +21,13 @@ import (
 // sha40 matches an exact commit object name.
 var sha40 = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+// missingToolSkip is the skip verify records when a gate's own binary is
+// not on PATH. Spelled out rather than imported, like every other reason
+// the manifest matches on: these are the words an outside consumer
+// reads off `check --json`, and a test that imported the constant would
+// assert only that pika agrees with itself.
+const missingToolSkip = "toolchain not installed"
+
 // Every row must be addressable, pinned, and complete. A branch or a tag
 // in SHA would make an upstream commit indistinguishable from a pika
 // regression, which is the one thing the corpus may never confuse.
@@ -60,9 +67,10 @@ func TestEveryRowIsPinnedAndComplete(t *testing.T) {
 }
 
 // The manifest itself must not be able to express `FAIL ... exit=0`, or
-// a skip whose reason is unnamed. The corpus asserts both of pika; a
-// manifest that could record either would be able to bless the very
-// contradiction the corpus exists to catch.
+// a skip whose reason is unnamed, or a rung that produced a verdict
+// without naming the command that produced it. The corpus asserts all
+// three of pika; a manifest that could record any of them would be able
+// to bless the very contradiction the corpus exists to catch.
 func TestTheManifestCannotRecordAnIncoherentExpectation(t *testing.T) {
 	for _, r := range Corpus {
 		gateSeen := map[string]bool{}
@@ -89,6 +97,22 @@ func TestTheManifestCannotRecordAnIncoherentExpectation(t *testing.T) {
 				}
 			default:
 				t.Errorf("%s: gate %s expects status %q, which is none of pass, fail, skip", r.Name, g.ID, g.Status)
+			}
+			// A verdict without a command is the shape the whole
+			// coverage question turns on: cobra's green format rung and
+			// x/sync's green format rung look identical until the
+			// manifest says one ran `make fmt` and the other `gofmt -l
+			// .`. The contract gate is the only rung that legitimately
+			// spawns nothing — it runs in process.
+			ran := g.Status == StatusPass || g.Status == StatusFail
+			switch {
+			case ran && g.ID != "contract" && g.Cmd == "":
+				t.Errorf("%s: gate %s expects a %s and names no command; a verdict nobody can attribute to a command is how a pack's hints go unrun while its row stays green", r.Name, g.ID, g.Status)
+			case ran && g.ID == "contract" && g.Cmd != "":
+				t.Errorf("%s: the contract gate runs in process and records the command %q", r.Name, g.Cmd)
+			case g.Status == StatusSkip && g.Cmd != "" && !strings.Contains(g.Reason, missingToolSkip):
+				t.Errorf("%s: gate %s expects a skip for %q and records the command %q; only a %q skip resolves a command it never spawned",
+					r.Name, g.ID, g.Reason, g.Cmd, missingToolSkip)
 			}
 		}
 	}
@@ -132,6 +156,18 @@ func ladder(rows ...string) []Gate {
 	return gates
 }
 
+// ran sets the argv on one rung. The compact ladder spelling cannot
+// carry it: a skip reason contains colons, so it has to be the last
+// field.
+func ran(gates []Gate, id string, argv ...string) []Gate {
+	for i := range gates {
+		if gates[i].ID == id {
+			gates[i].Cmd = argv
+		}
+	}
+	return gates
+}
+
 // The grader must reject a rung that failed where the manifest expects a
 // pass — and reject a rung that passed where the manifest expects a
 // failure, in the same breath. A corpus that only notices regressions in
@@ -139,16 +175,22 @@ func ladder(rows ...string) []Gate {
 // appears on a runner image, its lint rung starts passing and every
 // later rung starts running, and a grader that shrugged would report
 // green while verifying something else entirely.
+//
+// It must also reject a rung that reached the recorded verdict by
+// running something else. That is not a hypothetical: cobra's Makefile
+// takes over all four Go slots, so its ladder can be exactly the
+// recorded colour while go@1's own commands never execute.
 func TestGradeCatchesBothDirections(t *testing.T) {
 	r := Repo{
 		Name: "row",
 		Gates: []GateWant{
 			{ID: "contract", Status: StatusPass},
-			{ID: "lint", Status: StatusFail, Exit: 2},
+			{ID: "lint", Status: StatusFail, Exit: 2, Cmd: "golangci-lint run"},
 			{ID: "test", Status: StatusSkip, Reason: "skipped: gate lint failed"},
 		},
 	}
-	if found := r.Grade(ladder("contract:pass", "lint:fail:2:gate exited with status 2", "test:skip::skipped: gate lint failed")); len(found) != 0 {
+	clean := ran(ladder("contract:pass", "lint:fail:2:gate exited with status 2", "test:skip::skipped: gate lint failed"), "lint", "golangci-lint", "run")
+	if found := r.Grade(clean); len(found) != 0 {
 		t.Errorf("the recorded ladder graded as a disagreement:\n%s", strings.Join(found, "\n"))
 	}
 	for _, tc := range []struct {
@@ -161,6 +203,12 @@ func TestGradeCatchesBothDirections(t *testing.T) {
 		{"a failure with a different exit", ladder("contract:pass", "lint:fail:1:x", "test:skip::skipped: gate lint failed"), "gate lint: failed with exit 1"},
 		{"a skip for a different reason", ladder("contract:pass", "lint:fail:2:x", "test:skip::toolchain not installed: pytest is not on PATH"), "gate test: skipped for"},
 		{"a rung that never ran", ladder("contract:pass", "lint:fail:2:x"), "the ladder ran [contract lint]"},
+		{"a rung that reached the recorded verdict by running something else",
+			ran(ladder("contract:pass", "lint:fail:2:x", "test:skip::skipped: gate lint failed"), "lint", "make", "lint"),
+			`gate lint: ran "make lint"; the manifest records "golangci-lint run"`},
+		{"a rung that ran nothing where the manifest records a command",
+			ladder("contract:pass", "lint:fail:2:x", "test:skip::skipped: gate lint failed"),
+			`gate lint: ran ""; the manifest records "golangci-lint run"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			found := r.Grade(tc.gates)

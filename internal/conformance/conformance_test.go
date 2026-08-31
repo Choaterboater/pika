@@ -37,6 +37,15 @@ func TestCorpus(t *testing.T) {
 		t.Run(repo.Name, func(t *testing.T) { conform(t, h, repo) })
 	}
 	t.Logf("corpus: %d repositories in %s", len(Corpus), time.Since(start).Round(time.Millisecond))
+	// Derived from the manifest, which every row that ran above was
+	// just graded against command by command — so on a full run this is
+	// a record of commands that really spawned on this machine, and on
+	// a filtered one it is the manifest's claim about the rest.
+	cov, err := CoverageOf(Corpus)
+	if err != nil {
+		t.Fatalf("coverage: %v", err)
+	}
+	t.Logf("pack commands executed against foreign code:\n%s", CoverageTable(cov))
 }
 
 // conform runs one row and grades it.
