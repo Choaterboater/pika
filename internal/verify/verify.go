@@ -310,6 +310,10 @@ func Run(ctx context.Context, cs CheckSet, scope Scope, opts ...Option) (*Report
 			rep.Summary.Fail++
 		case StatusSkip:
 			rep.Summary.Skip++
+			if strings.Contains(res.Reason, MissingToolSkipReason) {
+				rep.Warnings = append(rep.Warnings,
+					fmt.Sprintf("%s: %s", g.ID, res.Reason))
+			}
 		default:
 			rep.Summary.Pass++
 		}

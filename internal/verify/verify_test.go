@@ -825,6 +825,48 @@ func TestAbsentBinarySkipsWithANamedReason(t *testing.T) {
 	}
 }
 
+// A green ladder can contain a rung that never ran: a discovery skip, a
+// scope skip, or this one, a missing toolchain. `pika doctor` reports the
+// same absence at error severity, but nothing makes anyone run doctor, so
+// a skip this consequential must also surface where every other check
+// warning does — in the report itself — rather than only in a reason
+// string a reader has to already be looking for.
+func TestAbsentBinarySkipAddsAWarning(t *testing.T) {
+	const missing = "pika-tool-that-is-not-installed-9f3a1c"
+	cs := CheckSet{{ID: "format", Cmd: []string{missing, "--check"}}}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "format") && strings.Contains(w, missing) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want one naming gate %q and missing tool %q", rep.Warnings, "format", missing)
+	}
+}
+
+// The line the warning must not cross, symmetric with
+// TestFailureThatMerelyMentionsAMissingToolStaysAFailure: a tool missing
+// deeper inside a command is a real failure, not a missing-toolchain
+// skip, so it must not add this warning either.
+func TestFailureThatMerelyMentionsAMissingToolAddsNoWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no sh to print and exit nonzero in one command")
+	}
+	cs := CheckSet{{ID: "lint", Cmd: []string{"sh", "-c", "echo 'could not find golangci-lint in PATH'; exit 127"}}}
+	rep, err := Run(context.Background(), cs, All)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none: a real process that failed is not a missing toolchain", rep.Warnings)
+	}
+}
+
 // The line the skip must not cross. A tool missing deeper inside a
 // command — cobra's `make fmt` invoking a golangci-lint that is not
 // installed — starts a real process that produces a real exit status, and
