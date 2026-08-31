@@ -84,12 +84,12 @@ func TestRegionDigestIsStableAcrossARegenerateWithNoChanges(t *testing.T) {
 // sits, directly under the notice, so its position is a constant rather
 // than a search.
 func TestRegionDigestLineDeclaresItsOwnScheme(t *testing.T) {
-	b := newBody(nil, nil)
+	b := newBody(nil, nil, repoOrigin)
 	lines := strings.Split(string(b.region), "\n")
 	if len(lines) < 3 {
 		t.Fatalf("region is too short to have a header:\n%s", b.region)
 	}
-	if lines[0] != beginMarker || lines[1] != generatedNotice {
+	if lines[0] != beginMarker || lines[1] != repoOrigin.notice() {
 		t.Fatalf("region head is not the documented two lines:\n%s", strings.Join(lines[:2], "\n"))
 	}
 	m := regionDigestLine.FindStringSubmatch(lines[2])
@@ -113,7 +113,7 @@ func TestSplitRegionDigestInvertsTheRender(t *testing.T) {
 		rel:    ".agents/skills/demo/SKILL.md",
 		body:   []byte("---\nname: demo\n---\n\n# Title\n\nText.\n"),
 		digest: digestOf([]byte("x")),
-	}}, []profiles.GuidanceSet{{Ref: "go@1", Lines: []string{"run gofmt"}}})
+	}}, []profiles.GuidanceSet{{Ref: "go@1", Lines: []string{"run gofmt"}}}, repoOrigin)
 	core, digest, err := splitRegionDigest(b.region)
 	if err != nil {
 		t.Fatal(err)

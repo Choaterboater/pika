@@ -133,8 +133,8 @@ var commands = []command{
 	},
 	{
 		name:    "skills",
-		summary: "install and verify the agent instructions this repository ships",
-		usage:   "pika skills [install|check] [--force] [--json] [--root <dir>]",
+		summary: "install and verify the agent instructions this repository ships, and the operator-wide ones",
+		usage:   "pika skills [install|check] [--force] [--global] [--home <dir>] [--json] [--root <dir>]",
 		run:     runSkills,
 	},
 	{

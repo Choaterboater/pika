@@ -378,23 +378,25 @@ func TestSkillsJSONReportCarriesSourcesAndStates(t *testing.T) {
 	}
 }
 
-// A skill that names a command pika does not have is worse than a
-// message that does: the operator reading a message can try something
-// else, and the agent reading a skill cannot notice. Every command name
-// in the shipped skills, in the repository's own installed skills, and
-// in every pack's agent guidance — the three texts that compose a
-// projection — is resolved through the same registry dispatch uses.
-func TestEveryCommandNamedInASkillOrGuidanceIsRegistered(t *testing.T) {
-	mentions := 0
-	report := func(where, text string) {
-		missing, n := unregisteredMentions(text)
-		mentions += n
-		for _, name := range missing {
-			t.Errorf("%s names `pika %s`, which is not a registered command", where, name)
-		}
-	}
+// agentTexts is every piece of prose this binary hands an agent, keyed
+// by where it came from: the skills it ships, the templates the global
+// agent files are rendered from, and each profile pack's guidance.
+//
+// The guard below walks this map and the planting test below that
+// corrupts one entry of it, so "is a global template covered" is a
+// question about one collection rather than two lists that drift apart.
+func agentTexts(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
 	for _, s := range skills.Shipped() {
-		report("shipped skill "+s.Name, string(s.Body))
+		out["shipped skill "+s.Name] = string(s.Body)
+	}
+	// The global agent files carry these ahead of the shipped skills.
+	// They are the texts an agent reads in a repository pika does not
+	// govern — where nothing else will correct them, because there is no
+	// contract, no ladder and no gate.
+	for _, s := range skills.GlobalTemplates() {
+		out["global template "+s.Name] = string(s.Body)
 	}
 	for _, ref := range profiles.SupportedRefs() {
 		selected := []string{profiles.CoreRef}
@@ -406,8 +408,44 @@ func TestEveryCommandNamedInASkillOrGuidanceIsRegistered(t *testing.T) {
 			t.Fatalf("resolve %s: %v", ref, err)
 		}
 		for _, g := range resolved.AgentGuidance {
-			report("agent-guidance in "+g.Ref, strings.Join(g.Lines, "\n"))
+			out["agent-guidance in "+g.Ref] = strings.Join(g.Lines, "\n")
 		}
+	}
+	return out
+}
+
+// A skill that names a command pika does not have is worse than a
+// message that does: the operator reading a message can try something
+// else, and the agent reading a skill cannot notice. Every command name
+// in the shipped skills, in the templates the global agent files are
+// rendered from, in the repository's own installed skills, and in every
+// pack's agent guidance is resolved through the same registry dispatch
+// uses.
+//
+// The global templates matter most of the three and are checked last of
+// the three to be written. They are installed once and then read in
+// every repository on the machine, including ones that have no pika in
+// them at all, so a command renamed here rots a file that no gate in any
+// repository will ever look at again.
+func TestEveryCommandNamedInASkillOrGuidanceIsRegistered(t *testing.T) {
+	mentions := 0
+	report := func(where, text string) {
+		missing, n := unregisteredMentions(text)
+		mentions += n
+		for _, name := range missing {
+			t.Errorf("%s names `pika %s`, which is not a registered command", where, name)
+		}
+	}
+	texts := agentTexts(t)
+	globals := 0
+	for where, text := range texts {
+		if strings.HasPrefix(where, "global template ") {
+			globals++
+		}
+		report(where, text)
+	}
+	if globals == 0 {
+		t.Error("no global template was scanned; the guard is no longer reading the text installed into the operator's home directory")
 	}
 	found, err := scanInstalledSkills(filepath.Join("..", ".."), report)
 	if err != nil {
@@ -418,6 +456,37 @@ func TestEveryCommandNamedInASkillOrGuidanceIsRegistered(t *testing.T) {
 	}
 	if mentions == 0 {
 		t.Fatal("no `pika <command>` mention found in any skill or guidance; the guard is no longer reading the text it claims to")
+	}
+}
+
+// The guard above passes today, which proves nothing about whether it
+// would fail. Planting a dead end in a global template — the `upgrade`
+// mistake that made this guard exist, in the one text nothing in any
+// repository will ever re-check — shows the rule fires on the class of
+// text this feature added.
+//
+// The bad mention is assembled at run time rather than written as one
+// literal, for the same reason as the sibling test below: this file is
+// Go source, so the guard over string literals reads it too, and a
+// spelled-out dead end would fail that guard instead of this one.
+func TestAGlobalTemplateNamingAnUnregisteredCommandIsCaught(t *testing.T) {
+	texts := agentTexts(t)
+	const where = "global template pika"
+	text, ok := texts[where]
+	if !ok {
+		t.Fatalf("the guard's text collection has no %q entry; the global templates are not covered", where)
+	}
+	planted := text + "\nWhen the packs are stale, run `pika " + "upgrade` and then `pika check`.\n"
+	missing, total := unregisteredMentions(planted)
+	if total <= 1 {
+		t.Fatalf("only %d command mentions found in the planted template; the fixture is not exercising the rule", total)
+	}
+	if len(missing) != 1 || missing[0] != "upgrade" {
+		t.Fatalf("caught = %v, want [upgrade]", missing)
+	}
+	// And the real template is clean, which is what the guard asserts.
+	if clean, _ := unregisteredMentions(text); len(clean) != 0 {
+		t.Fatalf("the shipped global template names unregistered commands: %v", clean)
 	}
 }
 

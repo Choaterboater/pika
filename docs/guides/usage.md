@@ -799,6 +799,10 @@ file under `.project/state/locks/` by hand and re-run. This is a known gap:
 pika skills             # report: what is installed, what is projected, what is stale or tampered
 pika skills install     # write the canonical skills, regenerate every declared projection
 pika skills check       # exit 1 if any projection is stale, tampered or unreadable
+
+pika skills --global            # the same three modes, against the agent files in
+pika skills install --global    # your home directory instead of this repository's
+pika skills check --global      # projections
 ```
 
 How to drive pika is written once, in the canonical, harness-neutral location:
@@ -914,6 +918,50 @@ A pack's guidance is digested on its own, not with the whole pack: an unrelated
 pack edit rotates `profiles.lock` (which is where whole-pack drift belongs) and
 leaves every projection current.
 
+### The operator-wide files (`--global`)
+
+A projection is generated from a contract, so an agent standing in a directory
+that has no contract reads nothing at all — and that is exactly the moment it
+most needs to be told `pika init` and `pika adopt` exist. `--global` installs
+the two files a harness reads regardless of which repository you are in:
+
+```sh
+pika skills --global            # report: installed, stale, tampered or absent
+pika skills install --global    # write them
+pika skills check --global      # exit 1 if any of them is not current
+```
+
+| File | Read by |
+|---|---|
+| `<home>/.agents/skills/pika/SKILL.md` | omp, as a user-level skill |
+| `<home>/.codex/AGENTS.md` | Codex, as global instructions |
+
+They carry the same markers and the same `pika:region` digest as a projection,
+so a hand edit inside them is `tampered` on the same terms. Everything outside
+the markers is yours and survives every regeneration — a home-directory
+`AGENTS.md` is where you keep notes about every tool you use, not only this one.
+The `pika:source` lines cite `template` rather than `skill`, because a global
+file is installed where no repository exists and is therefore generated from the
+templates inside the pika binary. Upgrading pika makes them `stale`, which is
+the signal to re-run the install.
+
+Two rules are worth stating plainly.
+
+**No gate checks these files.** They are absent from a fresh checkout by
+definition, so a gate that digested them would fail on every clone of every
+repository. `pika skills --global` and `pika doctor` report their state; nothing
+enforces it.
+
+**No contract can cause one of them to be written.** `--global` on a command
+line is the whole of the authorization. A projection path that is absolute,
+`~`-prefixed, or climbs out of the repository with `..` is a contract error, not
+a write, and the `skills` block has no key that asks for a global install at any
+spelling. Otherwise cloning a repository would hand it a capability over the
+machine that cloned it.
+
+`--home <dir>` points the whole of `--global` at a directory other than your
+home. It exists so a test or a sandbox never touches the real one.
+
 ---
 
 ## Typical loops
@@ -964,10 +1012,11 @@ git log -1 chore/pika-improve     # the verified commit, still local and unpubli
 **Something is off:**
 
 ```sh
-pika doctor                       # root, contract, lock, exceptions, envelope, recovery, leases, gates, git
+pika doctor                       # root, contract, lock, exceptions, envelope, recovery, leases, gates, global skills, git
 pika explain <rule-or-gate-or-code>
 pika recover                      # a transaction or a run that never finished; --apply to act
 pika skills check                 # a projection whose source moved, or whose region was edited
+pika skills --global              # the agent files in your home directory: installed, stale, tampered or absent
 ```
 
 ---

@@ -43,17 +43,22 @@ func compileSchema() (*jsonschema.Schema, error) {
 // Contract is the typed representation of a pika contract file
 // (spec section 5.3 YAML shape).
 type Contract struct {
-	Schema     int                    `yaml:"schema"     json:"schema"`
-	Project    Project                `yaml:"project"    json:"project"`
-	Profiles   []string               `yaml:"profiles"   json:"profiles,omitempty"`
-	Packages   map[string]Package     `yaml:"packages"   json:"packages,omitempty"`
-	Commands   map[string]string      `yaml:"commands"   json:"commands,omitempty"`
-	Agents     map[string]AgentConfig `yaml:"agents"     json:"agents,omitempty"`
-	GitHub     GitHub                 `yaml:"github"     json:"github"`
-	Evidence   Evidence               `yaml:"evidence"   json:"evidence"`
-	Skills     *Skills                `yaml:"skills,omitempty" json:"skills,omitempty"`
-	Exceptions []any                  `yaml:"exceptions" json:"exceptions,omitempty"`
-	Extensions map[string]any         `yaml:"extensions" json:"extensions,omitempty"`
+	Schema   int                    `yaml:"schema"     json:"schema"`
+	Project  Project                `yaml:"project"    json:"project"`
+	Profiles []string               `yaml:"profiles"   json:"profiles,omitempty"`
+	Packages map[string]Package     `yaml:"packages"   json:"packages,omitempty"`
+	Commands map[string]string      `yaml:"commands"   json:"commands,omitempty"`
+	Agents   map[string]AgentConfig `yaml:"agents"     json:"agents,omitempty"`
+	GitHub   GitHub                 `yaml:"github"     json:"github"`
+	Evidence Evidence               `yaml:"evidence"   json:"evidence"`
+	// The skills block is strict all the way down. A key nobody reads is
+	// how an author comes to believe a contract asked for something it
+	// cannot ask for — a global install, most of all, which no contract
+	// may request at any spelling. Being told the key means nothing is
+	// the only answer that leaves them informed.
+	Skills     *Skills        `yaml:"skills,omitempty" json:"skills,omitempty" yamlx:"strict"`
+	Exceptions []any          `yaml:"exceptions" json:"exceptions,omitempty"`
+	Extensions map[string]any `yaml:"extensions" json:"extensions,omitempty"`
 }
 
 // Project identifies the project and its layout topology.
@@ -92,8 +97,14 @@ type Evidence struct {
 // contract that declares nothing writes nothing: an empty `skills: {}`
 // block in every generated contract would be noise claiming a decision
 // nobody made.
+//
+// It declares repository projections and nothing else. The agent files
+// in the operator's home directory are not reachable from here at any
+// spelling: they are installed by an explicit `pika skills install
+// --global` on a command line, so that cloning a repository never grants
+// it a capability over the machine that cloned it.
 type Skills struct {
-	Projections []Projection `yaml:"projections" json:"projections,omitempty"`
+	Projections []Projection `yaml:"projections" json:"projections,omitempty" yamlx:"strict"`
 }
 
 // Projection is one harness-native copy of that guidance: which harness
@@ -173,9 +184,19 @@ func validate(c *Contract) error {
 // NormalizeRepoPath normalizes a declared repository-relative path to
 // forward-slash form and validates it stays inside the repository root.
 // Backslash separators are accepted and converted (Windows callers may
-// pass either form); absolute paths (leading /, drive letters, UNC) and
-// paths that traverse above the repository root after cleaning are
-// rejected, as is the empty path.
+// pass either form); absolute paths (leading /, drive letters, UNC),
+// home-relative paths (a leading ~) and paths that traverse above the
+// repository root after cleaning are rejected, as is the empty path.
+//
+// The `~` rule is the one that is not about traversal. Go expands
+// nothing, so `~/.codex/AGENTS.md` would be taken as an ordinary
+// relative path and produce a directory literally named `~` inside the
+// repository — a contract that reads as though it writes to the
+// operator's home directory and instead writes rubbish nobody looks at.
+// Refusing it says what the contract cannot do rather than doing
+// something else quietly: the home directory is reachable only through
+// an explicit `pika skills install --global` on a command line, never
+// through a file a repository ships.
 func NormalizeRepoPath(p string) (string, error) {
 	if p == "" {
 		return "", errors.New("path is empty")
@@ -186,6 +207,9 @@ func NormalizeRepoPath(p string) (string, error) {
 	}
 	if len(norm) >= 2 && norm[1] == ':' && isDriveLetter(norm[0]) {
 		return "", fmt.Errorf("path escapes repository root: %s", p)
+	}
+	if norm == "~" || strings.HasPrefix(norm, "~/") {
+		return "", fmt.Errorf("path is relative to a home directory, which a contract cannot reach: %s", p)
 	}
 	cleaned := path.Clean(norm)
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {

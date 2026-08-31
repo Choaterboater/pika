@@ -18,10 +18,18 @@ import (
 // is kernel-owned, with nothing verifying the assertion, is a claim the
 // repository cannot back.
 
-// regionHead is the fixed opening of every rendered region. The region
-// digest line goes immediately after it, so its position is a constant
-// a reader can point at rather than something anyone has to search for.
-const regionHead = beginMarker + "\n" + generatedNotice + "\n"
+// regionHead is the opening of a rendered region: the begin marker and
+// the one-line notice explaining why the file looks generated. The
+// region digest line goes immediately after it, so its position is a
+// constant a reader can point at rather than something anyone has to
+// search for.
+//
+// The notice is not fixed — a repository projection names `pika skills
+// install` and a global agent file names the `--global` form that wrote
+// it — so the head is computed. Its length is what the digest splice
+// depends on, which is why withRegionDigest is handed the head the core
+// was rendered with instead of assuming one.
+func regionHead(notice string) string { return beginMarker + "\n" + notice + "\n" }
 
 // regionDigestNote spells out the one thing a self-referential digest
 // has to say: what it covers. A digest recorded inside the bytes it
@@ -39,14 +47,14 @@ const regionDigestFmt = "<!-- pika:region %s " + regionDigestNote + " -->"
 var regionDigestLine = regexp.MustCompile(`^<!-- pika:region (sha256:[0-9a-f]{64}) ` + regexp.QuoteMeta(regionDigestNote) + ` -->$`)
 
 // withRegionDigest returns core with its digest line spliced in
-// directly after the fixed region head, which is where every reader and
+// directly after head, which is where every reader and
 // splitRegionDigest expect to find it.
-func withRegionDigest(core []byte, digest string) []byte {
+func withRegionDigest(core []byte, head, digest string) []byte {
 	line := fmt.Sprintf(regionDigestFmt, digest) + "\n"
 	out := make([]byte, 0, len(core)+len(line))
-	out = append(out, core[:len(regionHead)]...)
+	out = append(out, core[:len(head)]...)
 	out = append(out, line...)
-	out = append(out, core[len(regionHead):]...)
+	out = append(out, core[len(head):]...)
 	return out
 }
 
@@ -119,9 +127,11 @@ func verifyRegion(region []byte) error {
 
 // tamperedDetail is what a region that failed its own digest check is
 // told. It names the remedy the operator actually needs, which is not
-// the one that fixes a stale copy: `pika skills install` would
-// overwrite the edit rather than move it, so the message says so and
-// points at the file where the change belongs.
+// the one that fixes a stale copy: regenerating overwrites the edit
+// rather than moving it, so the message says so and points at where the
+// change belongs instead. Both halves come from the target's origin,
+// because a global agent file has no canonical skill to be redirected to
+// and being sent to one would be advice that cannot be followed.
 //
 // The lead sentence follows the evidence. A digest that was checked and
 // disagreed proves somebody changed those bytes; a digest line that is
@@ -129,13 +139,13 @@ func verifyRegion(region []byte) error {
 // fail and both risk the same loss on regenerate, so both are tampered
 // — but only the first is reported as a hand edit, because the second
 // would be the kernel asserting a fact it does not have.
-func tamperedDetail(err error) string {
+func tamperedDetail(err error, from origin) string {
 	lead := "was edited by hand inside the pika skills markers: it " + err.Error()
 	if errors.Is(err, errUnverifiable) {
 		lead = "holds a kernel-owned region that " + err.Error() +
 			", so the kernel cannot tell whether it still says what it generated"
 	}
 	return lead +
-		"; that region is kernel-owned, and `pika skills install` would DISCARD whatever is there rather than keep it —" +
-		" make the change in the canonical skill under .agents/skills/ (or in the profile pack guidance) and regenerate"
+		"; that region is kernel-owned, and " + from.command + " would DISCARD whatever is there rather than keep it — " +
+		from.source
 }

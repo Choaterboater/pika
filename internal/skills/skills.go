@@ -99,9 +99,16 @@ const (
 )
 
 // Skill is one skill this kernel ships: the directory name it installs
-// under, and the SKILL.md text.
+// under, the template inside this binary the text came from, and the
+// SKILL.md text itself.
+//
+// Ref is what a global agent file's provenance header cites. Such a file
+// is installed where no repository exists, so it is generated from the
+// binary and not from a working tree, and naming the embedded path is
+// the only honest answer to where its text came from.
 type Skill struct {
 	Name string
+	Ref  string
 	Body []byte
 }
 
@@ -163,22 +170,30 @@ func Shipped() []Skill {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
-		body, err := fs.ReadFile(templatesFS, path.Join(templatesDir, e.Name()))
+		ref := path.Join(templatesDir, e.Name())
+		body, err := fs.ReadFile(templatesFS, ref)
 		if err != nil {
 			panic("skills: read embedded skill " + e.Name() + ": " + err.Error())
 		}
-		out = append(out, Skill{Name: strings.TrimSuffix(e.Name(), ".md"), Body: body})
+		out = append(out, Skill{Name: strings.TrimSuffix(e.Name(), ".md"), Ref: ref, Body: body})
 	}
 	slices.SortFunc(out, func(a, b Skill) int { return strings.Compare(a.Name, b.Name) })
 	return out
 }
 
-// canonical is one skill as it exists in the repository: the name, the
-// repository-relative path a projection cites as its source, and the
-// bytes on disk. Projections are rendered from these rather than from
-// the embedded templates, so an operator's edit to a skill flows into
-// every projection instead of being silently reverted.
+// canonical is one piece of skill text a region is rendered from: the
+// name, the reference a region cites it by, and the bytes.
+//
+// For a repository projection those bytes are the skill as it exists in
+// the repository, read from disk rather than from the embedded
+// templates, so an operator's edit to a skill flows into every
+// projection instead of being silently reverted. For a global agent
+// file, installed where no repository exists, they are the embedded
+// template itself — which is what kind records, so the provenance line
+// says where the text actually came from instead of naming a working
+// tree that may not be there.
 type canonical struct {
+	kind   string
 	name   string
 	rel    string
 	body   []byte
@@ -195,7 +210,7 @@ func Inspect(root *repopath.Root, c *contract.Contract, resolved *profiles.Resol
 	}
 	st := &Status{OK: true, Root: root.Dir()}
 	st.Skills = skillStatuses(root, installed, nil)
-	body := newBody(installed, guidanceOf(resolved))
+	body := newBody(installed, guidanceOf(resolved), repoOrigin)
 	for _, p := range projections(c) {
 		st.Projections = append(st.Projections, inspectProjection(root, p, body))
 	}
@@ -243,7 +258,7 @@ func Install(root *repopath.Root, c *contract.Contract, resolved *profiles.Resol
 	}
 	st := &Status{OK: true, Root: root.Dir()}
 	st.Skills = skillStatuses(root, installed, written)
-	body := newBody(installed, guidanceOf(resolved))
+	body := newBody(installed, guidanceOf(resolved), repoOrigin)
 	for _, p := range projections(c) {
 		got, err := writeProjection(root, p, body)
 		if err != nil {
@@ -381,6 +396,7 @@ func loadCanonical(root *repopath.Root) ([]canonical, error) {
 			return nil, fmt.Errorf("skills: read %s: %w", relTo(root, target), err)
 		}
 		out = append(out, canonical{
+			kind:   SourceSkill,
 			name:   e.Name(),
 			rel:    relTo(root, target),
 			body:   body,

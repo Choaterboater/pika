@@ -130,6 +130,66 @@ func TestLoadRejectsProjectionPathEscape(t *testing.T) {
 	}
 }
 
+// A `~` path is not a traversal, which is why it needs its own rule. Go
+// expands nothing, so `~/.codex/AGENTS.md` would be taken as an ordinary
+// relative path and would create a directory literally named `~` inside
+// the repository: a contract that reads as though it writes to the
+// operator's home directory, writing rubbish instead. Refusing it is
+// what makes the answer to "can a repository reach my home directory"
+// a plain no rather than "no, but it looks like yes".
+func TestLoadRejectsAHomeRelativeProjectionPath(t *testing.T) {
+	_, err := Load("testdata/invalid-skills-home.yaml")
+	if err == nil {
+		t.Fatal("a contract naming ~/.codex/AGENTS.md was accepted")
+	}
+	if !strings.Contains(err.Error(), "skills.projections[0].path") {
+		t.Fatalf("error should name the offending field, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "home directory") {
+		t.Fatalf("error should say why a home path is refused, got: %v", err)
+	}
+}
+
+// Every shape of path that leaves the repository is refused by the one
+// function every declared path goes through, so a new caller inherits
+// the rule instead of re-deriving it.
+func TestNormalizeRepoPathRefusesEveryPathOutsideTheRepository(t *testing.T) {
+	for _, p := range []string{
+		"/etc/passwd",
+		"C:\\Users\\me\\.codex\\AGENTS.md",
+		"~",
+		"~/.agents/skills/pika/SKILL.md",
+		"../AGENTS.md",
+		"a/../../AGENTS.md",
+	} {
+		if got, err := NormalizeRepoPath(p); err == nil {
+			t.Errorf("NormalizeRepoPath(%q) = %q, want an error", p, got)
+		}
+	}
+	// The rule must not swallow ordinary paths on the way past.
+	for _, p := range []string{"AGENTS.md", "docs/CLAUDE.md", "a/~b/AGENTS.md"} {
+		if _, err := NormalizeRepoPath(p); err != nil {
+			t.Errorf("NormalizeRepoPath(%q): %v", p, err)
+		}
+	}
+}
+
+// The skills block declares repository projections and nothing else. An
+// unknown key there is refused rather than dropped, because the one an
+// author is most likely to invent is a request for the agent files in
+// the operator's home directory — and silence would leave them believing
+// their contract asked for something that no contract may ask for at any
+// spelling.
+func TestLoadRejectsAnUnknownKeyInTheSkillsBlock(t *testing.T) {
+	_, err := Load("testdata/invalid-skills-unknown-key.yaml")
+	if err == nil {
+		t.Fatal("a contract declaring skills.global was accepted")
+	}
+	if !strings.Contains(err.Error(), "global") {
+		t.Fatalf("error should name the key it refused, got: %v", err)
+	}
+}
+
 // A harness the kernel does not know is a schema violation, not a
 // projection that is quietly skipped. A file nothing reads is
 // indistinguishable from a file something reads, so a typo that produced

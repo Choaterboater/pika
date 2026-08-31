@@ -12,6 +12,7 @@ import (
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/repolease"
 	"github.com/Choaterboater/pika/internal/repopath"
+	"github.com/Choaterboater/pika/internal/skills"
 )
 
 // writeProject lays down the smallest repository gate 1 accepts at dir:
@@ -66,6 +67,17 @@ func writeHealthyTypeScriptProject(t *testing.T, dir string) {
 	writeProject(t, dir, "core@1", "typescript@1")
 }
 
+// runDoctor is Run against a home directory that is not the developer's.
+//
+// Every test in this file is about a repository, and none of them may
+// touch the operator's real home: doctor's global-skills row is answered
+// from an empty temporary directory instead, so the report reads the
+// same on a machine that has a global install and one that does not.
+func runDoctor(t *testing.T, root *repopath.Root) *Report {
+	t.Helper()
+	return Run(root, t.TempDir())
+}
+
 func findingByID(t *testing.T, rep *Report, id string) Finding {
 	t.Helper()
 	for _, f := range rep.Findings {
@@ -82,7 +94,7 @@ func TestUnadoptedRepositoryIsReportedNotFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep := Run(root)
+	rep := runDoctor(t, root)
 
 	f := findingByID(t, rep, "contract")
 	if f.Severity != SeverityError {
@@ -109,7 +121,7 @@ func TestHealthyProjectReportsOK(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 	for _, f := range rep.Findings {
 		if f.Severity == SeverityError {
 			t.Errorf("unexpected error finding %q: %s", f.ID, f.Detail)
@@ -132,7 +144,7 @@ func TestDriftedLockIsAnError(t *testing.T) {
 	}
 	root, _ := repopath.At(dir)
 
-	if got := findingByID(t, Run(root), "lock").Severity; got != SeverityError {
+	if got := findingByID(t, runDoctor(t, root), "lock").Severity; got != SeverityError {
 		t.Fatalf("lock severity = %q, want %q", got, SeverityError)
 	}
 }
@@ -142,7 +154,7 @@ func TestMissingEnvelopeIsAWarningNotAnError(t *testing.T) {
 	writeHealthyProject(t, dir)
 	root, _ := repopath.At(dir)
 
-	f := findingByID(t, Run(root), "envelope")
+	f := findingByID(t, runDoctor(t, root), "envelope")
 	if f.Severity != SeverityWarn {
 		t.Fatalf("envelope severity = %q, want %q", f.Severity, SeverityWarn)
 	}
@@ -158,7 +170,7 @@ func TestUndiscoveredGateSurfacesPackHint(t *testing.T) {
 	writeHealthyTypeScriptProject(t, dir)
 	root, _ := repopath.At(dir)
 
-	f := findingByID(t, Run(root), "gate.lint")
+	f := findingByID(t, runDoctor(t, root), "gate.lint")
 	if f.Severity != SeverityWarn {
 		t.Errorf("gate.lint severity = %q, want %q", f.Severity, SeverityWarn)
 	}
@@ -179,7 +191,7 @@ func TestNeverCheckedLockIsAWarning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := findingByID(t, Run(root), "lock").Severity; got != SeverityWarn {
+	if got := findingByID(t, runDoctor(t, root), "lock").Severity; got != SeverityWarn {
 		t.Errorf("lock severity with no contract = %q, want %q", got, SeverityWarn)
 	}
 
@@ -200,7 +212,7 @@ func TestNeverCheckedLockIsAWarning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep := Run(root2)
+	rep := runDoctor(t, root2)
 	if got := findingByID(t, rep, "profiles").Severity; got != SeverityError {
 		t.Errorf("profiles severity = %q, want %q", got, SeverityError)
 	}
@@ -234,7 +246,7 @@ func TestDoctorNeverExecutesAGate(t *testing.T) {
 	}
 	root, _ := repopath.At(dir)
 
-	if got := findingByID(t, Run(root), "gate.smoke").Severity; got != SeverityOK {
+	if got := findingByID(t, runDoctor(t, root), "gate.smoke").Severity; got != SeverityOK {
 		t.Fatalf("gate.smoke severity = %q, want %q", got, SeverityOK)
 	}
 	if _, err := os.Stat(marker); err == nil {
@@ -268,7 +280,7 @@ func TestMissingGateBinaryIsAnError(t *testing.T) {
 	}
 	root, _ := repopath.At(dir)
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 	f := findingByID(t, rep, "gate.smoke")
 	if f.Severity != SeverityError {
 		t.Errorf("gate.smoke severity = %q, want %q", f.Severity, SeverityError)
@@ -310,7 +322,7 @@ func TestDoctorReportsAStaleTransactionLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 	f := findingByID(t, rep, "recovery")
 	if f.Severity != SeverityError {
 		t.Errorf("recovery severity = %q, want %q: the repository cannot transact", f.Severity, SeverityError)
@@ -338,7 +350,7 @@ func TestDoctorReportsALiveTransactionWithoutFailing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 	f := findingByID(t, rep, "recovery")
 	if f.Severity != SeverityWarn {
 		t.Errorf("recovery severity = %q, want %q: a running transaction is not damage", f.Severity, SeverityWarn)
@@ -359,7 +371,7 @@ func TestDoctorReportsNoInterruptedTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if f := findingByID(t, Run(root), "recovery"); f.Severity != SeverityOK {
+	if f := findingByID(t, runDoctor(t, root), "recovery"); f.Severity != SeverityOK {
 		t.Errorf("recovery = %+v, want an ok finding on a repository with nothing pending", f)
 	}
 }
@@ -429,7 +441,7 @@ func TestDoctorWarnsWhenTheEnvelopeWouldDenyAGate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 
 	// The envelope exists and parses, so the envelope finding itself
 	// stays ok: the denial is reported per gate, not by condemning the
@@ -463,7 +475,7 @@ func TestDoctorWarnsWhenTheEnvelopeWouldDenyAGate(t *testing.T) {
 	// Widening the grant to the whole line clears the finding, which is
 	// what makes the remediation actionable rather than decorative.
 	writeEnvelope(t, dir, "true", "true --all")
-	if ids := findingIDs(Run(root), "envelope.gate."); len(ids) != 0 {
+	if ids := findingIDs(runDoctor(t, root), "envelope.gate."); len(ids) != 0 {
 		t.Errorf("grants covering every gate still reported denials: %v", ids)
 	}
 }
@@ -482,7 +494,7 @@ func TestAbsentEnvelopeStaysAWarningWithNoGateDenials(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 	if got := findingByID(t, rep, "envelope").Severity; got != SeverityWarn {
 		t.Errorf("absent envelope severity = %q, want %q", got, SeverityWarn)
 	}
@@ -552,7 +564,7 @@ func TestDoctorReportsAStaleRunLease(t *testing.T) {
 	leaseDir, name := repolease.RunLock(root)
 	writeLeaseFile(t, filepath.Join(leaseDir, name), "20260830-feature-c0ffee01", deadPID, thisHost(t))
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 	f := findingByID(t, rep, "lease.run")
 	if f.Severity != SeverityError {
 		t.Errorf("lease.run severity = %q, want %q: no run can start in this repository", f.Severity, SeverityError)
@@ -588,7 +600,7 @@ func TestDoctorReportsAHeldRunLeaseWithoutFailing(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = h.Release() })
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 	f := findingByID(t, rep, "lease.run")
 	if f.Severity != SeverityWarn {
 		t.Errorf("lease.run severity = %q, want %q: a running run is normal operation", f.Severity, SeverityWarn)
@@ -625,7 +637,7 @@ func TestDoctorNeverReportsAForeignHostLeaseAsStale(t *testing.T) {
 	leaseDir, name := repolease.RunLock(root)
 	writeLeaseFile(t, filepath.Join(leaseDir, name), "20260830-feature-abroad01", deadPID, "build-01")
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 	f := findingByID(t, rep, "lease.run")
 	if f.Severity != SeverityWarn {
 		t.Errorf("lease.run severity = %q, want %q: nothing here can be proved", f.Severity, SeverityWarn)
@@ -655,7 +667,7 @@ func TestDoctorReportsAStaleScopeLease(t *testing.T) {
 	writeLeaseFile(t, filepath.Join(repolease.ScopeLocks(root), "docs%2Fguides.lock"),
 		"scope:docs/guides#1", deadPID, thisHost(t))
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 	f := findingByID(t, rep, "lease.scope.docs/guides")
 	if f.Severity != SeverityError {
 		t.Errorf("scope lease severity = %q, want %q", f.Severity, SeverityError)
@@ -689,7 +701,7 @@ func TestDoctorReportsALeaseThatNamesNoHolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep := Run(root)
+	rep := runDoctor(t, root)
 	f := findingByID(t, rep, "lease.run")
 	if f.Severity != SeverityError {
 		t.Errorf("lease.run severity = %q, want %q", f.Severity, SeverityError)
@@ -708,7 +720,128 @@ func TestDoctorReportsALeaseThatNamesNoHolder(t *testing.T) {
 func TestDoctorReportsNoLeaseHeld(t *testing.T) {
 	dir := t.TempDir()
 	writeHealthyProject(t, dir)
-	if f := findingByID(t, Run(mustRoot(t, dir)), "leases"); f.Severity != SeverityOK {
+	if f := findingByID(t, runDoctor(t, mustRoot(t, dir)), "leases"); f.Severity != SeverityOK {
 		t.Errorf("leases = %+v, want an ok finding on a repository holding nothing", f)
+	}
+}
+
+// doctor is the read-only "what is wrong here" command, and it is the
+// only place a stale global agent file is ever mentioned. No gate may
+// check those files — they are absent from a fresh checkout, so a gate
+// that digested them would fail on every clone of every repository — so
+// if doctor were silent about them, nothing would ever say a word.
+func TestDoctorReportsGlobalAgentFilesAsInstalledAndCurrent(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	home := t.TempDir()
+	if _, err := skills.InstallGlobal(home); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := Run(mustRoot(t, dir), home)
+	f := findingByID(t, rep, "skills.global")
+	if f.Severity != SeverityOK {
+		t.Errorf("skills.global severity = %q, want %q: %s", f.Severity, SeverityOK, f.Detail)
+	}
+	if !strings.Contains(f.Detail, home) {
+		t.Errorf("the finding does not say which home directory it looked in: %s", f.Detail)
+	}
+	if !rep.OK {
+		t.Error("OK = false on a repository whose global files are current")
+	}
+}
+
+// Most repositories will never have a global install, so absent is
+// informational. Warning about a file nobody asked for is how an
+// operator learns to ignore this command's warnings, and the warnings
+// that matter are the lease ones two functions up.
+func TestDoctorTreatsAnAbsentGlobalInstallAsInformational(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+
+	rep := Run(mustRoot(t, dir), t.TempDir())
+	f := findingByID(t, rep, "skills.global")
+	if f.Severity != SeverityOK {
+		t.Errorf("skills.global severity = %q, want %q: %s", f.Severity, SeverityOK, f.Detail)
+	}
+	if !strings.Contains(f.Detail, "pika skills install --global") {
+		t.Errorf("the finding does not name what would install them: %s", f.Detail)
+	}
+	if !rep.OK {
+		t.Error("OK = false on a repository that simply has no global install")
+	}
+}
+
+// A hand-edited global file is a warning and never an error. It is a
+// warning because an agent is reading instructions that no longer match
+// this binary; it is not an error because the repository is not broken,
+// and failing doctor over a file outside the repository would make the
+// exit code answer a question nobody asked it.
+//
+// The remedy has to say that regenerating destroys the edit. `pika
+// skills install --global` is the fix for a stale file and the
+// destruction of a hand-edited one, and one sentence for both would tell
+// somebody whose words are about to disappear to run the command that
+// disappears them.
+func TestDoctorWarnsWithoutFailingOnATamperedGlobalAgentFile(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+	home := t.TempDir()
+	if _, err := skills.InstallGlobal(home); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, ".codex", "AGENTS.md")
+	doc, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(string(doc), "## Driving pika", "## Driving pika (edited)", 1)
+	if edited == string(doc) {
+		t.Fatal("fixture did not find the heading it meant to edit")
+	}
+	if err := os.WriteFile(target, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := Run(mustRoot(t, dir), home)
+	f := findingByID(t, rep, "skills.global")
+	if f.Severity != SeverityWarn {
+		t.Fatalf("skills.global severity = %q, want %q: %s", f.Severity, SeverityWarn, f.Detail)
+	}
+	if !strings.Contains(f.Detail, "tampered") || !strings.Contains(f.Detail, ".codex/AGENTS.md") {
+		t.Errorf("the finding does not say which file is in what state: %s", f.Detail)
+	}
+	if !strings.Contains(f.Remediation, "pika skills install --global") {
+		t.Errorf("the remediation does not name the command that regenerates them: %s", f.Remediation)
+	}
+	if !strings.Contains(f.Remediation, "DISCARDS") {
+		t.Errorf("the remediation hides that regenerating destroys the edit: %s", f.Remediation)
+	}
+	if !rep.OK {
+		t.Error("OK = false: a file outside the repository must not fail this repository's diagnosis")
+	}
+}
+
+// A machine that reports no home directory is one where these files
+// cannot exist. That is a row saying the check did not happen, not a
+// reason to refuse the other twelve findings.
+func TestDoctorSaysSoWhenThereIsNoHomeToCheck(t *testing.T) {
+	dir := t.TempDir()
+	writeHealthyProject(t, dir)
+
+	rep := Run(mustRoot(t, dir), "")
+	f := findingByID(t, rep, "skills.global")
+	if f.Severity != SeverityWarn {
+		t.Errorf("skills.global severity = %q, want %q: %s", f.Severity, SeverityWarn, f.Detail)
+	}
+	if !strings.Contains(f.Detail, "not checked") {
+		t.Errorf("the finding claims a result it did not obtain: %s", f.Detail)
+	}
+	if !rep.OK {
+		t.Error("OK = false because a home directory could not be resolved")
+	}
+	// Everything else still ran.
+	for _, id := range []string{"contract", "lock", "envelope", "leases", "git"} {
+		findingByID(t, rep, id)
 	}
 }

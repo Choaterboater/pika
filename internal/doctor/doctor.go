@@ -20,6 +20,7 @@ import (
 	"github.com/Choaterboater/pika/internal/profiles"
 	"github.com/Choaterboater/pika/internal/repolease"
 	"github.com/Choaterboater/pika/internal/repopath"
+	"github.com/Choaterboater/pika/internal/skills"
 	"github.com/Choaterboater/pika/internal/txn"
 	"github.com/Choaterboater/pika/internal/verify"
 	"github.com/Choaterboater/pika/internal/version"
@@ -63,7 +64,14 @@ func (r *Report) add(id, severity, detail, remediation string) {
 // contract is an error-severity finding rather than an abort, so an
 // unadopted repository still gets a report covering root, lock, envelope,
 // and toolchain.
-func Run(root *repopath.Root) *Report {
+//
+// home is the operator's home directory, and it is a parameter rather
+// than something this package resolves because it is the one thing
+// doctor looks at that is outside the repository. A caller passes ""
+// when the machine reports no home, and a test passes a temporary
+// directory — a diagnostic that read the developer's real home would
+// report a different thing on every machine it ran on.
+func Run(root *repopath.Root, home string) *Report {
 	rep := &Report{Root: root.Dir(), Origin: root.Origin(), OK: true}
 	rep.add("root", SeverityOK,
 		fmt.Sprintf("%s (resolved by %s)", root.Dir(), root.Origin()), "")
@@ -75,8 +83,81 @@ func Run(root *repopath.Root) *Report {
 	checkRecovery(rep, root)
 	checkLeases(rep, root)
 	checkGates(rep, root, c, resolved, env)
+	checkGlobalSkills(rep, home)
 	checkGit(rep)
 	return rep
+}
+
+// checkGlobalSkills reports the agent instruction files installed in the
+// operator's home directory: whether they are there, and whether their
+// kernel-owned regions still say what this pika renders.
+//
+// Nothing else reports them, and that is deliberate. Gate 1 must not:
+// those files are absent from a fresh checkout by definition, so a gate
+// that digested them would fail on every clone of every repository, and
+// a repository has no business having an opinion about the operator's
+// home directory in the first place. doctor is where a read-only "what
+// is wrong here" answer belongs, so the state is said here instead.
+//
+// Absent is informational, never a fault. Most repositories will never
+// have a global install, and a warning about a file nobody asked for
+// would train an operator to ignore this command's warnings.
+//
+// Stale or tampered is a warning and never an error. It is a warning
+// because an agent is reading instructions that no longer match this
+// binary, which is the failure mode the whole feature exists to prevent.
+// It is not an error because the repository is not broken: every gate,
+// every run and every human path through it works exactly as well as it
+// did, and failing doctor over a file outside the repository would make
+// the exit code answer a question nobody asked it.
+func checkGlobalSkills(rep *Report, home string) {
+	if home == "" {
+		rep.add("skills.global", SeverityWarn,
+			"the agent files in your home directory were not checked: this machine reports no home directory",
+			"")
+		return
+	}
+	g := skills.InspectGlobal(home)
+	var drifted, installed, absent []string
+	tampered := false
+	for _, t := range g.Targets {
+		switch t.State {
+		case skills.StateCurrent:
+			installed = append(installed, t.Path)
+		case skills.StateAbsent:
+			absent = append(absent, t.Path)
+		default:
+			drifted = append(drifted, t.State+" "+t.Path)
+			tampered = tampered || t.State == skills.StateTampered
+		}
+	}
+	switch {
+	case len(drifted) > 0:
+		// The remedy for a tampered file is not the remedy for a stale
+		// one, for the same reason `pika skills` distinguishes them:
+		// regenerating a stale file costs nothing and regenerating a
+		// tampered one destroys whatever somebody typed inside the
+		// markers.
+		remedy := "run \"pika skills install --global\" to regenerate them"
+		if tampered {
+			remedy = "a tampered file was edited inside the kernel-owned markers, and \"pika skills install --global\" DISCARDS that edit rather than keeping it; move it outside the markers first, then regenerate"
+		}
+		rep.add("skills.global", SeverityWarn,
+			fmt.Sprintf("the agent files under %s no longer match this pika: %s; an agent reading them is being told something this binary does not do",
+				home, strings.Join(drifted, ", ")),
+			remedy)
+	case len(installed) == 0:
+		rep.add("skills.global", SeverityOK,
+			fmt.Sprintf("no agent file is installed under %s; nothing here needs one, and \"pika skills install --global\" writes them for an agent working outside a governed repository",
+				home), "")
+	case len(absent) > 0:
+		rep.add("skills.global", SeverityOK,
+			fmt.Sprintf("the agent files under %s are current where installed (%s); %s not installed",
+				home, strings.Join(installed, ", "), strings.Join(absent, ", ")), "")
+	default:
+		rep.add("skills.global", SeverityOK,
+			fmt.Sprintf("the agent files under %s are installed and current", home), "")
+	}
 }
 
 func checkContract(rep *Report, root *repopath.Root) *contract.Contract {

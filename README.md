@@ -149,6 +149,9 @@ pika mcp
 
 # Install the agent instructions, and project them where each harness reads
 pika skills install
+
+# Install the ones that apply in every repository, into your home directory
+pika skills install --global
 ```
 
 ## Commands
@@ -161,10 +164,10 @@ pika skills install
 | `pika recover` | Report what a killed process left behind — a transaction that never finished, and the run and scope leases it never gave back, with every holder, its liveness, and every file a rollback would touch — and clear it with `--apply` |
 | `pika check` | Run the verification ladder locally or in CI (`--all`, `--changed`, `--ci`; `--ci` makes no LLM calls) |
 | `pika status` | List the durable work runs this repository has, or report one in full: phases, branch, commit, outcome, and the reason it stopped |
-| `pika doctor` | Diagnose contract, lock, exceptions, envelope, per-gate command, toolchain, and git — without executing a single gate |
+| `pika doctor` | Diagnose contract, lock, exceptions, envelope, per-gate command, toolchain, global agent files, and git — without executing a single gate |
 | `pika explain` | Explain a naming rule, a verification gate, or an MCP error code: rationale, remediation, and a copy-pasteable exception record |
 | `pika authorize` | Generate the capability envelope agents need, at `.project/state/envelope.yaml` (mode 0600, local-only, never committed) |
-| `pika skills` | Report, install and verify the agent instructions this repository ships: the canonical skills under `.agents/skills/`, and the harness-native projections generated from them |
+| `pika skills` | Report, install and verify the agent instructions this repository ships: the canonical skills under `.agents/skills/`, and the harness-native projections generated from them — and, with `--global`, the operator-wide agent files in your home directory |
 | `pika handoff` | Give actionable failed checks to the configured Codex builder and save a private handoff bundle |
 | `pika improve` | Run checks, let Codex repair failed gates, recheck, and make one verified local commit |
 | `pika work` | Run a stated goal through the same verified lifecycle: branch, builder agent, recheck, one verified local commit |
@@ -194,6 +197,14 @@ skills:
 The region carries two kinds of digest, and gate 1 recomputes both, because a projection can go wrong in two directions whose remedies are opposites. The `pika:source` lines name each source and its sha256, so a **stale** copy — the source moved, the copy did not follow — fails `pika check` naming the source and the remedy; regenerating costs nothing. The `pika:region` line is the sha256 of the region's own bytes, taken over everything between the markers except that line, so a **tampered** region — somebody edited kernel-owned bytes in the file the harness actually reads — fails on its own evidence, without consulting any source. That independence is what keeps a hand edit visible when a source moved at the same time, and it is why the two are never reported under one label: `pika skills install` regenerates a stale copy for free and DISCARDS a hand edit, so telling an operator to run it has to depend on which one they have.
 
 The split is ownership. A canonical skill is the operator's: it is written when missing and replaced only under `--force`. A projection region is the kernel's: regenerated freely, never hand-edited — and now verified rather than merely asserted. Which harnesses receive one is contract-declared, not compiled in — an unknown harness is a schema error, and a new harness whose requirement is "a file at this path" needs a contract line and no kernel change.
+
+### The agent files outside every repository (`--global`)
+
+A projection is generated from a contract, so an agent standing in a directory that has no contract reads nothing — and that is the moment it most needs to be told `pika init` and `pika adopt` exist. `pika skills install --global` writes the two files a harness reads regardless of which repository you are in: `<home>/.agents/skills/pika/SKILL.md` (omp's user-level skill, frontmatter and all) and `<home>/.codex/AGENTS.md` (Codex's global instructions). `pika skills --global` reports their state and `pika skills check --global` is the verdict on its own.
+
+They carry the same markers and the same `pika:region` digest as a projection, so a hand edit is `tampered` on the same terms and operator prose outside the markers survives every regeneration. Their `pika:source` lines cite `template` rather than `skill`: a global file is installed where no repository exists, so it is generated from the templates inside the binary — which is what makes upgrading pika report them `stale` instead of leaving an agent with instructions the binary no longer matches.
+
+Two rules hold this apart from the repository half. **No gate checks these files**: they are absent from a fresh checkout by definition, so digesting them would fail every clone; their state is reported by `pika skills --global` and `pika doctor` and enforced nowhere. **No contract can cause one to be written**: `--global` on a command line is the whole of the authorization, an absolute, `~`-prefixed or `..`-escaping projection path is a contract error rather than a write, and the `skills` block has no key that asks for a global install at any spelling. Otherwise cloning a repository would hand it a capability over the machine that cloned it.
 
 ### `--root`, and the one command that does not discover
 

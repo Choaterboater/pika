@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/Choaterboater/pika/internal/doctor"
+	"github.com/Choaterboater/pika/internal/skills"
 )
 
 // runDoctor implements `pika doctor`: a read-only diagnosis of the
@@ -33,7 +34,16 @@ func runDoctor(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return fail(*jsonOut, stdout, stderr, "doctor", codeConfig, err.Error())
 	}
 
-	rep := doctor.Run(root)
+	// doctor reports what is wrong; it never stops because it could not
+	// find something. A machine that reports no home directory is one
+	// where the global agent files cannot exist, which is a row in the
+	// report and not a reason to refuse the other twelve.
+	home, err := skills.ResolveHome("")
+	if err != nil {
+		home = ""
+	}
+
+	rep := doctor.Run(root, home)
 	if *jsonOut {
 		if !emitJSON(stdout, stderr, "doctor", rep.OK, rep) {
 			return 1

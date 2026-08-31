@@ -198,7 +198,7 @@ func TestRenderStripsFrontmatterAndDemotesHeadings(t *testing.T) {
 		rel:    ".agents/skills/demo/SKILL.md",
 		body:   []byte("---\nname: demo\ndescription: d\n---\n\n# Title\n\n## Sub\n\n###### Deep\n"),
 		digest: digestOf([]byte("x")),
-	}}, nil)
+	}}, nil, repoOrigin)
 	got := string(b.region)
 	if strings.Contains(got, "description: d") {
 		t.Errorf("frontmatter survived into the projection:\n%s", got)
@@ -217,7 +217,7 @@ func TestRenderStripsFrontmatterAndDemotesHeadings(t *testing.T) {
 // readability. A bullet that carried those newlines through would end
 // the list item at the first one.
 func TestGuidanceIsRenderedAsOneBulletPerLine(t *testing.T) {
-	b := newBody(nil, []profiles.GuidanceSet{{Ref: "go@1", Lines: []string{"first line\nsecond line", "another"}}})
+	b := newBody(nil, []profiles.GuidanceSet{{Ref: "go@1", Lines: []string{"first line\nsecond line", "another"}}}, repoOrigin)
 	got := string(b.region)
 	if !strings.Contains(got, "- first line second line\n- another\n") {
 		t.Errorf("guidance was not folded onto one bullet each:\n%s", got)
@@ -231,15 +231,15 @@ func TestGuidanceIsRenderedAsOneBulletPerLine(t *testing.T) {
 // projection says, so it must not be reported as having drifted one.
 // profiles.lock is where whole-pack drift is already caught.
 func TestGuidanceDigestCoversGuidanceAlone(t *testing.T) {
-	same := newBody(nil, []profiles.GuidanceSet{{Ref: "go@1", Lines: []string{"a", "b"}}}).sources()
-	other := newBody(nil, []profiles.GuidanceSet{{Ref: "go@1", Lines: []string{"a", "c"}}}).sources()
+	same := newBody(nil, []profiles.GuidanceSet{{Ref: "go@1", Lines: []string{"a", "b"}}}, repoOrigin).sources()
+	other := newBody(nil, []profiles.GuidanceSet{{Ref: "go@1", Lines: []string{"a", "c"}}}, repoOrigin).sources()
 	if len(same) != 1 || len(other) != 1 {
 		t.Fatalf("sources = %v / %v", same, other)
 	}
 	if same[0].Digest == other[0].Digest {
 		t.Error("changing a guidance line did not change its digest")
 	}
-	if same[0].Digest != newBody(nil, []profiles.GuidanceSet{{Ref: "go@1", Lines: []string{"a", "b"}}}).sources()[0].Digest {
+	if same[0].Digest != newBody(nil, []profiles.GuidanceSet{{Ref: "go@1", Lines: []string{"a", "b"}}}, repoOrigin).sources()[0].Digest {
 		t.Error("the same guidance hashed to two different digests")
 	}
 }
