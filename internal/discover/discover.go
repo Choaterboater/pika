@@ -81,7 +81,7 @@ var SkipDirs = map[string]bool{
 
 // markers maps a file or directory name to a marker category.
 //
-// maven/gradle/cmake/wrangler are real ecosystem markers with no
+// maven/gradle/cmake/wrangler/deno are real ecosystem markers with no
 // language pack behind them (see unclassifiedCategories below):
 // recognizing the file is what lets Discover report that it saw a
 // real project it cannot classify, rather than looking identical to
@@ -110,6 +110,9 @@ var markers = map[string]string{
 	"wrangler.toml":       "wrangler",
 	"wrangler.json":       "wrangler",
 	"wrangler.jsonc":      "wrangler",
+	"deno.json":           "deno",
+	"deno.jsonc":          "deno",
+	"deno.lock":           "deno",
 }
 
 // unclassifiedCategories are marker categories with no consumer at
@@ -128,11 +131,26 @@ var markers = map[string]string{
 // only wrangler.toml/json/jsonc. When package.json is also present
 // the repository is already classified through it; wrangler.* adds
 // visibility for the case it is the only marker in the directory.
+//
+// deno belongs here for a sharper reason: a Deno project's own
+// convention is to declare no package.json at all (deno.json is its
+// replacement, and Deno resolves imports by URL or its own registry,
+// not node_modules), so before this a real Deno repository — a
+// hundred .ts files, deno.json, deno.lock — produced zero packages
+// and the generic "could not classify this repository: no recognized
+// language, build, or package marker was found", which is false: a
+// real, recognizable marker was sitting in the root the whole time.
+// `pika apply` then wrote a core-only contract and `pika check --all`
+// exited 0 with all six gates skipped — the same "green ladder that
+// verified nothing" shape Maven/Gradle/CMake/Wrangler already handle
+// honestly, reached through a diagnosis that was actively wrong
+// rather than merely absent.
 var unclassifiedCategories = map[string]bool{
 	"maven":    true,
 	"gradle":   true,
 	"cmake":    true,
 	"wrangler": true,
+	"deno":     true,
 }
 
 // walkHits records marker paths found during the bounded walk, plus flags for

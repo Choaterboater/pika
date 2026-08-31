@@ -448,6 +448,31 @@ func TestUnclassifiedEcosystemMarkerWrangler(t *testing.T) {
 	}
 }
 
+// deno.json/jsonc/lock: a Deno project, recognized the same way
+// maven/gradle/cmake/wrangler are — named as unclassified, never
+// mistaken for a package, including when it is the ONLY marker in the
+// directory. A Deno project's own convention is to declare no
+// package.json at all (Deno resolves imports by URL or its own
+// registry, not node_modules), so before this a real Deno repository
+// produced zero packages and the generic "no recognized ... marker
+// was found" — false, since deno.json was sitting in the root.
+func TestUnclassifiedEcosystemMarkerDeno(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "deno.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Packages) != 0 {
+		t.Fatalf("expected 0 packages for a deno.json-only tree, got %+v", inv.Packages)
+	}
+	if !slices.Contains(inv.UnclassifiedMarkers, "deno.json") {
+		t.Errorf("UnclassifiedMarkers = %v, want it to include deno.json", inv.UnclassifiedMarkers)
+	}
+}
+
 // A known, narrower limitation, not a defect this package fixes:
 // goreleaser/goreleaser's own Taskfile.yml indents one task's `cmds:`
 // key level with the task name instead of nested under it — tolerated
