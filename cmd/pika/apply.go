@@ -43,9 +43,13 @@ func runApply(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		// Report.Rollback is truthful: true only when the undo completed.
 		// A false with applied ops means the failure came after the commit
-		// (only the review-bundle rewrite fails there); a false without
-		// them means the undo itself was refused and mutations may remain.
-		if rep.Rollback {
+		// (only the review-bundle rewrite fails there); a false with
+		// TransactionBegan false means the failure never reached
+		// txn.Begin at all — no mutation was ever attempted, so there is
+		// nothing to distinguish it from a completed rollback; a false
+		// with TransactionBegan true and no applied ops means the undo
+		// itself was refused and mutations may remain.
+		if rep.Rollback || !rep.TransactionBegan {
 			fmt.Fprintln(stderr, "nothing was applied; the repository is at its pre-state")
 		} else if len(rep.Applied) > 0 {
 			fmt.Fprintln(stderr, "the contract WAS applied; only the review bundle rewrite failed")

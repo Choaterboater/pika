@@ -100,6 +100,23 @@ type Report struct {
 	Skipped  []Skipped `json:"skipped"`
 	Rollback bool      `json:"rollback"`
 	Gate1    Gate1     `json:"gate1"`
+	// TransactionBegan is true once txn.Begin has succeeded — the
+	// point past which a failure risks leaving mutations on disk.
+	// It stays false's zero value for every failure Run returns
+	// before that point (missing or invalid drafts, an unresolvable
+	// profile selection, a plan the kernel could not build): nothing
+	// was ever written, so nothing needs undoing. It distinguishes
+	// that harmless case from the one genuinely dangerous one — a
+	// commit or apply failure whose own rollback then failed too —
+	// which is otherwise the same zero-valued Report (Rollback false,
+	// Applied empty) and was, before this field existed, reported
+	// identically to "nothing was applied" as "the pre-state could
+	// not be restored; the transaction's mutations may remain": a
+	// false alarm on every pre-transaction failure, misdirecting an
+	// operator toward `pika recover`, which then correctly answers
+	// "nothing to recover" — a contradiction from the one subsystem
+	// whose entire job is trustworthy transactional honesty.
+	TransactionBegan bool `json:"transactionBegan"`
 }
 
 // RunOptions configures Run.
@@ -256,7 +273,7 @@ func Run(opts RunOptions) (Report, error) {
 		return rollback(tx, fmt.Errorf("commit: %w", commitErr))
 	}
 
-	report := Report{Applied: make([]Applied, 0, len(plan))}
+	report := Report{Applied: make([]Applied, 0, len(plan)), TransactionBegan: true}
 	for _, op := range plan {
 		report.Applied = append(report.Applied, Applied{Op: string(op.Kind), Path: op.Path})
 	}
@@ -333,7 +350,7 @@ func Run(opts RunOptions) (Report, error) {
 // claiming a pre-state that no longer holds.
 func rollback(tx *txn.Tx, cause error) (Report, error) {
 	if rerr := tx.Rollback(); rerr != nil {
-		return Report{}, errors.Join(
+		return Report{TransactionBegan: true}, errors.Join(
 			fmt.Errorf("apply: %w", cause),
 			fmt.Errorf("apply: ROLLBACK FAILED — mutations may remain on disk; inspect .project/state/recovery (the journal is preserved for recovery): %w", rerr))
 	}

@@ -618,6 +618,9 @@ func TestApplyCommitFailureReportsRollbackFailure(t *testing.T) {
 	if rep.Rollback {
 		t.Error("report.Rollback = true although the undo was refused")
 	}
+	if !rep.TransactionBegan {
+		t.Error("report.TransactionBegan = false, but a transaction was begun, applied, and committed before the injected rollback failure — the CLI relies on this to tell this case apart from a failure that never reached txn.Begin")
+	}
 	if !strings.Contains(err.Error(), "ROLLBACK FAILED") {
 		t.Errorf("error = %v, want an explicit rollback-failure report", err)
 	}

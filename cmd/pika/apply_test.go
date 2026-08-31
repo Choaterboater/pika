@@ -63,6 +63,37 @@ func TestRunApplyPostCommitFailureMessage(t *testing.T) {
 	}
 }
 
+// TestRunApplyPreTransactionFailureMessage pins the stderr note for
+// the OTHER failure class the same three-way branch must not
+// conflate: a repository with no adoption drafts at all fails before
+// txn.Begin is ever called, so nothing was mutated and there is
+// nothing to restore — the same harmless outcome as a completed
+// rollback, not the "mutations may remain" case that message is
+// reserved for. Reproduced exactly as found: a directory with no
+// .project at all (never adopted), where `pika apply` used to print
+// "the pre-state could not be restored; the transaction's mutations
+// may remain" and an operator reading that would reasonably reach for
+// `pika recover`, which then answers "nothing to recover" — a
+// contradiction from the one subsystem whose entire job is
+// trustworthy transactional honesty.
+func TestRunApplyPreTransactionFailureMessage(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	if code := runApply(nil, strings.NewReader(""), &stdout, &stderr); code != 1 {
+		t.Fatalf("runApply exit = %d, want 1\nstderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "nothing was applied; the repository is at its pre-state") {
+		t.Errorf("stderr missing the harmless pre-transaction note:\n%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "pre-state could not be restored") {
+		t.Errorf("stderr falsely claims a pre-transaction failure may have left mutations behind:\n%s", stderr.String())
+	}
+	if _, err := os.Stat(".project"); err == nil {
+		t.Error(".project was created by a refused apply")
+	}
+}
+
 // TestRunApplyUsage pins the usage-error exit code.
 func TestRunApplyUsage(t *testing.T) {
 	t.Chdir(t.TempDir())
