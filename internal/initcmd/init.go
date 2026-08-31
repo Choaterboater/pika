@@ -231,6 +231,25 @@ func Run(opts InitOptions) (*Manifest, error) {
 	}
 
 	commands := commandsFromChecks(resolved.Checks, lookPath)
+	if existing != nil {
+		// existing.Commands are the repository's own discovered
+		// commands (Makefile targets, package.json scripts, whatever
+		// `pika adopt` found and `pika apply` promoted verbatim — or a
+		// prior --force's own autofill) — never something this
+		// rebuild can reconstruct from the pack's own generic hint
+		// alone. commandsFromChecks knows only "does a pack-declared
+		// tool resolve on PATH", nothing about what the repository
+		// actually runs; a repository with no package.json at all,
+		// say, autofills no test command whatsoever even though a
+		// prior adopt found a real one. A real, already-recorded
+		// command always wins; autofill only fills a slot the
+		// existing contract left empty.
+		for slot, cmd := range existing.Commands {
+			if strings.TrimSpace(cmd) != "" {
+				commands[slot] = cmd
+			}
+		}
+	}
 	contractYAML, err := buildContract(name, selection, commands)
 	if err != nil {
 		return nil, err

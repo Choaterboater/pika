@@ -831,6 +831,45 @@ func TestForceReadsProfilesBackFromTheContract(t *testing.T) {
 	}
 }
 
+// TestForcePreservesADiscoveredCommandAutofillCannotReproduce closes a
+// real defect: a repository with no package.json at all (a bare Node
+// project invoked directly, say `node --test test/*.test.mjs`, adopted
+// through `pika adopt`, not scaffolded by `pika init`) has a real test
+// command in its committed contract that commandsFromChecks can never
+// reconstruct — its autofill only ever resolves a pack-declared hint
+// (an npm script) against PATH, and there is no npm script here at
+// all. `pika init --force`, run as the documented remedy for a stale
+// pack digest, silently replaced `commands.test` with an empty map:
+// the operator's real test gate was disarmed, and `pika check --all`
+// went green having verified nothing, with nothing in the output to
+// say so.
+func TestForcePreservesADiscoveredCommandAutofillCannotReproduce(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const discoveredTest = "node --test test/*.test.mjs"
+	writeContract := "schema: 1\n" +
+		"project:\n  name: moldable\n  topology: single\n" +
+		"profiles: [core@1, typescript@1]\n" +
+		"packages:\n  moldable:\n    root: .\n    profiles: [core@1, typescript@1]\n" +
+		"commands:\n  test: \"" + discoveredTest + "\"\n" +
+		"github:\n  merge: squash\n" +
+		"evidence:\n  publish: sanitized\n"
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(contractRel)), []byte(writeContract), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(InitOptions{Dir: dir, Force: true}); err != nil {
+		t.Fatalf("force init: %v", err)
+	}
+
+	after := loadContract(t, dir)
+	if got := after.Commands["test"]; got != discoveredTest {
+		t.Errorf("commands[test] = %q, want the discovered command %q preserved", got, discoveredTest)
+	}
+}
+
 func TestForceReadsProjectNameBackFromTheContract(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "untidy Dir.Name")
 	if _, err := Run(InitOptions{Dir: dir, Profiles: []string{"go"}, Name: "custom-name"}); err != nil {
