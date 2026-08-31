@@ -459,15 +459,41 @@ func exceptionsYAML(raw []any) ([]byte, []checks.Exception, error) {
 		}
 		exceptions = append(exceptions, ex)
 	}
-	sort.Slice(exceptions, func(i, j int) bool { return exceptions[i].Path < exceptions[j].Path })
+	// Determinism first: path, then rule, so two exceptions at the same
+	// path always render in the same order regardless of the draft's
+	// own order.
+	sort.Slice(exceptions, func(i, j int) bool {
+		if exceptions[i].Path != exceptions[j].Path {
+			return exceptions[i].Path < exceptions[j].Path
+		}
+		return exceptions[i].RuleID < exceptions[j].RuleID
+	})
+	// A path violating two different naming rules at once — a banned
+	// catch-all directory segment and a non-kebab-case filename segment
+	// in the same path — needs one exception per rule; exceptions.yaml's
+	// map is keyed by path alone, so that path's value becomes a list.
+	// Only the same rule recorded twice for the same path is the actual
+	// duplicate.
 	for i := 1; i < len(exceptions); i++ {
-		if exceptions[i].Path == exceptions[i-1].Path {
-			return nil, nil, fmt.Errorf("exception %q is recorded twice", exceptions[i].Path)
+		if exceptions[i].Path == exceptions[i-1].Path && exceptions[i].RuleID == exceptions[i-1].RuleID {
+			return nil, nil, fmt.Errorf("exception %q rule %q is recorded twice", exceptions[i].Path, exceptions[i].RuleID)
 		}
 	}
 	doc := make(yaml.MapSlice, 0, len(exceptions))
-	for _, ex := range exceptions {
-		doc = append(doc, yaml.MapItem{Key: ex.Path, Value: ex})
+	for i := 0; i < len(exceptions); {
+		j := i + 1
+		for j < len(exceptions) && exceptions[j].Path == exceptions[i].Path {
+			j++
+		}
+		if j-i == 1 {
+			// The common case renders exactly as before: a bare object,
+			// not a one-item list, so every exceptions.yaml written
+			// before multi-rule paths existed keeps its exact shape.
+			doc = append(doc, yaml.MapItem{Key: exceptions[i].Path, Value: exceptions[i]})
+		} else {
+			doc = append(doc, yaml.MapItem{Key: exceptions[i].Path, Value: exceptions[i:j]})
+		}
+		i = j
 	}
 	out, err := yaml.Marshal(doc)
 	if err != nil {

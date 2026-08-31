@@ -67,13 +67,13 @@ func findViolation(t *testing.T, vs []Violation, ruleID string) Violation {
 }
 
 // catchAllFixture is the acceptance fixture: a catch-all named source file.
-func catchAllFixture(t *testing.T) (string, map[string]Exception) {
+func catchAllFixture(t *testing.T) (string, map[string][]Exception) {
 	t.Helper()
 	dir := t.TempDir()
 	writeTree(t, dir, map[string]string{
 		"src/utils/helpers.ts": "// helpers\n",
 	})
-	return dir, map[string]Exception{}
+	return dir, map[string][]Exception{}
 }
 
 func TestNamingCatchAllWithoutException(t *testing.T) {
@@ -109,14 +109,14 @@ func TestNamingExceptionCoversDirectoryScope(t *testing.T) {
 		"src/utils/load.ts":    "// loader\n",
 	})
 	// A directory-scoped exception suppresses everything beneath it.
-	exceptions := map[string]Exception{
-		"src/utils": {
+	exceptions := map[string][]Exception{
+		"src/utils": {{
 			RuleID:          "naming-catch-all",
 			Path:            "src/utils",
 			Reason:          "legacy module pending split",
 			Owner:           "alice",
 			ReviewCondition: "revisit at the 2026-10 architecture sync",
-		},
+		}},
 	}
 	if vs := Naming(dir, coreRules(), exceptions); len(vs) != 0 {
 		t.Fatalf("directory exception did not suppress files beneath it: %+v", vs)
@@ -126,14 +126,14 @@ func TestNamingExceptionCoversDirectoryScope(t *testing.T) {
 func TestNamingExceptionDoesNotLeakAcrossRules(t *testing.T) {
 	dir, _ := catchAllFixture(t)
 	// The exception targets a different rule: the catch-all finding stands.
-	exceptions := map[string]Exception{
-		"src/utils/helpers.ts": {
+	exceptions := map[string][]Exception{
+		"src/utils/helpers.ts": {{
 			RuleID:          "naming-kebab-case",
 			Path:            "src/utils/helpers.ts",
 			Reason:          "wrong rule",
 			Owner:           "alice",
 			ReviewCondition: "never",
-		},
+		}},
 	}
 	v := findViolation(t, Naming(dir, coreRules(), exceptions), "naming-catch-all")
 	if v.Path != "src/utils/helpers.ts" {
@@ -348,10 +348,11 @@ func TestLoadExceptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadExceptions: %v", err)
 		}
-		ex, ok := m["src/utils/helpers.ts"]
-		if !ok {
-			t.Fatalf("exceptions = %v, missing src/utils/helpers.ts", m)
+		list, ok := m["src/utils/helpers.ts"]
+		if !ok || len(list) != 1 {
+			t.Fatalf("exceptions = %v, want exactly one at src/utils/helpers.ts", m)
 		}
+		ex := list[0]
 		if ex.RuleID != "naming-catch-all" || ex.Reason == "" || ex.Owner != "alice" || ex.ReviewCondition == "" {
 			t.Fatalf("exception = %+v", ex)
 		}

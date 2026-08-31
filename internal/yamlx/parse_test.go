@@ -3,6 +3,8 @@ package yamlx
 import (
 	"strings"
 	"testing"
+
+	"github.com/goccy/go-yaml"
 )
 
 // target types exercising the strict-tag opt-in.
@@ -95,6 +97,77 @@ items:
 	}
 	if !strings.Contains(err.Error(), `duplicate key "name"`) {
 		t.Fatalf("error should name the duplicate key, got: %v", err)
+	}
+}
+
+// flexList tolerates either a single object or a list of objects under
+// its key, exactly the shape internal/checks uses so exceptions.yaml
+// can record either one exception or several under the same path
+// without changing format for the common single-exception case. Its
+// custom UnmarshalYAML makes the bare-object form decode successfully
+// where a plain []T field would hard-fail — which is precisely why
+// strictness must see through it at the AST level too: a decode that
+// no longer fails on shape is a decode that must still reject an
+// unknown field some other way, or one silently passes through.
+type flexInner []strictInner
+
+func (f *flexInner) UnmarshalYAML(b []byte) error {
+	var list []strictInner
+	if err := yaml.Unmarshal(b, &list); err == nil {
+		*f = list
+		return nil
+	}
+	var single strictInner
+	if err := yaml.Unmarshal(b, &single); err != nil {
+		return err
+	}
+	*f = []strictInner{single}
+	return nil
+}
+
+func TestUnknownKeyInBareObjectWhereSliceExpected(t *testing.T) {
+	var out struct {
+		Items flexInner `yamlx:"strict" yaml:"items"`
+	}
+	src := "items:\n  name: a\n  bogus: true\n"
+	err := UnmarshalStrict([]byte(src), &out)
+	if err == nil {
+		t.Fatal("expected unknown key error in the bare-object form, got nil")
+	}
+	if !strings.Contains(err.Error(), `unknown field "bogus"`) {
+		t.Fatalf("error should name the unknown field, got: %v", err)
+	}
+}
+
+// The list form of the same field still catches an unknown field in any
+// element — the singular tolerance must not weaken sequence checking.
+func TestUnknownKeyInSequenceFormStillCaught(t *testing.T) {
+	var out struct {
+		Items flexInner `yamlx:"strict" yaml:"items"`
+	}
+	src := "items:\n  - name: a\n    bogus: true\n"
+	err := UnmarshalStrict([]byte(src), &out)
+	if err == nil {
+		t.Fatal("expected unknown key error in the sequence form, got nil")
+	}
+	if !strings.Contains(err.Error(), `unknown field "bogus"`) {
+		t.Fatalf("error should name the unknown field, got: %v", err)
+	}
+}
+
+// The bare-object form must still decode successfully and produce a
+// one-item list, once its fields are valid — the tolerance is not only
+// a strictness path, the decode itself must agree.
+func TestBareObjectWhereSliceExpectedDecodes(t *testing.T) {
+	var out struct {
+		Items flexInner `yamlx:"strict" yaml:"items"`
+	}
+	src := "items:\n  name: a\n"
+	if err := UnmarshalStrict([]byte(src), &out); err != nil {
+		t.Fatalf("bare object must decode, got %v", err)
+	}
+	if len(out.Items) != 1 || out.Items[0].Name != "a" {
+		t.Fatalf("decoded = %+v, want one item named a", out.Items)
 	}
 }
 

@@ -120,10 +120,11 @@ func TestExceptionRecordParsesAsARealException(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the record explain prints does not load:\n%s\nerror: %v", filled, err)
 	}
-	got, ok := loaded["internal/utils/retry.go"]
-	if !ok {
-		t.Fatalf("loaded %v, want an entry for the excepted path", loaded)
+	list, ok := loaded["internal/utils/retry.go"]
+	if !ok || len(list) != 1 {
+		t.Fatalf("loaded %v, want exactly one entry for the excepted path", loaded)
 	}
+	got := list[0]
 	if got.RuleID != "naming-catch-all" {
 		t.Errorf("rule-id = %q, want naming-catch-all", got.RuleID)
 	}

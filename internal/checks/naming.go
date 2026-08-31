@@ -72,7 +72,7 @@ type compiledRule struct {
 // repository root itself is a legal package root and is never a finding;
 // dot-prefixed path segments (VCS internals, .project state) are skipped.
 // The returned slice is ordered by walk order, then rule order.
-func Naming(repoRoot string, rules []profiles.NamingRule, exceptions map[string]Exception) []Violation {
+func Naming(repoRoot string, rules []profiles.NamingRule, exceptions map[string][]Exception) []Violation {
 	compiled := make([]compiledRule, 0, len(rules))
 	for _, r := range rules {
 		compiled = append(compiled, compileRule(r))
@@ -230,10 +230,12 @@ func stem(name string) string {
 
 // excepted reports whether an exception with the given rule ID covers rel,
 // either directly or through an ancestor-directory exception.
-func excepted(exceptions map[string]Exception, ruleID, rel string) bool {
+func excepted(exceptions map[string][]Exception, ruleID, rel string) bool {
 	for p := rel; ; p = path.Dir(p) {
-		if ex, ok := exceptions[p]; ok && ex.RuleID == ruleID {
-			return true
+		for _, ex := range exceptions[p] {
+			if ex.RuleID == ruleID {
+				return true
+			}
 		}
 		if p == "." {
 			return false

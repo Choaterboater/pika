@@ -126,6 +126,12 @@ func keyName(key ast.Node) string {
 // checkKeys walks the AST alongside the target type and rejects unknown
 // fields in strict structs. Nodes whose subtree type is not statically known
 // (any, aliases) are skipped; the structural checks above cover them.
+//
+// A bare mapping found where a []T (or [N]T) is declared is checked
+// against T itself, not against the slice: some fields accept either
+// one object or a list of them under the same key (a custom
+// UnmarshalYAML makes the decode succeed either way), and strictness
+// must see through the singular form the same as the plural one.
 func checkKeys(node ast.Node, t reflect.Type, strict bool) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -136,9 +142,22 @@ func checkKeys(node ast.Node, t reflect.Type, strict bool) error {
 	case *ast.DocumentNode:
 		return checkKeys(n.Body, t, strict)
 	case *ast.MappingNode:
+		if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
+			// A bare object where a []T field is declared: a caller-side
+			// custom UnmarshalYAML may accept this as a one-item list (the
+			// shape internal/checks uses for exceptions.yaml), and if it
+			// does, strictness must validate the object against T, the
+			// element type, or an unknown field inside it would never be
+			// caught — the node shape not matching the slice kind is not
+			// the same thing as the object being valid.
+			return checkMappingKeys(n, t.Elem(), strict)
+		}
 		return checkMappingKeys(n, t, strict)
 	case *ast.MappingValueNode:
 		// A single-entry mapping (e.g. a nested "a: b: c" chain).
+		if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
+			return checkMappingEntry(n, t.Elem(), strict)
+		}
 		return checkMappingEntry(n, t, strict)
 	case *ast.SequenceNode:
 		switch t.Kind() {

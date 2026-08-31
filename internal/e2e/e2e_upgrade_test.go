@@ -179,10 +179,11 @@ func wantExceptionIntact(t *testing.T, dir, after string) {
 	if err != nil {
 		t.Fatalf("%s: exceptions record does not load after %s: %v", checks.ExceptionsFile, after, err)
 	}
-	ex, ok := got[exceptionPath]
-	if !ok {
-		t.Fatalf("%s after %s: the record for %s is gone (records: %v)", checks.ExceptionsFile, after, exceptionPath, got)
+	list, ok := got[exceptionPath]
+	if !ok || len(list) != 1 {
+		t.Fatalf("%s after %s: the record for %s is gone or duplicated (records: %v)", checks.ExceptionsFile, after, exceptionPath, got)
 	}
+	ex := list[0]
 	for _, field := range []struct{ name, got, want string }{
 		{"rule-id", ex.RuleID, "naming-kebab-case"},
 		{"reason", ex.Reason, "the published documentation URL is load-bearing and renaming the file breaks every external link to it"},

@@ -299,9 +299,9 @@ func TestAdoptedExceptionsDoNotCoverACatchAllAddedLater(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Preview: %v", err)
 	}
-	recorded := map[string]checks.Exception{}
+	recorded := map[string][]checks.Exception{}
 	for _, ex := range rep.Exceptions {
-		recorded[ex.Path] = ex
+		recorded[ex.Path] = append(recorded[ex.Path], ex)
 	}
 	resolved, err := profiles.Resolve([]string{profiles.CoreRef})
 	if err != nil {

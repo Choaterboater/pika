@@ -54,9 +54,11 @@ func Gate1(repoRoot string, c *contract.Contract, resolved *profiles.Resolved) (
 	}
 	var findings []string
 	unreviewed := 0
-	for _, ex := range exceptions {
-		if ex.Owner == AutoRecordedOwner {
-			unreviewed++
+	for _, list := range exceptions {
+		for _, ex := range list {
+			if ex.Owner == AutoRecordedOwner {
+				unreviewed++
+			}
 		}
 	}
 	if unreviewed > 0 {

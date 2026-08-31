@@ -177,9 +177,11 @@ func TestApplyHappyPath(t *testing.T) {
 			t.Errorf("exceptions record missing %s: %v", want, exc)
 		}
 	}
-	for _, ex := range exc {
-		if ex.Owner != "pika adopt" || ex.ReviewCondition == "" || ex.Reason == "" {
-			t.Errorf("exception %s is missing spec fields: %+v", ex.Path, ex)
+	for _, list := range exc {
+		for _, ex := range list {
+			if ex.Owner != "pika adopt" || ex.ReviewCondition == "" || ex.Reason == "" {
+				t.Errorf("exception %s is missing spec fields: %+v", ex.Path, ex)
+			}
 		}
 	}
 
@@ -404,10 +406,11 @@ func TestApplyAdoptedCatchAllPassesGate1(t *testing.T) {
 		t.Fatalf("exceptions record failed to load: %v", err)
 	}
 	for _, path := range []string{"src/utils.go", "internal/helpers/parse.go"} {
-		ex, ok := exc[path]
-		if !ok {
+		list, ok := exc[path]
+		if !ok || len(list) != 1 {
 			t.Fatalf("no recorded exception for %s; got %v", path, slices.Sorted(maps.Keys(exc)))
 		}
+		ex := list[0]
 		if ex.RuleID != "naming-catch-all" || ex.Path != path ||
 			ex.Reason == "" || ex.Owner == "" || ex.ReviewCondition == "" {
 			t.Errorf("exception for %s is incomplete: %+v", path, ex)
@@ -424,6 +427,60 @@ func TestApplyAdoptedCatchAllPassesGate1(t *testing.T) {
 		if !strings.Contains(review, want) {
 			t.Errorf("review bundle does not surface the recorded exception (%q):\n%s", want, review)
 		}
+	}
+}
+
+// TestApplyAdoptsAPathViolatingTwoRulesAtOnce reproduces the defect found
+// against trpc/trpc: examples/next-formdata/src/utils/writeFileToDisk.ts
+// carries a banned catch-all directory segment (utils/) and a
+// non-kebab-case filename segment (writeFileToDisk.ts) at the same time.
+// `pika apply` used to fail outright — "exception ... is recorded
+// twice" — because exceptions.yaml's map was one exception per path,
+// full stop, and adopt correctly proposed one exception per violated
+// rule for the identical path. Both must now be recorded, and gate 1
+// must honor both afterward.
+func TestApplyAdoptsAPathViolatingTwoRulesAtOnce(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "go.mod", "module example.com/dualrule\n\ngo 1.26\n")
+	writeFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
+	writeFile(t, root, "README.md", "# dualrule\n")
+	// utils/ is a banned catch-all segment; WriteFileToDisk.go is not
+	// kebab-case. The same path trips both naming-catch-all and
+	// naming-kebab-case.
+	writeFile(t, root, "src/utils/WriteFileToDisk.go", "package utils\n")
+	if _, err := adopt.Preview(root); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+
+	rep, err := Run(RunOptions{Dir: root})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !rep.Gate1.Pass {
+		t.Fatalf("gate 1 failed on a freshly adopted repository: %s", rep.Gate1.Output)
+	}
+
+	exc, err := checks.LoadExceptions(root)
+	if err != nil {
+		t.Fatalf("exceptions record failed to load: %v", err)
+	}
+	list, ok := exc["src/utils/WriteFileToDisk.go"]
+	if !ok {
+		t.Fatalf("no recorded exceptions for the dual-violation path; got %v", slices.Sorted(maps.Keys(exc)))
+	}
+	var rules []string
+	for _, ex := range list {
+		rules = append(rules, ex.RuleID)
+		if ex.Path != "src/utils/WriteFileToDisk.go" || ex.Reason == "" || ex.Owner == "" || ex.ReviewCondition == "" {
+			t.Errorf("exception %+v is incomplete", ex)
+		}
+	}
+	slices.Sort(rules)
+	if want := []string{"naming-catch-all", "naming-kebab-case"}; !slices.Equal(rules, want) {
+		t.Fatalf("recorded rules = %v, want %v", rules, want)
 	}
 }
 
