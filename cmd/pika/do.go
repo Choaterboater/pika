@@ -62,7 +62,8 @@ func runDo(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case contractExists:
 		// wired in Task 4
 	case draftExists:
-		// wired in Task 3
+		fmt.Fprintf(stdout, "a draft already exists at %s — review it and run `pika apply`, or re-run `pika adopt` to regenerate it\n", root.ContractDraft())
+		return 0
 	default:
 		fmt.Fprintln(stderr, "routing: no live contract or draft, dispatching to adopt")
 		return dispatchTo("adopt", passthroughArgs(*jsonOut, *rootFlag), stdin, stdout, stderr)

@@ -83,3 +83,38 @@ func TestDoDispatchesToAdoptWhenUngoverned(t *testing.T) {
 		t.Errorf("stderr = %q, want the routing rationale to name adopt", stderrOut)
 	}
 }
+
+// An unapplied draft is not an error state, and adopt.Preview never
+// checks for one (internal/adopt/adopt.go:240-244) — re-running adopt
+// here would silently regenerate the draft the operator may already
+// have reviewed. do must print guidance instead of dispatching.
+func TestDoPrintsGuidanceWhenOnlyADraftExists(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	draftPath := filepath.Join(dir, ".project", "contract.yaml.draft")
+	if err := os.WriteFile(draftPath, []byte("placeholder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdoutOut, _ := doOut(t, "--root", dir)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0: an unapplied draft is not an error", code)
+	}
+	if !strings.Contains(stdoutOut, draftPath) {
+		t.Errorf("stdout = %q, want it to name the draft path", stdoutOut)
+	}
+	if !strings.Contains(stdoutOut, "pika apply") {
+		t.Errorf("stdout = %q, want it to suggest `pika apply`", stdoutOut)
+	}
+	// Nothing was dispatched: the draft's bytes are untouched, proving
+	// adopt never ran and regenerated it.
+	got, err := os.ReadFile(draftPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "placeholder" {
+		t.Errorf("draft = %q, want it untouched", got)
+	}
+}
