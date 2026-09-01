@@ -4,6 +4,8 @@ package improve
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -205,19 +207,24 @@ func gitValue(ctx context.Context, root string, args ...string) (string, error) 
 	return strings.TrimSpace(string(output)), nil
 }
 
-// requireNoNewChanges refuses to go on when a read-only role added
-// changes to the working tree.
+// requireNoNewChanges refuses to go on when a read-only role changed the
+// working tree beyond what it started with: a new path appearing, an
+// existing path's content changing, or an existing path disappearing.
 //
 // before is the set of paths the tree was already allowed to carry: empty
 // for the explorer, which runs before the builder has done anything, and
 // the builder's own changed files for the reviewer, which runs after it.
-// An exact comparison is the point — the reviewer is read-only, but the
-// tree it reads is not clean and never was.
+// snapshot is the content of each path in before, hashed immediately
+// before the role ran ("" for a path that did not exist — always every
+// path for the explorer's empty before). A path already in before is
+// exactly where a bare set comparison would miss a content edit: the
+// reviewer is read-only, but the tree it reads is not clean and never
+// was, so "no new paths" alone never proved "unchanged."
 //
 // This is separate from createHandoff's Git-state equality check, which
 // compares HEAD, branch and refs: an agent that edited a file without
 // touching any of those passes that check and fails this one.
-func requireNoNewChanges(ctx context.Context, root, role string, before []string) error {
+func requireNoNewChanges(ctx context.Context, root, role string, before []string, snapshot map[string]string) error {
 	entries, err := readStatus(ctx, root)
 	if err != nil {
 		return err
@@ -226,12 +233,25 @@ func requireNoNewChanges(ctx context.Context, root, role string, before []string
 	// on the status: it is the same function the commit uses, and it
 	// excludes private state, so a role writing only inside
 	// .project/state is not accused of editing the tree.
-	added := addedPaths(before, changePaths(entries))
-	if len(added) == 0 {
+	if added := addedPaths(before, changePaths(entries)); len(added) != 0 {
+		return fmt.Errorf("improve: the %s agent changed the working tree (%s); explore and review are read-only roles",
+			role, strings.Join(added, ", "))
+	}
+	current, err := snapshotContents(root, before)
+	if err != nil {
+		return err
+	}
+	var mutated []string
+	for _, path := range before {
+		if current[path] != snapshot[path] {
+			mutated = append(mutated, path)
+		}
+	}
+	if len(mutated) == 0 {
 		return nil
 	}
-	return fmt.Errorf("improve: the %s agent changed the working tree (%s); explore and review are read-only roles",
-		role, strings.Join(added, ", "))
+	return fmt.Errorf("improve: the %s agent modified already-changed files (%s); explore and review are read-only roles",
+		role, strings.Join(mutated, ", "))
 }
 
 // addedPaths returns the paths present in after that before did not carry.
@@ -247,6 +267,28 @@ func addedPaths(before, after []string) []string {
 		}
 	}
 	return added
+}
+
+// snapshotContents hashes the current content of each path in paths,
+// relative to root, so a caller can later prove none of them changed.
+// A path that does not exist gets the sentinel "": no real hash is ever
+// the empty string, so a file re-created at a previously-absent path is
+// still detected as a difference by a caller comparing two snapshots.
+func snapshotContents(root string, paths []string) (map[string]string, error) {
+	out := make(map[string]string, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				out[path] = ""
+				continue
+			}
+			return nil, fmt.Errorf("improve: read %s: %w", path, err)
+		}
+		sum := sha256.Sum256(data)
+		out[path] = hex.EncodeToString(sum[:])
+	}
+	return out, nil
 }
 
 // readFindings returns the redacted final message an agent left, or ""

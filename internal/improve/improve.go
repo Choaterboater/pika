@@ -719,7 +719,7 @@ func lifecycle(ctx context.Context, cfg Config, repo *repopath.Root, kind string
 			if err != nil {
 				return result, err
 			}
-			if err := requireNoNewChanges(ctx, cfg.Root, cfg.Explorer.Name, nil); err != nil {
+			if err := requireNoNewChanges(ctx, cfg.Root, cfg.Explorer.Name, nil, nil); err != nil {
 				return result, err
 			}
 			findings = readFindings(explore.ResultPath)
@@ -813,8 +813,17 @@ func lifecycle(ctx context.Context, cfg Config, repo *repopath.Root, kind string
 	// its finding is recorded in the receipt and it never changes the
 	// outcome, because pika's own rule is that the ladder is the evidence
 	// and prose is not a gate. A reviewer that could block a green ladder
-	// would be a second gate that is not deterministic.
+	// would be a second gate that is not deterministic. That "never
+	// changes the outcome" claim is mechanically enforced, not just
+	// asserted: requireNoNewChanges below is given a content snapshot of
+	// every path the reviewer is allowed to see already changed, taken
+	// before the reviewer runs, because a set-difference on paths alone
+	// cannot see a reviewer editing one of those paths in place.
 	if cfg.Reviewer != nil && from <= stageReview {
+		before, err := snapshotContents(cfg.Root, result.ChangedFiles)
+		if err != nil {
+			return result, err
+		}
 		review, err := createHandoff(ctx, cfg.Root,
 			filepath.Join(handle.HandoffDir(), "review"),
 			buildReviewPrompt(cfg.Goal, result.ChecksBefore, after, result.ChangedFiles, readFindings(result.Handoff.ResultPath)),
@@ -823,7 +832,7 @@ func lifecycle(ctx context.Context, cfg Config, repo *repopath.Root, kind string
 		if err != nil {
 			return result, err
 		}
-		if err := requireNoNewChanges(ctx, cfg.Root, cfg.Reviewer.Name, result.ChangedFiles); err != nil {
+		if err := requireNoNewChanges(ctx, cfg.Root, cfg.Reviewer.Name, result.ChangedFiles, before); err != nil {
 			return result, err
 		}
 		if err := savePhase(handle, workrec.PhaseReview, note, func(rec *workrec.Record) {
