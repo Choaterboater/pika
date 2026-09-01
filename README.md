@@ -216,13 +216,16 @@ pika skills install --global
 | `pika doctor` | Diagnose contract, lock, exceptions, envelope, per-gate command, every configured agent and its runtime, toolchain, global agent files, and git — without executing a single gate |
 | `pika explain` | Explain a naming rule, a verification gate, or an MCP error code: rationale, remediation, and a copy-pasteable exception record |
 | `pika authorize` | Generate the capability envelope agents need, at `.project/state/envelope.yaml` (mode 0600, local-only, never committed) |
+| `pika exceptions` | Report every recorded naming exception, and reassign every one still owned by `pika adopt` to a name of your choosing |
 | `pika skills` | Report, install and verify the agent instructions this repository ships: the canonical skills under `.agents/skills/`, and the harness-native projections generated from them — and, with `--global`, the operator-wide agent files in your home directory |
 | `pika handoff` | Give actionable failed checks to the configured builder — under any of the seven runtimes — and save a private handoff bundle |
 | `pika improve` | Run checks, let the builder repair failed gates, recheck, and make one verified local commit |
 | `pika work` | Run a stated goal through the same verified lifecycle: branch, builder agent, recheck, one verified local commit — with an optional explorer before the builder and an optional reviewer after the recheck |
+| `pika do` | Route a stated goal — or none — to `adopt`, `improve`, or `work`, deterministically from repository state alone, so the operator never has to already know which command applies |
 | `pika resume` | Continue an interrupted work run from the phase its record proves it reached, or refuse with the specific reason it cannot |
 | `pika mcp` | Serve the kernel to agents over MCP (stdio JSON-RPC) |
 | `pika help` | Describe pika, or one command's flags — generated from the dispatch table, so help cannot drift from the registered commands |
+| `pika version` | Identify this binary: release, embedded pack registry digest, and highest supported contract schema |
 
 Running `pika` with no arguments prints the same help.
 
