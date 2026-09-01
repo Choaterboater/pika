@@ -24,7 +24,13 @@ type Runner interface {
 // allowlist still receives. Without PATH nothing resolves a binary, and
 // without HOME and TMPDIR a harness that writes its own cache or temp
 // files fails in a way that looks like a pika bug. They are names of
-// directories, not secrets.
+// directories, not secrets. TMPDIR alone falls back to os.TempDir()
+// when pika's own environment never set it — routine on Linux, which
+// conventionally leaves it unset and assumes /tmp, unlike macOS, which
+// always sets it. Without the fallback, a child spawned on such a
+// runner gets no temp directory hint at all: exactly the silent
+// failure this list exists to prevent, showing up only off a
+// developer's own machine.
 var execEssentials = []string{"PATH", "HOME", "TMPDIR"}
 
 // ProcessRunner runs a one-shot harness: argv in, final message out.
@@ -152,6 +158,14 @@ func (r *ProcessRunner) childEnv() []string {
 		}
 		seen[name] = true
 		value, ok := os.LookupEnv(name)
+		if !ok && name == "TMPDIR" {
+			// os.TempDir() is this same fallback (TMPDIR if set, else
+			// /tmp on Unix; %TMP%/%TEMP%/... on Windows) — reusing it
+			// rather than hardcoding /tmp keeps this correct cross-
+			// platform instead of just on the Linux runner that surfaced
+			// the gap.
+			value, ok = os.TempDir(), true
+		}
 		if !ok {
 			continue
 		}
