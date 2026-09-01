@@ -137,6 +137,25 @@ func TestAnExplorerThatChangesTheTreeIsRefused(t *testing.T) {
 	}
 }
 
+// A reviewer that edits fixed.txt — the file the builder already
+// legitimately changed — names no new path, so requireNoNewChanges's
+// old set-comparison alone would have missed it: fixed.txt was already
+// in "before". This is the bug the content snapshot closes: a reviewer
+// silently overwriting an already-changed file must be refused exactly
+// like one that adds a new one, not committed as though it were the
+// builder's own verified content.
+func TestAReviewerThatEditsAnAlreadyChangedFileIsRefused(t *testing.T) {
+	root := fixtureRepository(t)
+	cfg := roleConfig(root, repairRunner{path: "fixed.txt", body: "verified fix\n"})
+	cfg.Reviewer = reviewerRole(messageRunner{message: "looks fine\n", edit: "fixed.txt"})
+
+	if _, err := Run(context.Background(), cfg); err == nil {
+		t.Fatal("a reviewer that edited an already-changed file was accepted")
+	} else if !strings.Contains(err.Error(), "modified already-changed files") {
+		t.Errorf("error = %q, want the read-only refusal naming the mutated file", err)
+	}
+}
+
 // A review is advisory: it is recorded, and it does not gate the commit.
 // The commit landing is the assertion — a reviewer that could block a green
 // ladder would be a second gate that is not deterministic, which is the

@@ -423,6 +423,19 @@ func buildPlan(root string, resolved *profiles.Resolved, core map[string][]byte,
 		}
 	}
 
+	// The drafts promoted above are consumed, not archived: Run already
+	// refused if either was missing, so both are guaranteed present here,
+	// and leaving them on disk after promotion is stale byte-identical
+	// noise nothing reads again. Deleting them as plan operations, not a
+	// side effect after the transaction commits, means a failure
+	// anywhere in the same apply restores them exactly like every other
+	// change here — there is no separate cleanup step to leave the
+	// repository half-migrated if it never runs.
+	plan = append(plan,
+		txn.Op{Kind: txn.OpDelete, Path: contractDraftRel},
+		txn.Op{Kind: txn.OpDelete, Path: lockDraftRel},
+	)
+
 	for _, req := range resolved.Layers[0].Pack.Files.Required {
 		target, err := coreTargetFor(req, core)
 		if err != nil {

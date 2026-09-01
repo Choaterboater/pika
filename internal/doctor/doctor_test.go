@@ -240,6 +240,51 @@ func TestUndiscoveredGateSurfacesPackHint(t *testing.T) {
 	}
 }
 
+// The mirror of TestUndiscoveredGateSurfacesPackHint: a slot the operator
+// explicitly disabled (commands.<id> set to the empty string) is not an
+// unresolved gap the way an undiscovered command is, so doctor must not
+// warn about it. Reporting it as ok is what makes the distinction
+// legible: a `pika doctor` that warned on both would give an operator no
+// way to tell "you should fix this" from "you already decided this".
+func TestExplicitlyDisabledGateIsOkNotAWarning(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := `schema: 1
+project:
+  name: fixture
+  topology: single
+profiles: [core@1]
+github:
+  merge: squash
+evidence:
+  publish: sanitized
+commands:
+  test: "true"
+  format: ""
+`
+	if err := os.WriteFile(filepath.Join(project, "contract.yaml"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := profiles.WriteLock(filepath.Join(project, "profiles.lock"), []string{"core@1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "exceptions.yaml"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root, _ := repopath.At(dir)
+
+	f := findingByID(t, runDoctor(t, root), "gate.format")
+	if f.Severity != SeverityOK {
+		t.Errorf("gate.format severity = %q, want %q for an explicitly disabled slot", f.Severity, SeverityOK)
+	}
+	if !strings.Contains(f.Detail, "disabled") {
+		t.Errorf("gate.format detail = %q, want it to say the slot was disabled, not merely skipped", f.Detail)
+	}
+}
+
 // A never-checked lock is not a second failure: one missing contract must
 // yield one error. The lock finding still exists so every category is
 // reported, but at warn severity.

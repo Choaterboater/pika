@@ -98,6 +98,42 @@ func TestFromProfilesRejectsEmptyContractCommand(t *testing.T) {
 	}
 }
 
+// The mirror of TestFromProfilesRejectsEmptyContractCommand: whitespace
+// is an accidental blank and stays an error, but the exact empty string
+// is the one value nobody reaches for a real command by mistake, so it
+// is the deliberate opt-out — a mature repository's way to say "no
+// formatter here" without inventing a command that merely does nothing.
+func TestFromProfilesExplicitEmptyCommandDisablesTheGate(t *testing.T) {
+	cs := profiles.CheckSet{
+		Format:    profiles.Check{ID: "format", Discovery: true, Hint: []string{"gofmt", "-l", "."}},
+		Lint:      profiles.Check{ID: "lint", Discovery: true},
+		Typecheck: profiles.Check{ID: "typecheck", Discovery: true},
+		Test:      profiles.Check{ID: "test", Discovery: true},
+		Smoke:     profiles.Check{ID: "smoke", Discovery: true},
+	}
+	gates, err := FromProfiles(cs, map[string]string{"format": ""})
+	if err != nil {
+		t.Fatalf("FromProfiles: %v", err)
+	}
+	g := gates[0]
+	if g.ID != "format" {
+		t.Fatalf("gate 0 id = %q, want %q", g.ID, "format")
+	}
+	if len(g.Cmd) != 0 {
+		t.Fatalf("gate = %+v, want no command for a disabled slot", g)
+	}
+	if !strings.HasPrefix(g.SkipReason, DisabledSkipReason) {
+		t.Fatalf("gate = %+v, want a skip reason distinguishing an explicit disable from an undiscovered command", g)
+	}
+	// The other discovery sentinels are unaffected: they still skip for
+	// the pre-existing reason, not the new one.
+	for _, other := range gates[1:] {
+		if !strings.Contains(other.SkipReason, "no command discovered") {
+			t.Fatalf("gate %s = %+v, want the ordinary discovery-skip reason, unaffected by format's override", other.ID, other)
+		}
+	}
+}
+
 func TestFromProfilesRejectsUndeclaredSlot(t *testing.T) {
 	cs := profiles.CheckSet{Lint: profiles.Check{ID: "lint"}}
 	if _, err := FromProfiles(cs, nil); err == nil {

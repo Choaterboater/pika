@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/Choaterboater/pika/internal/changed"
@@ -14,7 +15,7 @@ import (
 	"github.com/Choaterboater/pika/internal/verify"
 )
 
-// runCheck implements `pika check [--all|--changed|--ci] [--json]`.
+// runCheck implements `pika check [--all|--changed|--ci|--fast] [--json]`.
 // The verification ladder (spec §12.6): gate 1 runs the contract/profile
 // validation — the schema-version ceiling, the exceptions record, and the
 // naming and ownership projection checks (Task 8); gates 2-4 are the
@@ -23,15 +24,28 @@ import (
 // check.
 //
 // Exit codes: 0 all gates pass or skip, 1 any gate failed, 2 usage or
-// configuration error.
+// configuration error. --record-baseline never changes this: it snapshots
+// which gates are failing right now for a later run to compare against, and
+// the human-readable report then marks a failure that matches the recorded
+// snapshot as a known baseline rather than new — but every failure, known or
+// not, still fails the run and its exit code. A baseline is a label an
+// operator can act on, never a way to make a red ladder read green.
+//
+// --fast runs only format, lint, and typecheck; test and smoke skip with
+// FastSkipReason rather than running. It exists for quick local iteration
+// on the gates that catch most mistakes in seconds rather than minutes, and
+// it is mutually exclusive with --all, --changed, and --ci: it is never the
+// right flag for CI, which must verify behavior, not only shape.
 func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	all := fs.Bool("all", false, "run every gate")
 	changedFlag := fs.Bool("changed", false, "resolve a change set from git; skip the package gates only when the tree is provably clean")
 	ci := fs.Bool("ci", false, "CI mode: implies --all; no interactive prompts")
+	fast := fs.Bool("fast", false, "run only format, lint, and typecheck; skip test and smoke for quick local iteration. Never use in CI: it does not verify behavior")
 	jsonOut := fs.Bool("json", false, "emit the JSON report on stdout")
 	contractPath := fs.String("contract", "", "path to the contract file (default <root>/.project/contract.yaml)")
+	recordBaseline := fs.Bool("record-baseline", false, "replace the recorded baseline with this run's failing gates; does not affect this run's own pass/fail result")
 	rootFlag := fs.String("root", "", rootFlagUsage)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -41,14 +55,14 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 			fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
 	scopes := 0
-	for _, b := range []*bool{all, changedFlag, ci} {
+	for _, b := range []*bool{all, changedFlag, ci, fast} {
 		if *b {
 			scopes++
 		}
 	}
 	if scopes > 1 {
 		return fail(*jsonOut, stdout, stderr, "check", codeUsage,
-			"--all, --changed, and --ci are mutually exclusive")
+			"--all, --changed, --ci, and --fast are mutually exclusive")
 	}
 	scope := verify.All
 	switch {
@@ -105,6 +119,20 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
 	}
 
+	// --fast narrows by gate identity, not by file: it always covers the
+	// whole repository's format, lint, and typecheck, and never runs test
+	// or smoke regardless of what changed. That is a different axis from
+	// --changed's file-driven narrowing, so it does not touch scope or
+	// reuse ScopeSkipReason — a reader must be able to tell "you asked to
+	// skip this" from "nothing changed here".
+	if *fast {
+		for i := range ordered {
+			if (ordered[i].ID == "test" || ordered[i].ID == "smoke") && ordered[i].SkipReason == "" {
+				ordered[i].SkipReason = verify.FastSkipReason
+			}
+		}
+	}
+
 	// Gate 1 always runs: it validates the contract itself, which no
 	// change set can put out of scope. Only the package gates narrow.
 	var scopeWarnings []string
@@ -136,12 +164,37 @@ func runCheck(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	rep.Warnings = append(rep.Warnings, scopeWarnings...)
 	rep.Warnings = append(rep.Warnings, gate1Warnings...)
 
+	baseline, err := verify.LoadRecordedBaseline(root.Baseline())
+	if err != nil {
+		return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
+	}
+	// The report below reads against baseline as it stood BEFORE this
+	// write, not after: a run that records a baseline is telling a
+	// future run what it will already know, not claiming this run's own
+	// failures were already known. Reporting against the fresh write
+	// here would make the one run that introduces a baseline the one
+	// run that cannot show anything as new.
+	if *recordBaseline {
+		var failedIDs []string
+		for _, g := range rep.Gates {
+			if g.Status == verify.StatusFail {
+				failedIDs = append(failedIDs, g.ID)
+			}
+		}
+		if err := os.MkdirAll(root.StateDir(), 0o755); err != nil {
+			return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
+		}
+		if err := verify.WriteRecordedBaseline(root.Baseline(), failedIDs); err != nil {
+			return fail(*jsonOut, stdout, stderr, "check", codeConfig, err.Error())
+		}
+	}
+
 	if *jsonOut {
 		if !emitJSON(stdout, stderr, "check", rep.Pass, rep) {
 			return 1
 		}
 	} else {
-		printReport(rep, stdout)
+		printReport(rep, stdout, baseline)
 	}
 	if !rep.Pass {
 		return 1
@@ -178,14 +231,24 @@ func scopeSelectsGates(set *changed.Set) bool {
 // the command succeeded and the gate failed in the same six characters.
 // The JSON report still carries the exit code as a field, where it is
 // labelled and cannot be read as the verdict.
-func printReport(rep *verify.Report, stdout io.Writer) {
+//
+// A failed gate whose ID is in baseline is marked "(known baseline)":
+// an operator already recorded it, so this run's job is only to say
+// whether it is still the same set of failures, not to hide that it
+// fails. baseline may be nil, meaning none has ever been recorded —
+// every failure then reads as new, which is the correct default.
+func printReport(rep *verify.Report, stdout io.Writer, baseline *verify.RecordedBaseline) {
 	for _, w := range rep.Warnings {
 		fmt.Fprintf(stdout, "warning: %s\n", w)
 	}
 	for _, g := range rep.Gates {
 		switch g.Status {
 		case verify.StatusFail:
-			fmt.Fprintf(stdout, "FAIL %-10s %s\n%s", g.ID, g.Reason, g.OutputTail)
+			known := ""
+			if baseline.Known(g.ID) {
+				known = " (known baseline)"
+			}
+			fmt.Fprintf(stdout, "FAIL %-10s %s%s\n%s", g.ID, g.Reason, known, g.OutputTail)
 		case verify.StatusSkip:
 			fmt.Fprintf(stdout, "SKIP %-10s %s\n", g.ID, g.Reason)
 		default:

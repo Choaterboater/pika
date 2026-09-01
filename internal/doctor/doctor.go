@@ -476,6 +476,10 @@ func checkGates(rep *Report, root *repopath.Root, c *contract.Contract, resolved
 	for _, g := range gates {
 		id := "gate." + g.ID
 		if g.SkipReason != "" {
+			if strings.HasPrefix(g.SkipReason, verify.DisabledSkipReason) {
+				rep.add(id, SeverityOK, g.SkipReason, "")
+				continue
+			}
 			remediation := "no command discovered and the pack offers no hint"
 			if h := hints[g.ID]; len(h) > 0 {
 				remediation = fmt.Sprintf("set commands.%s in the contract, for example %q", g.ID, strings.Join(h, " "))

@@ -120,11 +120,19 @@ func readBytes(t *testing.T, root, rel string) []byte {
 // promoted unchanged apart from the command slots apply fills from pack
 // hints, exceptions record written from the draft contract's recorded
 // exceptions, the four missing core files rendered exactly as init
-// would, the user's README kept, the recovery journal retired, and gate
-// 1 green.
+// would, the user's README kept, the recovery journal retired, the
+// drafts themselves deleted now that they are consumed, and gate 1
+// green.
 func TestApplyHappyPath(t *testing.T) {
 	root := adoptionFixture(t)
 	lockYAML := readBytes(t, root, ".project/profiles.lock.draft")
+	// The draft contract is read before Run: apply now deletes it once
+	// promoted, so anything the test needs from it has to be captured
+	// first, the same way lockYAML already is above.
+	draftContract, err := contract.Load(filepath.Join(root, ".project", "contract.yaml.draft"))
+	if err != nil {
+		t.Fatalf("draft contract is invalid: %v", err)
+	}
 
 	rep, err := Run(RunOptions{Dir: root})
 	if err != nil {
@@ -145,10 +153,6 @@ func TestApplyHappyPath(t *testing.T) {
 	appliedContract, err := contract.Load(filepath.Join(root, ".project", "contract.yaml"))
 	if err != nil {
 		t.Fatalf("applied contract is invalid: %v", err)
-	}
-	draftContract, err := contract.Load(filepath.Join(root, ".project", "contract.yaml.draft"))
-	if err != nil {
-		t.Fatalf("draft contract is invalid: %v", err)
 	}
 	for id, want := range draftContract.Commands {
 		if got := appliedContract.Commands[id]; got != want {
@@ -186,17 +190,20 @@ func TestApplyHappyPath(t *testing.T) {
 		}
 	}
 
-	// The plan: three state files + four core files + four canonical
-	// skills, then AGENTS.md's projection region written a second time
-	// (a distinct fact from its create — the region did not exist until
-	// the skill files did); README skipped. Plan order: the state files
-	// promote first (contract, lock, exceptions), then the core files
-	// in the core pack's required order, then skills.Install's own two
-	// steps.
+	// The plan: three state files + two draft deletions + four core
+	// files + four canonical skills, then AGENTS.md's projection region
+	// written a second time (a distinct fact from its create — the
+	// region did not exist until the skill files did); README skipped.
+	// Plan order: the state files promote first (contract, lock,
+	// exceptions), then the drafts they came from are deleted, then the
+	// core files in the core pack's required order, then skills.Install's
+	// own two steps.
 	wantApplied := []string{
 		".project/contract.yaml",
 		".project/profiles.lock",
 		".project/exceptions.yaml",
+		".project/contract.yaml.draft",
+		".project/profiles.lock.draft",
 		"AGENTS.md",
 		"CONTRIBUTING.md",
 		".github/workflows/ci.yml",
@@ -214,17 +221,26 @@ func TestApplyHappyPath(t *testing.T) {
 		t.Errorf("skipped = %v, want [README.md]", got)
 	}
 
+	// The bug this pins: apply used to leave both drafts on disk after
+	// promoting them — stale, byte-identical files nothing ever read
+	// again. .gitignore already treats them as consumed ("a stale draft
+	// committed next to a live contract is a trap, not a record"); apply
+	// itself did not act on that until now. Being listed in Applied
+	// above is not the same fact as being gone from disk; this checks
+	// the disk directly.
+	for _, rel := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s still exists after apply, want it deleted (err=%v)", rel, err)
+		}
+	}
+
 	// The four missing core files rendered exactly as init renders
 	// them. CoreFiles renders five; the fixture's README was skipped
 	// create-if-missing, so it never entered the plan. AGENTS.md
 	// carries a projection region skills.Install appends below the
 	// rendered template, so it is checked by prefix rather than the
 	// other three's full equality.
-	draft, err := contract.Load(filepath.Join(root, ".project", "contract.yaml.draft"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantCore, err := initcmd.CoreFiles("go", draft.Project.Name)
+	wantCore, err := initcmd.CoreFiles("go", draftContract.Project.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,6 +471,33 @@ func TestApplyRollbackOnMidPlanFailure(t *testing.T) {
 	// the same drafts succeeds.
 	if _, err := Run(RunOptions{Dir: root}); err != nil {
 		t.Fatalf("apply after rollback: %v", err)
+	}
+}
+
+// TestApplyRollbackRestoresDeletedDraftsOnLaterFailure sets failAfter
+// past both new draft-deletion ops (contract, lock, exceptions create;
+// then the two draft deletes: 5 ops) and pins that a failure after they
+// have run still restores the repository byte-for-byte — the drafts
+// included. Deleting them is only safe because it happens inside the
+// same transaction as everything else; this is what proves it does.
+func TestApplyRollbackRestoresDeletedDraftsOnLaterFailure(t *testing.T) {
+	root := adoptionFixture(t)
+	before := treeDigest(t, root)
+
+	rep, err := Run(RunOptions{Dir: root, failAfter: 5})
+	if err == nil {
+		t.Fatal("injected failure: want error, got nil")
+	}
+	if !rep.Rollback {
+		t.Error("report.Rollback = false, want true")
+	}
+	if after := treeDigest(t, root); after != before {
+		t.Error("rollback did not restore the pre-state; a draft deleted mid-plan was not brought back")
+	}
+	for _, rel := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("%s missing after rollback: %v", rel, err)
+		}
 	}
 }
 

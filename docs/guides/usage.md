@@ -157,6 +157,7 @@ This promotes the drafts transactionally:
 
 - contract and lock become live
 - `exceptions.yaml` is written
+- the two drafts (`.project/contract.yaml.draft`, `.project/profiles.lock.draft`) are deleted once promoted — they are consumed, not archived, and nothing reads them again
 - missing core files (AGENTS.md, CONTRIBUTING.md, PR template, CI workflow) are created from templates
 - the four canonical skills under `.agents/skills/` are written where missing, and the declared projection (AGENTS.md, by default) is regenerated to cite them — the same install `pika skills install` performs ([§16](#16-install-the-agent-instructions-pika-skills))
 - **your own files are never overwritten** — `README.md`, `AGENTS.md`,
@@ -204,6 +205,7 @@ refresh command is `pika init --force`, which rewrites the same two files
 pika check --all          # every gate
 pika check --changed      # narrow to what changed since the merge base
 pika check --ci           # same engine CI runs; no LLM calls
+pika check --fast         # format, lint, typecheck only — quick local iteration
 pika check --json         # machine-readable report
 ```
 
@@ -212,11 +214,13 @@ pika check --json         # machine-readable report
 | `--all` | Run every gate (the default scope) |
 | `--changed` | Resolve a change set from git and skip the package gates only when the tree is provably clean |
 | `--ci` | CI mode: implies `--all`, no interactive prompts, no LLM calls |
+| `--fast` | Run only format, lint, and typecheck; test and smoke skip outright, for quick local iteration. Never use in CI: it does not verify behavior |
 | `--json` | Emit the report as JSON on stdout |
 | `--contract <path>` | Use a contract other than `<root>/.project/contract.yaml` (a relative path resolves against the root) |
+| `--record-baseline` | Replace the recorded baseline (`.project/state/baseline.json`, local and gitignored) with this run's failing gates. Never changes this run's own pass/fail result — a later run marks a failure matching the recording as "known baseline" rather than new, in the human-readable report; the exit code still fails on it exactly the same |
 | `--root <dir>` | Repository root (default: discovered) |
 
-`--all`, `--changed` and `--ci` are mutually exclusive.
+`--all`, `--changed`, `--ci` and `--fast` are mutually exclusive.
 
 The verification ladder: contract integrity → formatting/lint/compile → tests → smoke → (in agent runs) independent review.
 
@@ -371,6 +375,35 @@ exit code is a labelled field, and a failed gate never carries `"exit": 0` —
 a verdict no process status produced records a negative sentinel (`-1` for a
 gate that never finished, `-2` for one judged on its output) beside a reason
 that says which.
+
+### An empty command disables the gate outright
+
+A mature repository sometimes has no formatter, no linter, or no smoke
+scenario worth pretending about. Setting the slot's contract command to the
+empty string — `commands.format: ""` — disables that gate: it skips with a
+reason naming the disable, never runs, and never claims a pass:
+
+```yaml
+commands:
+  format: ""
+  test: "true"
+```
+
+```
+SKIP format     disabled: commands.format is explicitly empty
+```
+
+This is deliberately narrower than leaving the key out. An **absent** key
+falls through to the pack's own command or discovery sentinel — the ordinary
+case, where most repositories never mention `commands.format` at all. An
+**explicitly empty** one is a decision an operator typed: `pika doctor`
+reports it at ok severity rather than warn, exactly because it is not an
+unresolved gap the way an undiscovered command is — the same stale-vs-
+tampered discipline [../reference/m5-delta.md](../reference/m5-delta.md)
+applies to skill projections, applied here to gate skips. Whitespace
+(`"   "`) is not this: it stays the
+ordinary "empty contract command" error, because only the exact empty string
+is a value nobody reaches for a real command by typo.
 
 ### A missing toolchain skips; it does not fail
 

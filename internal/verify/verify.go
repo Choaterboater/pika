@@ -127,6 +127,14 @@ const (
 // in its own words.
 const ScopeSkipReason = "no changed files in scope"
 
+// FastSkipReason records a gate skipped because `pika check --fast`
+// deliberately runs only format, lint, and typecheck: an operator asked
+// for quick local iteration, not a claim that the skipped gate passed.
+// It is a fifth, distinct skip reason for the same reason the other
+// four are: a reader must be able to tell "you asked to skip this one"
+// from every other way a gate goes unrun.
+const FastSkipReason = "skipped: --fast runs only format, lint, and typecheck"
+
 // MissingToolSkipReason prefixes a gate skipped because the command's own
 // binary is not installed. The full reason names the binary, so the
 // report says which toolchain is missing rather than that one is.
@@ -146,6 +154,18 @@ const ScopeSkipReason = "no changed files in scope"
 // keeps the skip honest rather than convenient: check tells you the rung
 // did not run, doctor tells you to fix it.
 const MissingToolSkipReason = "toolchain not installed"
+
+// DisabledSkipReason prefixes a gate skipped because the contract set its
+// command to the explicit empty string: an operator declared the slot
+// and opted it out, rather than never declaring a command at all. It is
+// deliberately distinct from the other three skip reasons for the same
+// fact ScopeSkipReason and MissingToolSkipReason already draw: a reader
+// — human or `pika doctor` — must be able to tell "an operator turned
+// this off on purpose" from "nothing was ever found here yet". The
+// second is worth a warning; the first is not, because it is not
+// unresolved. `pika doctor` reports this reason at ok severity for
+// exactly that reason, where every other skip reason is a warning.
+const DisabledSkipReason = "disabled"
 
 // Gate is one verification rung: an external command (argv, run via exec
 // with no shell and no environment expansion) or an in-process Func.

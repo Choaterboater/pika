@@ -33,11 +33,11 @@ type Entry struct {
 // gateEntries explains the verification ladder's rungs (design spec §12.6).
 var gateEntries = map[string]Entry{
 	"contract":  {Kind: KindGate, Rationale: "Rung 1: contract schema ceiling, exceptions record, profile lock, and the naming projection.", Remediation: "Run \"pika check\" and read the contract gate's output: it names the sub-check that failed."},
-	"format":    {Kind: KindGate, Rationale: "Rung 2: the stack formatter.", Remediation: "Set commands.format in the contract, or install the pack's suggested formatter."},
-	"lint":      {Kind: KindGate, Rationale: "Rung 2: the stack linter.", Remediation: "Set commands.lint in the contract."},
-	"typecheck": {Kind: KindGate, Rationale: "Rung 2: compilation and type checking.", Remediation: "Set commands.typecheck in the contract."},
-	"test":      {Kind: KindGate, Rationale: "Rung 3: affected behavioral tests.", Remediation: "Set commands.test in the contract."},
-	"smoke":     {Kind: KindGate, Rationale: "Rung 4: a real-surface smoke scenario.", Remediation: "Set commands.smoke in the contract; a skipped smoke gate means no real surface was exercised."},
+	"format":    {Kind: KindGate, Rationale: "Rung 2: the stack formatter.", Remediation: "Set commands.format in the contract, or install the pack's suggested formatter. Set commands.format to the empty string to disable this gate for a repository that intentionally has none."},
+	"lint":      {Kind: KindGate, Rationale: "Rung 2: the stack linter.", Remediation: "Set commands.lint in the contract, or to the empty string to disable this gate."},
+	"typecheck": {Kind: KindGate, Rationale: "Rung 2: compilation and type checking.", Remediation: "Set commands.typecheck in the contract, or to the empty string to disable this gate."},
+	"test":      {Kind: KindGate, Rationale: "Rung 3: affected behavioral tests.", Remediation: "Set commands.test in the contract, or to the empty string to disable this gate."},
+	"smoke":     {Kind: KindGate, Rationale: "Rung 4: a real-surface smoke scenario.", Remediation: "Set commands.smoke in the contract; a skipped smoke gate means no real surface was exercised. Set it to the empty string to disable this gate outright, rather than leave a permanent discovery-skip warning."},
 }
 
 // errorEntries explains the MCP server's closed error-code set.

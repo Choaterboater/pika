@@ -286,9 +286,23 @@ func renderGate1(b *strings.Builder, data ReviewData) {
 	b.WriteString("```\n\n")
 }
 
+// renderNextStep's APPLIED branch lists every path this apply actually
+// wrote, plus review/ itself — never a fixed list. The bug this fixes:
+// a hand-maintained "commit these four paths" sentence silently fell out
+// of sync the moment apply grew a fifth kind of write (M5's skill
+// projections, AGENTS.md/CLAUDE.md and .agents/skills/), and a commit
+// instruction that omits kernel-owned files it just created would leave
+// them untracked if an operator followed it literally. data.Applied is
+// the same list renderApplied already prints under "## Applied" above,
+// so the two sections can never drift from each other again.
 func renderNextStep(b *strings.Builder, data ReviewData) {
 	if data.Status == ReviewApplied {
-		b.WriteString("## Next step\n\nRun `pika check --all` to verify the applied contract, then commit `review/`, `.project/contract.yaml`, `.project/profiles.lock`, and `.project/exceptions.yaml` together.\n")
+		b.WriteString("## Next step\n\nRun `pika check --all` to verify the applied contract, then commit these together:\n\n")
+		b.WriteString("- `review/`\n")
+		for _, ch := range data.Applied {
+			fmt.Fprintf(b, "- `%s`\n", ch.Path)
+		}
+		b.WriteString("\n")
 		return
 	}
 	b.WriteString("## Next step\n\nRun `pika apply` to promote the drafts into a live contract. Apply is transactional: files you already have are kept (create-if-missing), and any failure rolls the repository back to its exact pre-state.\n")
