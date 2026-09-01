@@ -186,3 +186,24 @@ func TestDoDispatchesToWorkWhenGovernedWithAGoal(t *testing.T) {
 		t.Errorf("recorded goal = %q, want %q", rec.Goal, goal)
 	}
 }
+
+// repopath.At (what --root uses) tags Origin() "explicit" unconditionally
+// and never inspects the directory (internal/repopath/repopath.go:66-79).
+// A routing decision keyed on Origin() instead of a direct stat would
+// treat every --root invocation as ungoverned regardless of whether a
+// live contract sits there — this proves it does not, by running from a
+// working directory discovery would resolve completely differently.
+func TestDoWithExplicitRootIgnoresTheWorkingDirectory(t *testing.T) {
+	dir, _ := improveFixture(t) // governed, green
+	elsewhere := t.TempDir()    // no contract, no draft, no git
+	t.Chdir(elsewhere)
+
+	code, _, stderrOut := doOut(t, "--root", dir)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (green baseline via explicit --root); stderr: %s", code, stderrOut)
+	}
+	if !strings.Contains(stderrOut, "improve") {
+		t.Errorf("stderr = %q, want routing to improve — Origin() would say \"explicit\" either way,"+
+			" so this only passes if do stats root.Contract() directly", stderrOut)
+	}
+}
