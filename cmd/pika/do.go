@@ -67,6 +67,14 @@ func runDo(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "routing: a goal was given, dispatching to work")
 		return dispatchTo("work", append([]string{goal}, passthroughArgs(*jsonOut, *rootFlag, *branch, *agent)...), stdin, stdout, stderr)
 	case draftExists:
+		if *jsonOut {
+			if !emitJSON(stdout, stderr, "do", true, struct {
+				Draft string `json:"draft"`
+			}{Draft: root.ContractDraft()}) {
+				return 1
+			}
+			return 0
+		}
 		fmt.Fprintf(stdout, "a draft already exists at %s — review it and run `pika apply`, or re-run `pika adopt` to regenerate it\n", root.ContractDraft())
 		return 0
 	default:

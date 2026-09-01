@@ -122,6 +122,48 @@ func TestDoPrintsGuidanceWhenOnlyADraftExists(t *testing.T) {
 	}
 }
 
+// With --json, the draft-exists path must produce a proper cliout
+// envelope like every other do exit path, not the human prose guidance
+// — the same contract TestDoJSONOutputIsTheDispatchedCommandsOwnEnvelope
+// proves for the dispatched-command paths.
+func TestDoPrintsJSONEnvelopeWhenOnlyADraftExists(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".project"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	draftPath := filepath.Join(dir, ".project", "contract.yaml.draft")
+	if err := os.WriteFile(draftPath, []byte("placeholder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdoutOut, stderrOut := doOut(t, "--root", dir, "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0: an unapplied draft is not an error; stderr: %s", code, stderrOut)
+	}
+	var env struct {
+		Command string `json:"command"`
+		OK      bool   `json:"ok"`
+		Result  struct {
+			Draft string `json:"draft"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(stdoutOut), &env); err != nil {
+		t.Fatalf("stdout is not a JSON envelope: %v\n%s", err, stdoutOut)
+	}
+	if env.Command != "do" {
+		t.Errorf(`envelope "command" = %q, want "do"`, env.Command)
+	}
+	if !env.OK {
+		t.Errorf("envelope ok = false, want true")
+	}
+	if env.Result.Draft != draftPath {
+		t.Errorf(`envelope "result.draft" = %q, want %q`, env.Result.Draft, draftPath)
+	}
+	if strings.Contains(stdoutOut, "review it and run") {
+		t.Errorf("stdout contains the human-prose guidance, want JSON only:\n%s", stdoutOut)
+	}
+}
+
 // improveFixture's baseline is green (cmd/pika/improve_test.go:250-252),
 // so with no goal, do must dispatch to improve, and improve's own
 // green-baseline short-circuit (internal/improve/improve.go:679-681)
