@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -47,7 +48,25 @@ func runDo(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return doUsageError(*jsonOut, stdout, stderr, "the goal is empty; state the work in one quoted string")
 		}
 	}
-	_, _, _, _ = branch, agent, jsonOut, rootFlag // wired to dispatch in Task 2-4
+	_, _ = branch, agent // wired in Task 4
+	root, err := resolveRoot(*rootFlag)
+	if err != nil {
+		return fail(*jsonOut, stdout, stderr, "do", codeConfig, err.Error())
+	}
+	_, contractErr := os.Stat(root.Contract())
+	_, draftErr := os.Stat(root.ContractDraft())
+	contractExists := contractErr == nil
+	draftExists := draftErr == nil
+
+	switch {
+	case contractExists:
+		// wired in Task 4
+	case draftExists:
+		// wired in Task 3
+	default:
+		fmt.Fprintln(stderr, "routing: no live contract or draft, dispatching to adopt")
+		return dispatchTo("adopt", passthroughArgs(*jsonOut, *rootFlag), stdin, stdout, stderr)
+	}
 	return 0
 }
 
@@ -61,4 +80,32 @@ func doUsageError(jsonOut bool, stdout, stderr io.Writer, message string) int {
 		fmt.Fprintln(stderr, doUsage)
 	}
 	return code
+}
+
+// dispatchTo runs a registered command's own handler directly — the same
+// call main.go's top-level dispatch makes (cmd/pika/main.go:216-231).
+// do never re-implements adopt/improve/work's own logic; it only
+// decides which one to call and with what argv.
+func dispatchTo(name string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	c, ok := lookup(name)
+	if !ok {
+		// Unreachable outside a typo in this file: name is always one of
+		// the three literal command names below.
+		fmt.Fprintf(stderr, "pika do: internal error: no such command %q\n", name)
+		return 1
+	}
+	return c.run(args, stdin, stdout, stderr)
+}
+
+// passthroughArgs builds adopt's argv: adopt takes --json and --root
+// only (cmd/pika/adopt.go:20-27), never --branch/--agent.
+func passthroughArgs(jsonOut bool, rootVal string) []string {
+	var out []string
+	if jsonOut {
+		out = append(out, "--json")
+	}
+	if rootVal != "" {
+		out = append(out, "--root", rootVal)
+	}
+	return out
 }

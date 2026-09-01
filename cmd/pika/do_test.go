@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -60,5 +62,24 @@ func TestDoIsRegistered(t *testing.T) {
 	}
 	if !strings.Contains(c.usage, "--root <dir>") {
 		t.Errorf("usage = %q, want it to advertise --root", c.usage)
+	}
+}
+
+// A bare directory — no contract, no draft, no git even — is the
+// ungoverned case: do must dispatch to adopt, which writes the two
+// draft proposal files. This is the same fixture shape
+// TestEveryCommandAcceptsRootFlag already uses for "no contract, no
+// git" (cmd/pika/root_test.go:71-76).
+func TestDoDispatchesToAdoptWhenUngoverned(t *testing.T) {
+	dir := t.TempDir()
+	code, _, stderrOut := doOut(t, "--root", dir)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (adopt on a bare directory succeeds); stderr: %s", code, stderrOut)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".project", "contract.yaml.draft")); err != nil {
+		t.Errorf("draft contract missing: adopt was not actually dispatched: %v", err)
+	}
+	if !strings.Contains(stderrOut, "adopt") {
+		t.Errorf("stderr = %q, want the routing rationale to name adopt", stderrOut)
 	}
 }
