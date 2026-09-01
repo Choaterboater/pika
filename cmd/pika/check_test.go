@@ -553,3 +553,145 @@ func TestCheckKebabWarningCarriesInJSON(t *testing.T) {
 		t.Fatalf("warnings = %v, want a naming-kebab-case warning for src/BadName.go", rep.Warnings)
 	}
 }
+
+// --record-baseline must never change what a run reports about itself:
+// the exit code and Pass are decided by the gates that ran, exactly as
+// without the flag. Recording only affects what a LATER run says about
+// a failure it already knew about.
+func TestCheckRecordBaselineDoesNotChangeThisRunsExitCode(t *testing.T) {
+	writeFixture(t, `  format: "true"
+  lint: ./lint.sh
+  typecheck: "true"
+  test: "true"
+  smoke: "true"
+`, "#!/bin/sh\necho 'lint failure'\nexit 1\n")
+
+	var stdout, stderr bytes.Buffer
+	code := runCheck([]string{"--json", "--record-baseline"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1: recording a baseline must not make a failing run pass; stderr: %s", code, stderr.String())
+	}
+	var rep verify.Report
+	resultOf(t, stdout.Bytes(), "check", &rep)
+	if rep.Pass {
+		t.Fatal("report.Pass = true, want false: --record-baseline changed the verdict")
+	}
+	if _, err := os.Stat(filepath.Join(".project", "state", "baseline.json")); err != nil {
+		t.Fatalf(".project/state/baseline.json was not written: %v", err)
+	}
+}
+
+// The mirror of TestCheckFailingLintFixtureGoldenJSON, driving the
+// human-readable path a second run actually takes: after a baseline is
+// recorded, a later run reporting the same failure marks it as known,
+// and a failure the baseline never saw is not marked at all — while
+// both runs still exit 1.
+func TestCheckKnownBaselineAnnotatesTheTextReportWithoutChangingExit(t *testing.T) {
+	writeFixture(t, `  format: "true"
+  lint: ./lint.sh
+  typecheck: "true"
+  test: "true"
+  smoke: "true"
+`, "#!/bin/sh\necho 'lint failure'\nexit 1\n")
+
+	var recordStdout, recordStderr bytes.Buffer
+	if code := runCheck([]string{"--record-baseline"}, strings.NewReader(""), &recordStdout, &recordStderr); code != 1 {
+		t.Fatalf("recording run exit = %d, want 1; stderr: %s", code, recordStderr.String())
+	}
+	if strings.Contains(recordStdout.String(), "known baseline") {
+		t.Fatalf("the run that records a baseline must not claim to already know it: %s", recordStdout.String())
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runCheck(nil, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("second run exit = %d, want 1: a known failure still fails; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "FAIL lint") || !strings.Contains(stdout.String(), "(known baseline)") {
+		t.Fatalf("stdout = %q, want the lint failure marked as a known baseline", stdout.String())
+	}
+}
+
+// --fast's whole point: format/lint/typecheck run and decide the exit
+// code; test and smoke never run at all, regardless of what they would
+// have said. A test command that would fail must not turn this run red,
+// because --fast promises it never runs it.
+func TestCheckFastRunsOnlyFormatLintTypecheck(t *testing.T) {
+	writeFixture(t, `  format: "true"
+  lint: "true"
+  typecheck: "true"
+  test: "false"
+  smoke: "false"
+`, "")
+	rep, code, stderr := runCheckJSON(t, "--fast", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0: --fast must not run the failing test/smoke commands; stderr: %s", code, stderr)
+	}
+	if !rep.Pass {
+		t.Fatalf("report.Pass = false, want true: %+v", rep)
+	}
+	for _, id := range []string{"format", "lint", "typecheck"} {
+		g := findGate(t, rep, id)
+		if g.Status != verify.StatusPass {
+			t.Errorf("gate %s = %+v, want pass", id, g)
+		}
+	}
+	for _, id := range []string{"test", "smoke"} {
+		g := findGate(t, rep, id)
+		if g.Status != verify.StatusSkip || g.Reason != verify.FastSkipReason {
+			t.Errorf("gate %s = %+v, want skip with FastSkipReason", id, g)
+		}
+	}
+}
+
+// --fast is a fourth mutually exclusive mode, not a modifier: combining
+// it with --all, --changed, or --ci is a usage error, the same way
+// combining any two of the existing three already is.
+func TestCheckFastIsMutuallyExclusiveWithOtherScopes(t *testing.T) {
+	writeFixture(t, `  test: "true"
+`, "")
+	var stdout, stderr bytes.Buffer
+	code := runCheck([]string{"--fast", "--all"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 for --fast combined with --all", code)
+	}
+	if !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Fatalf("stderr = %q, want it to name the conflict", stderr.String())
+	}
+}
+
+// A slot the operator already disabled (commands.smoke: "") keeps that
+// reason under --fast rather than being relabeled: the two skip
+// mechanisms answer different questions ("why doesn't this run ever"
+// vs "why didn't this run today"), and overwriting the first with the
+// second would erase the more specific, more durable fact.
+func TestCheckFastDoesNotOverwriteAnAlreadyDisabledSlot(t *testing.T) {
+	writeFixture(t, `  format: "true"
+  lint: "true"
+  typecheck: "true"
+  test: "true"
+  smoke: ""
+`, "")
+	rep, code, stderr := runCheckJSON(t, "--fast", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderr)
+	}
+	smoke := findGate(t, rep, "smoke")
+	if !strings.HasPrefix(smoke.Reason, verify.DisabledSkipReason) {
+		t.Fatalf("smoke gate = %+v, want the disabled reason preserved under --fast", smoke)
+	}
+}
+
+// findGate returns the gate with the given ID, failing the test if none
+// matches — every fast-lane assertion needs this and none of the
+// existing helpers index a report by gate ID.
+func findGate(t *testing.T, rep verify.Report, id string) verify.GateResult {
+	t.Helper()
+	for _, g := range rep.Gates {
+		if g.ID == id {
+			return g
+		}
+	}
+	t.Fatalf("no gate %q in report %+v", id, rep)
+	return verify.GateResult{}
+}

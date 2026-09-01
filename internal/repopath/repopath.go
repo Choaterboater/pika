@@ -100,6 +100,7 @@ func (r *Root) LockDraft() string     { return r.Lock() + ".draft" }
 func (r *Root) Exceptions() string    { return r.Join(".project", "exceptions.yaml") }
 func (r *Root) StateDir() string      { return r.Join(".project", "state") }
 func (r *Root) Envelope() string      { return r.Join(".project", "state", "envelope.yaml") }
+func (r *Root) Baseline() string      { return r.Join(".project", "state", "baseline.json") }
 func (r *Root) Board() string         { return r.Join(".project", "state", "board.jsonl") }
 func (r *Root) EvidenceDir() string   { return r.Join(".project", "evidence") }
 func (r *Root) Review() string        { return r.Join("review", "adoption-review.md") }

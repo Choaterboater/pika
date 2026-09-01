@@ -19,7 +19,14 @@ var slotOrder = []string{"format", "lint", "typecheck", "test", "smoke"}
 // FromProfiles converts a resolved profile CheckSet plus the contract's
 // commands into the ordered gate list M1's check runs. A contract command
 // overrides a discovery sentinel; a discovery sentinel with no discovered
-// command becomes a skip with a recorded reason, not a failure.
+// command becomes a skip with a recorded reason, not a failure. A contract
+// command that is explicitly the empty string ("") is a third state, never
+// confused with the other two: the operator declared the slot and opted
+// it out, so the gate skips with a reason naming that, rather than
+// running a pack's default or erroring as an accidental blank command
+// would. Whitespace-only commands are not this: they remain the
+// accidental-blank error, because only the exact empty string is a
+// value nobody could type by mistake reaching for a real command.
 //
 // A slot's FailOnOutput reaches the gate only when the gate's argv is the
 // argv the pack declared for that slot — its command, or the hint a
@@ -50,6 +57,13 @@ func FromProfiles(cs profiles.CheckSet, commands map[string]string) (CheckSet, e
 	for _, id := range slotOrder {
 		slot := slots[id]
 		if raw, ok := commands[id]; ok {
+			if raw == "" {
+				gates = append(gates, Gate{
+					ID:         id,
+					SkipReason: fmt.Sprintf("%s: commands.%s is explicitly empty", DisabledSkipReason, id),
+				})
+				continue
+			}
 			argv, err := splitCommand(id, raw)
 			if err != nil {
 				return nil, err
