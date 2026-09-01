@@ -26,7 +26,7 @@ pika init --profile go --name my-service
 | `--reset-docs` | With `--force` only: also restore the scaffolded `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.gitignore`, the four canonical skills and language scaffold over the repository's own |
 | `--json` | Emit the created-file manifest as JSON |
 
-What you get: `.project/contract.yaml` (the project contract, declaring a codex projection to `AGENTS.md`), `.project/profiles.lock`, `.project/exceptions.yaml`, a `docs/` spine, `AGENTS.md` (carrying that projection), `README.md`, `CONTRIBUTING.md`, four canonical skills under `.agents/skills/` ([§16](#16-install-the-agent-instructions-pika-skills)), a GitHub Actions workflow, a `.gitignore` protecting `.project/state/`, and a language-owned source scaffold.
+What you get: `.project/contract.yaml` (the project contract, declaring a codex projection to `AGENTS.md`), `.project/profiles.lock`, `.project/exceptions.yaml`, a `docs/` spine, `AGENTS.md` (carrying that projection), `README.md`, `CONTRIBUTING.md`, four canonical skills under `.agents/skills/` ([§17](#17-install-the-agent-instructions-pika-skills)), a GitHub Actions workflow, a `.gitignore` protecting `.project/state/`, and a language-owned source scaffold.
 
 The scaffolded workflow pins the kernel that judges the repository to the pika
 release that scaffolded it (`PIKA_REF`), rather than installing `@latest`. A
@@ -159,7 +159,7 @@ This promotes the drafts transactionally:
 - `exceptions.yaml` is written
 - the two drafts (`.project/contract.yaml.draft`, `.project/profiles.lock.draft`) are deleted once promoted — they are consumed, not archived, and nothing reads them again
 - missing core files (AGENTS.md, CONTRIBUTING.md, PR template, CI workflow) are created from templates
-- the four canonical skills under `.agents/skills/` are written where missing, and the declared projection (AGENTS.md, by default) is regenerated to cite them — the same install `pika skills install` performs ([§16](#16-install-the-agent-instructions-pika-skills))
+- the four canonical skills under `.agents/skills/` are written where missing, and the declared projection (AGENTS.md, by default) is regenerated to cite them — the same install `pika skills install` performs ([§17](#17-install-the-agent-instructions-pika-skills))
 - **your own files are never overwritten** — `README.md`, `AGENTS.md`,
   `CONTRIBUTING.md`, `go.mod`, the canonical skills and the language scaffold
   are create-if-missing, and a file you already have is reported as `already
@@ -497,7 +497,7 @@ What it inspects:
 | lock | Whether `profiles.lock` pins the contract's profiles at digests matching this binary's embedded packs. Both green and red print the registry digest — red prints the lock's too, and names both reasons two digests can differ, because the kernel cannot tell a stale lock from a stale binary |
 | exceptions | Whether `.project/exceptions.yaml` loads and every record is complete |
 | envelope | The grants in `.project/state/envelope.yaml`, or a warning that agents will be denied |
-| recovery | Whether a transaction never finished — who holds the lock, and whether that process is still running. It points at [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) rather than acting |
+| recovery | Whether a transaction never finished — who holds the lock, and whether that process is still running. It points at [`pika recover`](#16-unwedge-a-crashed-run-or-transaction-pika-recover) rather than acting |
 | leases / `lease.*` | Whether a run lease or a scope lease is held, and what can be proved about each holder. A **stale** lease (holder gone, same host) is an error and names `pika recover`: no run can start until it is released. A **held** lease is a warning — somebody's second terminal is legitimately mid-run — and names no recovery, because `pika recover` refuses a live holder. A holder on **another host** is a warning reported as exactly that, never as stale, and sends you to the machine that can answer |
 | `gate.*` | Per gate: the command that will run, or the pack's suggested hint when no command is configured — plus a warning when an envelope exists and does not authorize that gate's whole argv line, which is otherwise not discovered until an agent hits `envelope_denied` mid-task |
 | git | Whether git is available |
@@ -754,7 +754,7 @@ path that lease covers; wait for that session to release it or end
 
 Leases never expire and are never stolen: the holding session releases it, or the session ends and the server gives back everything it still holds. Nothing ever waits — every acquisition claims its own file first and then looks, so two racing acquisitions both refuse instead of deadlocking. `pika explain scope_conflict` prints the rationale and the remedy.
 
-A killed MCP session cannot give anything back, so its leases stay on disk; every later `acquire_scope` on those paths is refused, and so is every run in the repository. [`pika doctor`](#5-diagnose-a-repository-without-running-anything) reports them and [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) clears the ones whose holder is provably gone.
+A killed MCP session cannot give anything back, so its leases stay on disk; every later `acquire_scope` on those paths is refused, and so is every run in the repository. [`pika doctor`](#5-diagnose-a-repository-without-running-anything) reports them and [`pika recover`](#16-unwedge-a-crashed-run-or-transaction-pika-recover) clears the ones whose holder is provably gone.
 
 ---
 
@@ -937,7 +937,7 @@ chore/pika-improve` once the work is merged or unwanted, or send this run elsewh
 --branch
 ```
 
-Pika does not delete the branch for you, for the same reason [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) clears only a holder it can prove is dead: a run can stop *after* its commit lands, and the branch is then the only place that work exists. `pika status <work-id>` shows what the named run did before you decide.
+Pika does not delete the branch for you, for the same reason [`pika recover`](#16-unwedge-a-crashed-run-or-transaction-pika-recover) clears only a holder it can prove is dead: a run can stop *after* its commit lands, and the branch is then the only place that work exists. `pika status <work-id>` shows what the named run did before you decide.
 
 ---
 
@@ -974,11 +974,34 @@ one run at a time, because both would commit through the same working tree
 
 This is the hazard one user with two terminals can reach. Both runs write one working tree and move one HEAD: the second run's agent edits land in the first run's commit, and the second run's branch checkout moves the tree the first one is verifying. The refusal names the holding run so `pika status <work-id>` can be pointed straight at it.
 
-The lease is never waited on and never stolen. Waiting would make a run that stopped for a reason indistinguishable from one that hung, and an operator staring at a silent terminal could not tell which they had. Stealing is the defect itself. If the holder is gone, [`pika recover`](#15-unwedge-a-crashed-run-or-transaction-pika-recover) is the remedy — and it is a decision, not a retry.
+The lease is never waited on and never stolen. Waiting would make a run that stopped for a reason indistinguishable from one that hung, and an operator staring at a silent terminal could not tell which they had. Stealing is the defect itself. If the holder is gone, [`pika recover`](#16-unwedge-a-crashed-run-or-transaction-pika-recover) is the remedy — and it is a decision, not a retry.
 
 ---
 
-## 13. See what pika has run (`pika status`)
+## 13. Route to the right command automatically (`pika do`)
+
+```sh
+pika do
+pika do "add a /healthz endpoint that returns 200"
+```
+
+`do` picks whichever of `adopt`, `improve`, or `work` applies to the repository's current state, so the operator does not have to already know which one does before typing it.
+
+The decision is a stat on two paths, not a model call: no live contract and no draft → dispatches to `pika adopt`; only a draft exists → prints guidance naming the draft path and suggesting `pika apply` or a re-run of `pika adopt`, dispatches nothing, and exits 0; a live contract exists with no goal → dispatches to `pika improve`; a live contract exists with a goal → dispatches to `pika work "<goal>"`. A live contract always wins over a draft in the unlikely case both exist, the same precedence `repopath.Find` gives contract over draft elsewhere.
+
+`do` deliberately does not do more than that: no model call decides the route, no classification of what the goal *says* picks between repair and feature work (that stays `work`'s own `Kind` default), and no dispatch to `pika skills install` — distinguishing "this goal is about skill instructions" from "this goal is feature work" needs exactly the goal-content classification the command declines to do. See [the design spec](../superpowers/specs/2026-09-01-pika-do-routing-design.md) (§3, §5.1) for the full rationale.
+
+The command surface:
+
+```
+pika do ["<goal>"] [--branch <name>] [--agent <name>] [--json] [--root <dir>]
+```
+
+`--branch`, `--agent` and `--root` pass through verbatim to whichever command gets dispatched; `do` does not reinterpret them. `--json`'s stdout is byte-identical to the dispatched command's own envelope — a caller sees `"command": "improve"` (or `"work"`, or `"adopt"`), never `"command": "do"`, because that is what actually ran. The one-line routing rationale (e.g. `routing: no live contract, dispatching to adopt`) goes to stderr only, never into the JSON.
+
+---
+
+## 14. See what pika has run (`pika status`)
 
 ```sh
 pika status                  # every run, newest first
@@ -1018,7 +1041,7 @@ Two details about the receipt that are easier to read here than to discover:
 
 ---
 
-## 14. Continue an interrupted run (`pika resume`)
+## 15. Continue an interrupted run (`pika resume`)
 
 ```sh
 pika resume <work-id>
@@ -1045,7 +1068,7 @@ If Git proves the work already landed — the branch points at the commit the re
 
 ---
 
-## 15. Unwedge a crashed run or transaction (`pika recover`)
+## 16. Unwedge a crashed run or transaction (`pika recover`)
 
 ### The situation this exists for
 
@@ -1182,7 +1205,7 @@ file under `.project/state/locks/` by hand and re-run. This is a known gap:
 
 ---
 
-## 16. Install the agent instructions (`pika skills`)
+## 17. Install the agent instructions (`pika skills`)
 
 `pika init` and `pika apply` already write the canonical skills and
 regenerate their declared projections as part of scaffolding — this
@@ -1371,7 +1394,7 @@ home. It exists so a test or a sandbox never touches the real one.
 
 ---
 
-## 17. Reassign auto-recorded exception owners (`pika exceptions`)
+## 18. Reassign auto-recorded exception owners (`pika exceptions`)
 
 ```sh
 pika exceptions                              # report: how many records, how many still unreviewed

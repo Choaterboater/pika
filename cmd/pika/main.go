@@ -186,11 +186,17 @@ var commands = []command{
 	},
 }
 
-// help is registered here rather than in the literal above because
-// commands -> runHelp -> writeOverview -> commands is an initialization
-// cycle the compiler rejects. Registering it in init keeps help last in
-// the rendered table without the cycle.
+// do and help are registered here rather than in the literal above because
+// commands -> runDo -> dispatchTo -> lookup -> commands and
+// commands -> runHelp -> writeOverview -> commands are initialization cycles
+// the compiler rejects. Registering them in init keeps help last in the table.
 func init() {
+	commands = append(commands, command{
+		name:    "do",
+		summary: "route a stated goal (or none) to adopt, improve, or work, from repository state",
+		usage:   `pika do ["<goal>"] [--branch <name>] [--agent <name>] [--json] [--root <dir>]`,
+		run:     runDo,
+	})
 	commands = append(commands, command{
 		name:    "help",
 		summary: "describe pika or one command",

@@ -143,7 +143,7 @@ repositories while itself running under pika's ladder.
 ## 5. Runs are durable, and there are four commands for them
 
 `pika work`, `pika status`, `pika resume` and `pika recover` are new; see
-[§12–§15 of the usage guide](../guides/usage.md#12-hand-a-goal-to-the-agent-pika-work).
+[§12, §14–§16 of the usage guide](../guides/usage.md#12-hand-a-goal-to-the-agent-pika-work).
 What underpins them:
 
 - Every run writes a durable record at `.project/state/work/<work-id>/`,

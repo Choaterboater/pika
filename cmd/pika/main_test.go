@@ -324,8 +324,9 @@ func skillTemplateMentions(t *testing.T, dir string) []string {
 // it needs beyond `--json --root <dir>`, and the fixture that puts a
 // repository in a state where the command has something to say.
 type jsonCase struct {
-	args  []string
-	setup func(t *testing.T, dir string)
+	args    []string
+	command string
+	setup   func(t *testing.T, dir string)
 }
 
 // jsonCases is keyed by command name. Every command whose usage
@@ -337,6 +338,7 @@ var jsonCases = map[string]jsonCase{
 	"adopt": {setup: func(t *testing.T, dir string) {
 		writeUnadoptedRepo(t, dir)
 	}},
+	"do": {setup: writeUnadoptedRepo, command: "adopt"},
 	"apply": {setup: func(t *testing.T, dir string) {
 		writeUnadoptedRepo(t, dir)
 		if _, err := adopt.Preview(dir); err != nil {
@@ -425,7 +427,11 @@ func TestEveryJSONCommandEmitsTheEnvelope(t *testing.T) {
 			// Unmarshalling the whole buffer is part of the assertion:
 			// a command that also printed prose on stdout would fail
 			// here, which is exactly what a parsing agent would hit.
-			env := envelopeOf(t, out.Bytes(), c.name)
+			wantCommand := tc.command
+			if wantCommand == "" {
+				wantCommand = c.name
+			}
+			env := envelopeOf(t, out.Bytes(), wantCommand)
 			switch code {
 			case 0:
 				if !env.OK {
