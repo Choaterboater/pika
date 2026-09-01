@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Choaterboater/pika/internal/workrec"
 )
 
 func doOut(t *testing.T, args ...string) (int, string, string) {
@@ -116,5 +118,71 @@ func TestDoPrintsGuidanceWhenOnlyADraftExists(t *testing.T) {
 	}
 	if string(got) != "placeholder" {
 		t.Errorf("draft = %q, want it untouched", got)
+	}
+}
+
+// improveFixture's baseline is green (cmd/pika/improve_test.go:250-252),
+// so with no goal, do must dispatch to improve, and improve's own
+// green-baseline short-circuit (internal/improve/improve.go:679-681)
+// returns before a branch is ever created — the clean, deterministic
+// "nothing to repair" outcome. improve.Run still creates and finalizes
+// the run's record before the short-circuit is reached (improve.go:291,
+// 901-908), so exactly one complete, branchless repair record remains.
+func TestDoDispatchesToImproveWhenGovernedWithNoGoal(t *testing.T) {
+	dir, root := improveFixture(t)
+	code, _, stderrOut := doOut(t, "--root", dir)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (green baseline, nothing to repair); stderr: %s", code, stderrOut)
+	}
+	if !strings.Contains(stderrOut, "improve") {
+		t.Errorf("stderr = %q, want the routing rationale to name improve", stderrOut)
+	}
+	runs, err := workrec.List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("records = %d, want the single no-op run improve recorded", len(runs))
+	}
+	rec := runs[0]
+	if rec.Kind != workrec.KindRepair {
+		t.Errorf("kind = %q, want %q", rec.Kind, workrec.KindRepair)
+	}
+	if rec.Outcome != workrec.OutcomeComplete {
+		t.Errorf("outcome = %q, want %q", rec.Outcome, workrec.OutcomeComplete)
+	}
+	if rec.Branch != "" {
+		t.Errorf("branch = %q, want none: the short-circuit returns before a branch is claimed", rec.Branch)
+	}
+}
+
+// Mirrors TestWorkCarriesTheGoalIntoTheHandoffPrompt
+// (cmd/pika/work_test.go:121-153): the fixture configures no agent, so
+// the run stops exactly where the agent would be spawned, with the
+// branch, record and prompt already on disk.
+func TestDoDispatchesToWorkWhenGovernedWithAGoal(t *testing.T) {
+	dir, root := improveFixture(t)
+	const goal = "add a /healthz endpoint that returns 200"
+
+	code, _, stderrOut := doOut(t, goal, "--root", dir)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (the fixture configures no agent); stderr: %s", code, stderrOut)
+	}
+	if !strings.Contains(stderrOut, "work") {
+		t.Errorf("stderr = %q, want the routing rationale to name work", stderrOut)
+	}
+	runs, err := workrec.List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("records = %d, want the single run do just started", len(runs))
+	}
+	rec := runs[0]
+	if rec.Kind != workrec.KindFeature {
+		t.Errorf("kind = %q, want %q", rec.Kind, workrec.KindFeature)
+	}
+	if rec.Goal != goal {
+		t.Errorf("recorded goal = %q, want %q", rec.Goal, goal)
 	}
 }

@@ -48,7 +48,7 @@ func runDo(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return doUsageError(*jsonOut, stdout, stderr, "the goal is empty; state the work in one quoted string")
 		}
 	}
-	_, _ = branch, agent // wired in Task 4
+
 	root, err := resolveRoot(*rootFlag)
 	if err != nil {
 		return fail(*jsonOut, stdout, stderr, "do", codeConfig, err.Error())
@@ -60,15 +60,19 @@ func runDo(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	switch {
 	case contractExists:
-		// wired in Task 4
+		if goal == "" {
+			fmt.Fprintln(stderr, "routing: no goal given, dispatching to improve")
+			return dispatchTo("improve", passthroughArgs(*jsonOut, *rootFlag, *branch, *agent), stdin, stdout, stderr)
+		}
+		fmt.Fprintln(stderr, "routing: a goal was given, dispatching to work")
+		return dispatchTo("work", append([]string{goal}, passthroughArgs(*jsonOut, *rootFlag, *branch, *agent)...), stdin, stdout, stderr)
 	case draftExists:
 		fmt.Fprintf(stdout, "a draft already exists at %s — review it and run `pika apply`, or re-run `pika adopt` to regenerate it\n", root.ContractDraft())
 		return 0
 	default:
 		fmt.Fprintln(stderr, "routing: no live contract or draft, dispatching to adopt")
-		return dispatchTo("adopt", passthroughArgs(*jsonOut, *rootFlag), stdin, stdout, stderr)
+		return dispatchTo("adopt", passthroughArgs(*jsonOut, *rootFlag, "", ""), stdin, stdout, stderr)
 	}
-	return 0
 }
 
 // doUsageError reports a wrong invocation of do and adds the synopsis
@@ -98,10 +102,19 @@ func dispatchTo(name string, args []string, stdin io.Reader, stdout, stderr io.W
 	return c.run(args, stdin, stdout, stderr)
 }
 
-// passthroughArgs builds adopt's argv: adopt takes --json and --root
-// only (cmd/pika/adopt.go:20-27), never --branch/--agent.
-func passthroughArgs(jsonOut bool, rootVal string) []string {
+// passthroughArgs builds the dispatched command's argv. adopt takes
+// --json and --root only (cmd/pika/adopt.go:20-27); improve and work
+// additionally take --branch and --agent (cmd/pika/improve.go:162-165;
+// cmd/pika/work.go:43-46) — callers pass branch/agent as "" to omit
+// them for adopt.
+func passthroughArgs(jsonOut bool, rootVal, branchVal, agentVal string) []string {
 	var out []string
+	if branchVal != "" {
+		out = append(out, "--branch", branchVal)
+	}
+	if agentVal != "" {
+		out = append(out, "--agent", agentVal)
+	}
 	if jsonOut {
 		out = append(out, "--json")
 	}
