@@ -112,6 +112,13 @@ func TestReviewDeterministic(t *testing.T) {
 		"## Gate 1",
 		"Pass — no findings.",
 		"pika check --all",
+		// The defect this pins: "Next step" used to be a hand-written
+		// four-path sentence that never mentioned skill projections, so
+		// an operator following it literally would leave AGENTS.md
+		// untracked. It must now name every path Applied actually wrote.
+		"commit these together",
+		"- `review/`",
+		"- `AGENTS.md`",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("APPLIED bundle missing %q\n---\n%s", want, got)

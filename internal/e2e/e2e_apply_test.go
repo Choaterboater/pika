@@ -72,8 +72,11 @@ func TestE2EAdoptApply(t *testing.T) {
 		// whole file did not exist), and once as a "write" for the
 		// declared codex projection's region, which is kernel-owned and
 		// spliced in regardless of the file's own create-if-missing
-		// state (spec 5.2).
-		if a.Op != "create" && !(a.Path == "AGENTS.md" && a.Op == "write") {
+		// state (spec 5.2). The two drafts are "delete": consumed by
+		// promotion, so apply removes them rather than leaving stale
+		// byte-identical copies behind.
+		isDraftDelete := a.Op == "delete" && (a.Path == ".project/contract.yaml.draft" || a.Path == ".project/profiles.lock.draft")
+		if a.Op != "create" && !(a.Path == "AGENTS.md" && a.Op == "write") && !isDraftDelete {
 			t.Errorf("op %q on %s, want create", a.Op, a.Path)
 		}
 		if a.Path == ".project/contract.yaml" {
@@ -87,6 +90,11 @@ func TestE2EAdoptApply(t *testing.T) {
 		"AGENTS.md", "CONTRIBUTING.md", ".github/workflows/ci.yml", ".github/pull_request_template.md"} {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(p))); err != nil {
 			t.Errorf("apply did not write %s: %v", p, err)
+		}
+	}
+	for _, p := range []string{".project/contract.yaml.draft", ".project/profiles.lock.draft"} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(p))); !os.IsNotExist(err) {
+			t.Errorf("apply left %s behind, want it deleted (err=%v)", p, err)
 		}
 	}
 
