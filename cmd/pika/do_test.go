@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -205,5 +206,33 @@ func TestDoWithExplicitRootIgnoresTheWorkingDirectory(t *testing.T) {
 	if !strings.Contains(stderrOut, "improve") {
 		t.Errorf("stderr = %q, want routing to improve — Origin() would say \"explicit\" either way,"+
 			" so this only passes if do stats root.Contract() directly", stderrOut)
+	}
+}
+
+// do's --json output must be the dispatched command's own envelope,
+// unmodified — a caller parsing it sees "command":"improve", not
+// "command":"do", because that is what actually ran.
+func TestDoJSONOutputIsTheDispatchedCommandsOwnEnvelope(t *testing.T) {
+	dir, _ := improveFixture(t)
+	code, stdoutOut, stderrOut := doOut(t, "--root", dir, "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, stderrOut)
+	}
+	var env struct {
+		Command string `json:"command"`
+		OK      bool   `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(stdoutOut), &env); err != nil {
+		t.Fatalf("stdout is not a JSON envelope: %v\n%s", err, stdoutOut)
+	}
+	if env.Command != "improve" {
+		t.Errorf(`envelope "command" = %q, want "improve"`, env.Command)
+	}
+	if !env.OK {
+		t.Errorf("envelope ok = false, want true")
+	}
+	// The routing rationale must never land in the JSON stream itself.
+	if strings.Contains(stdoutOut, "routing:") {
+		t.Errorf("stdout contains the routing rationale, want it on stderr only:\n%s", stdoutOut)
 	}
 }
