@@ -173,6 +173,12 @@ var commands = []command{
 		run:     runWork,
 	},
 	{
+		name:    "do",
+		summary: "route a stated goal (or none) to adopt, improve, or work, from repository state",
+		usage:   `pika do ["<goal>"] [--branch <name>] [--agent <name>] [--json] [--root <dir>]`,
+		run:     runDo,
+	},
+	{
 		name:    "resume",
 		summary: "continue an interrupted work run, or refuse with the reason it cannot",
 		usage:   "pika resume <work-id> [--agent <name>] [--json] [--root <dir>]",
